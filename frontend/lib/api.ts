@@ -1,4 +1,10 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8300";
+// Empty string = same-origin relative paths (/api/..., /ws/...), which is what
+// works behind nginx in production (nginx proxies /api/ and /ws/ to the backend
+// on the SAME public hostname the browser already loaded the page from). A
+// baked-in "http://localhost:8300" would resolve to the VIEWER's own machine
+// for anyone loading the dashboard from a different machine than this host —
+// only useful for local dev, where it's passed explicitly via env instead.
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
 export type Overview = {
   raised_by_ai: number;
@@ -59,5 +65,10 @@ export const api = {
   triggerFix: (issueId: string) =>
     fetch(`${API_BASE}/api/issues/${issueId}/trigger-fix`, { method: "POST" }).then((r) => r.json()),
   repos: () => getJSON<{ id: string; github_full_name: string; default_branch: string }[]>("/api/repos"),
-  wsUrl: () => (API_BASE.replace("http", "ws") + "/ws/activity"),
+  wsUrl: () => {
+    if (API_BASE) return API_BASE.replace(/^http/, "ws") + "/ws/activity";
+    const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss" : "ws";
+    const host = typeof window !== "undefined" ? window.location.host : "localhost:3300";
+    return `${protocol}://${host}/ws/activity`;
+  },
 };

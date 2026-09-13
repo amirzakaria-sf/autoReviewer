@@ -34,8 +34,12 @@ services:
 
   frontend:
     build: ./frontend
-    environment:
-      NEXT_PUBLIC_API_BASE_URL: http://localhost:8300
+    # No NEXT_PUBLIC_API_BASE_URL here on purpose: unset means the dashboard
+    # calls same-origin relative paths (/api/..., /ws/...), which is what
+    # actually works once nginx is proxying both frontend and backend under
+    # one public hostname. A baked-in http://localhost:8300 would resolve to
+    # the VIEWER's own machine, not this server, for anyone but the developer
+    # running docker-compose locally.
     ports:
       - "127.0.0.1:3300:3300"
     depends_on:

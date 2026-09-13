@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 
 import httpx
@@ -38,10 +39,19 @@ def deploy_branch(worktree_path: str, project_name: str, branch: str) -> str:
     if result.returncode != 0:
         raise RuntimeError(f"wrangler deploy failed: {result.stderr}")
 
+    # wrangler embeds the URL mid-sentence ("Take a peek over at https://...",
+    # "Deployment alias URL: https://..."), never on its own line — a line-start
+    # match found this at 0/1 real deploys. Prefer the alias URL: it's stable
+    # per-branch (matches the branch name), while the bare "Deployment complete"
+    # URL is a fresh, ephemeral hash on every single deploy of the same branch.
+    urls = re.findall(r"https://\S+\.pages\.dev\S*", result.stdout)
     for line in result.stdout.splitlines():
-        line = line.strip()
-        if line.startswith("https://") and "pages.dev" in line:
-            return line
+        if "alias" in line.lower():
+            match = re.search(r"https://\S+\.pages\.dev\S*", line)
+            if match:
+                return match.group(0)
+    if urls:
+        return urls[-1]
     raise RuntimeError(f"could not find a preview URL in wrangler output:\n{result.stdout}")
 
 

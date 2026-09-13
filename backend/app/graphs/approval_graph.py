@@ -6,6 +6,7 @@ Whichever surface acts first wins; the others reflect "handled by <actor> via
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 
@@ -15,7 +16,10 @@ from app.config import settings
 from app.enums import FixStatus
 from app.integrations import cloudflare_client, github_client, slack_client
 from app.models import Fix, Issue
+from app.notifications import mark_notified, record_condition, should_notify
 from app.sandbox.docker_runner import run_in_sandbox
+
+logger = logging.getLogger("whipguard.approval_graph")
 
 
 async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str) -> dict:
@@ -76,6 +80,20 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
     )
     fix.status = FixStatus.VERIFIED if exit_code == 0 else FixStatus.VERIFICATION_FAILED
     await db.commit()
+
+    if fix.status == FixStatus.VERIFICATION_FAILED:
+        notification = await record_condition(db, fix_id=fix.id, issue_id=None, condition_key="verification-failed")
+        if should_notify(notification, is_escalation=True):
+            text = f"WhipGuard: fix verification FAILED for fix {fix.id} (preview: {preview_url})"
+            try:
+                if not settings.slack_bot_token:
+                    raise RuntimeError("slack_bot_token is not configured")
+                slack_client.post_message(settings.slack_channel_id, blocks=[], text=text)
+            except Exception:
+                logger.exception("Slack notify failed for verification-failed fix %s", fix.id)
+            else:
+                mark_notified(notification)
+        await db.commit()
 
     return {"ok": True, "status": fix.status.value, "preview_url": preview_url}
 

@@ -8,6 +8,7 @@ START -> DetectNode -> SkepticNode -> MechanicalRecheckNode -> ArbiterNode
 
 from __future__ import annotations
 
+import logging
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -19,6 +20,8 @@ from app.prompts import build_prefix, build_volatile_suffix, pad_to_cache_floor
 from app.sandbox.docker_runner import run_in_sandbox
 from app.sandbox.worktree import create_worktree, ensure_mirror, remove_worktree
 from app.workspace_map import build_workspace_map
+
+logger = logging.getLogger("whipguard.bug_council")
 
 
 class BugCouncilState(TypedDict, total=False):
@@ -154,8 +157,9 @@ async def run_and_persist(db, repo) -> "Issue":
     plan's own Task 9 test), while DB/GitHub side effects live in one place here.
     """
     from app.enums import IssueStatus, ISSUE_STATUS_RENDER
-    from app.integrations import github_client
+    from app.integrations import github_client, slack_client
     from app.models import Issue
+    from app.notifications import mark_notified, record_condition, should_notify
 
     graph = build_bug_council_graph()
     result: BugCouncilState = graph.invoke({"repo_full_name": repo.github_full_name})
@@ -186,6 +190,27 @@ async def run_and_persist(db, repo) -> "Issue":
         )
         issue_number = github_client.create_issue(repo.github_full_name, issue.title, body, labels)
         issue.github_issue_number = issue_number
+
+        # is_escalation=True: each Issue row is a fresh UUID per detection (no
+        # identity to dedupe across runs of "the same" bug), and this condition
+        # only ever fires once it's already cleared the assurance threshold and
+        # survived the mechanical recheck — a confirmed, singular event, not a
+        # flapping detector. The min_occurrences=2 default exists for the latter
+        # case and would otherwise mean this notification never fires at all.
+        notification = await record_condition(db, fix_id=None, issue_id=issue.id, condition_key="bug-raised")
+        if should_notify(notification, is_escalation=True):
+            issue_url = f"https://github.com/{repo.github_full_name}/issues/{issue_number}"
+            text = (
+                f"WhipGuard raised a bug: category=ui score={result['score']}/100 issue={issue_url}"
+            )
+            try:
+                if not settings.slack_bot_token:
+                    raise RuntimeError("slack_bot_token is not configured")
+                slack_client.post_message(settings.slack_channel_id, blocks=[], text=text)
+            except Exception:
+                logger.exception("Slack notify failed for bug-raised issue %s", issue.id)
+            else:
+                mark_notified(notification)
 
     await db.commit()
     return issue
