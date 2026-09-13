@@ -20,6 +20,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://whipguard:whipguard@postgres:5432/whipguard
+      WORKSPACE_HOST_PATH: ${PWD}/workspace
+      SANDBOX_UID: "${UID:-1000}"
+      SANDBOX_GID: "${GID:-1000}"
     ports:
       - "127.0.0.1:8300:8300"
     depends_on:

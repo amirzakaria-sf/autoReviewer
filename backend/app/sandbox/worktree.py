@@ -12,7 +12,7 @@ from pathlib import Path
 
 from app.config import settings
 
-WORKSPACE_ROOT = Path(__file__).resolve().parents[3] / "workspace"
+WORKSPACE_ROOT = Path(settings.workspace_root)
 
 
 def _repo_slug(github_full_name: str) -> str:

@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     github_token: str = ""
     fixture_repo: str = "amirzakaria-sf/whipguard-demo-ui"
 
+    # Where THIS process sees the workspace directory. Defaults to the
+    # container layout (docker-compose bind-mounts it at /srv/workspace, since
+    # the Dockerfile's WORKDIR is /srv) — override via env for local dev (venv),
+    # where backend/ is nested under the real repo root instead of BEING the
+    # container root. Deliberately an explicit setting, not derived from
+    # __file__'s path depth, because that depth differs between the two layouts.
+    workspace_root: str = "/srv/workspace"
+
     # When the backend itself runs inside a container (docker-compose), any path
     # it hands to the HOST's Docker daemon (via the mounted socket) to bind-mount
     # into a sandbox container must be a HOST path, not this container's own view

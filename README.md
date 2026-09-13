@@ -6,7 +6,7 @@ the fix actually holds.**
 
 Live demo: **https://whip-guard.zakarias.in**
 
-Demo video (2 min): _[link goes here]_
+Demo video: _[Adding it - just give me 10 mins please ]_
 
 ---
 
