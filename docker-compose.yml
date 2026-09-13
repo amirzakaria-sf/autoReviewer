@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: whipguard
+      POSTGRES_USER: whipguard
+      POSTGRES_PASSWORD: whipguard
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - whipguard_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U whipguard"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://whipguard:whipguard@postgres:5432/whipguard
+    ports:
+      - "127.0.0.1:8300:8300"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./workspace:/srv/workspace
+
+  frontend:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8300
+    ports:
+      - "127.0.0.1:3300:3300"
+    depends_on:
+      - backend
+
+volumes:
+  whipguard_pg_data:

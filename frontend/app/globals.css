@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background: #0b0d12;
+  color: #e6e8ee;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.badge-gray { background: #1c2029; color: #9aa3b2; border-color: #2a3040; }
+.badge-blue { background: #10233f; color: #7db4ff; border-color: #1c3a63; }
+.badge-yellow { background: #3a2d0d; color: #f3c95c; border-color: #5c4813; }
+.badge-green { background: #0d3a1f; color: #6fe3a0; border-color: #145c33; }
+.badge-red { background: #3a0d10; color: #ff8a8a; border-color: #5c1418; }

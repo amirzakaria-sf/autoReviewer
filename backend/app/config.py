@@ -1,0 +1,45 @@
+from pathlib import Path
+
+from dotenv import load_dotenv
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=None, extra="ignore")
+
+    database_url: str = "postgresql+asyncpg://whipguard:whipguard@localhost:5432/whipguard"
+
+    azure_api_endpoint: str = ""
+    azure_api_key: str = ""
+    azure_openai_api_version: str = "2024-08-01-preview"
+    azure_fast_deployment: str = ""
+    azure_worker_deployment: str = ""
+    azure_planner_deployment: str = ""
+    azure_mechanical_deployment: str = ""
+
+    cloudflare_account_id: str = ""
+    cloudflare_api_token: str = ""
+    cloudflare_pages_project: str = "whipguard-demo-ui"
+
+    slack_bot_token: str = ""
+    slack_signing_secret: str = ""
+    slack_channel_id: str = ""
+
+    github_token: str = ""
+    fixture_repo: str = "amirzakaria-sf/whipguard-demo-ui"
+
+    # When the backend itself runs inside a container (docker-compose), any path
+    # it hands to the HOST's Docker daemon (via the mounted socket) to bind-mount
+    # into a sandbox container must be a HOST path, not this container's own view
+    # of it — the two differ by whatever the compose volume mapping is. Empty
+    # means "not containerized" (local dev via a venv), where the container's own
+    # path IS the host path.
+    workspace_host_path: str = ""
+
+    assurance_threshold: int = 75
+    resolution_threshold: int = 80
+
+
+settings = Settings()
