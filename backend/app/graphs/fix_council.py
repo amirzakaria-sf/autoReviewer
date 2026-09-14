@@ -21,6 +21,7 @@ from app import azure_client
 from app.category_rules import UI_CATEGORY_RULES
 from app.config import settings
 from app.prompts import build_prefix, build_volatile_suffix, pad_to_cache_floor
+from app.routers.ws import emit_event
 from app.sandbox.docker_runner import run_in_sandbox
 from app.workspace_map import build_workspace_map
 
@@ -92,6 +93,7 @@ def retrieval_node(state: FixCouncilState) -> FixCouncilState:
     file IS the whole neighborhood; this still runs the real scan rather than
     hardcoding that fact, so it generalizes to a repo that does import something.
     """
+    emit_event({"type": "node", "node": "retrieval", "status": "started", "message": "Scanning one-hop imports…"})
     worktree = Path(state["worktree_path"])
     app_js = worktree / "app.js"
     touched = ["app.js"]
@@ -110,6 +112,7 @@ def retrieval_node(state: FixCouncilState) -> FixCouncilState:
         if "app.js" in other_content or "app'" in other_content:
             touched.append(rel)
 
+    emit_event({"type": "node", "node": "retrieval", "status": "done", "message": f"Touched files: {', '.join(sorted(set(touched)))}"})
     return {**state, "touched_files": sorted(set(touched))}
 
 
@@ -119,6 +122,7 @@ def _tool_fingerprint(name: str, args: dict) -> str:
 
 
 def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
+    emit_event({"type": "node", "node": "patch_generation", "status": "started", "message": "Patch-generation worker (ReAct loop) starting…"})
     worktree = Path(state["worktree_path"])
     workspace_map = build_workspace_map("amirzakaria-sf/whipguard-demo-ui", state["touched_files"])
 
@@ -218,16 +222,22 @@ def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
         ["git", "diff"], cwd=str(worktree), capture_output=True, text=True, timeout=30
     )
 
+    emit_event({"type": "node", "node": "patch_generation", "status": "done", "message": "Patch produced"})
     return {**state, "diff": diff_proc.stdout}
 
 
 def verifier_node(state: FixCouncilState) -> FixCouncilState:
     """Actually builds/runs the patched worktree and re-runs the real Playwright
     suite — reports what happened, never an opinion about what should happen."""
+    emit_event({"type": "node", "node": "verifier", "status": "started", "message": "Building patched branch, re-running Playwright…"})
     worktree = state["worktree_path"]
     exit_code, stdout, stderr = run_in_sandbox(
         worktree, ["npm install --silent && npx playwright test"], timeout_seconds=180
     )
+    emit_event({
+        "type": "node", "node": "verifier", "status": "done",
+        "message": "Patched branch passes" if exit_code == 0 else "Patched branch still fails",
+    })
     return {
         **state,
         "verifier_result": {
@@ -239,6 +249,7 @@ def verifier_node(state: FixCouncilState) -> FixCouncilState:
 
 def arbiter_node(state: FixCouncilState) -> FixCouncilState:
     if not state["verifier_result"].get("passes"):
+        emit_event({"type": "node", "node": "arbiter", "status": "done", "message": "Score 0 — verifier failed"})
         return {
             **state,
             "score": 0,
@@ -256,7 +267,9 @@ def arbiter_node(state: FixCouncilState) -> FixCouncilState:
     suffix = build_volatile_suffix(
         f"Diff:\n{state['diff']}\n\nVerifier: tests pass = {state['verifier_result']['passes']}"
     )
+    emit_event({"type": "node", "node": "arbiter", "status": "started", "message": "Arbiter scoring the fix…"})
     verdict = azure_client.call_arbiter(prefix, suffix)
+    emit_event({"type": "node", "node": "arbiter", "status": "done", "message": f"Resolution score: {verdict.score}/100"})
     return {
         **state,
         "score": verdict.score,

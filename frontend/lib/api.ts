@@ -30,6 +30,16 @@ export type IssueSummary = {
   created_at: string | null;
 };
 
+export type OutcomeCheck = {
+  agreed: boolean;
+  github_state: Record<string, unknown>;
+  cloudflare_state: Record<string, unknown>;
+  slack_state: Record<string, unknown>;
+  dashboard_state: string;
+  mismatch_detail: Record<string, string> | null;
+  checked_at: string | null;
+};
+
 export type FixSummary = {
   id: string;
   issue_id: string;
@@ -44,27 +54,61 @@ export type FixSummary = {
   approved_by: string | null;
   approved_via: string | null;
   created_at: string | null;
+  outcome_check: OutcomeCheck | null;
 };
 
+export class UnauthorizedError extends Error {}
+
 async function getJSON<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+  const res = await fetch(`${API_BASE}${path}`, { cache: "no-store", credentials: "include" });
+  if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
   return res.json();
 }
+
+async function postJSON<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  return res.json();
+}
+
+export type GithubProfile = {
+  connected: boolean;
+  login?: string;
+  name?: string;
+  avatar_url?: string;
+  html_url?: string;
+};
+
+export type GithubRepo = {
+  full_name: string;
+  private: boolean;
+  default_branch: string;
+  html_url: string;
+  connected: boolean;
+};
 
 export const api = {
   overview: () => getJSON<Overview>("/api/overview"),
   issues: (status?: string) => getJSON<IssueSummary[]>(`/api/issues${status ? `?status=${status}` : ""}`),
   issue: (id: string) => getJSON<IssueSummary & { fixes: FixSummary[] }>(`/api/issues/${id}`),
-  approveFix: (id: string) =>
-    fetch(`${API_BASE}/api/fixes/${id}/approve`, { method: "POST" }).then((r) => r.json()),
-  rejectFix: (id: string) =>
-    fetch(`${API_BASE}/api/fixes/${id}/reject`, { method: "POST" }).then((r) => r.json()),
-  scanRepo: (repoId: string) =>
-    fetch(`${API_BASE}/api/repos/${repoId}/scan`, { method: "POST" }).then((r) => r.json()),
-  triggerFix: (issueId: string) =>
-    fetch(`${API_BASE}/api/issues/${issueId}/trigger-fix`, { method: "POST" }).then((r) => r.json()),
+  approveFix: (id: string) => postJSON(`/api/fixes/${id}/approve`),
+  rejectFix: (id: string) => postJSON(`/api/fixes/${id}/reject`),
+  scanRepo: (repoId: string) => postJSON(`/api/repos/${repoId}/scan`),
+  triggerFix: (issueId: string) => postJSON(`/api/issues/${issueId}/trigger-fix`),
   repos: () => getJSON<{ id: string; github_full_name: string; default_branch: string }[]>("/api/repos"),
+  login: (password: string) => postJSON<{ ok: boolean }>("/api/auth/login", { password }),
+  logout: () => postJSON<{ ok: boolean }>("/api/auth/logout"),
+  session: () => getJSON<{ authenticated: boolean }>("/api/auth/session"),
+  githubProfile: () => getJSON<GithubProfile>("/api/github/profile"),
+  githubRepos: () => getJSON<GithubRepo[]>("/api/github/repos"),
+  connectRepo: (full_name: string) => postJSON<{ ok: boolean; repo_id: string }>("/api/github/connect", { full_name }),
   wsUrl: () => {
     if (API_BASE) return API_BASE.replace(/^http/, "ws") + "/ws/activity";
     const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss" : "ws";

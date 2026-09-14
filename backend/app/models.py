@@ -54,6 +54,7 @@ class Fix(Base):
     branch_name: Mapped[str | None] = mapped_column(sa.String, nullable=True)
     pr_number: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     preview_url: Mapped[str | None] = mapped_column(sa.String, nullable=True)
+    slack_message_ts: Mapped[str | None] = mapped_column(sa.String, nullable=True)
     status: Mapped[FixStatus] = mapped_column(sa.Enum(FixStatus, name="fix_status"), default=FixStatus.AWAITING_APPROVAL)
     approved_by: Mapped[str | None] = mapped_column(sa.String, nullable=True)
     approved_via: Mapped[str | None] = mapped_column(sa.String, nullable=True)

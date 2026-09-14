@@ -17,6 +17,7 @@ dependencies = [
   "pydantic>=2.9",
   "openai>=1.50",
   "psycopg[binary,pool]>=3.2",
+  "itsdangerous>=2.2",
 ]
 
 [project.optional-dependencies]

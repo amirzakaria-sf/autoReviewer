@@ -60,6 +60,47 @@ def get_message_text(channel: str, ts: str) -> str | None:
     return messages[0]["text"] if messages else None
 
 
+def build_fix_proposed_blocks(fix_id, title: str, score: int, pr_url: str, status_label: str) -> list[dict]:
+    """Block Kit message carrying the finding, the score, a PR link, and
+    Approve/Reject buttons -- signature-verified on the way back in
+    (routers/webhooks.py) before either is trusted."""
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*WhipGuard fix proposed*\n{title}\nResolution score: *{score}/100*\n<{pr_url}|View PR>\nStatus: *{status_label}*",
+            },
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Approve"},
+                    "style": "primary",
+                    "action_id": "approve_fix",
+                    "value": f"fix:{fix_id}",
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Reject"},
+                    "style": "danger",
+                    "action_id": "reject_fix",
+                    "value": f"fix:{fix_id}",
+                },
+            ],
+        },
+    ]
+
+
+def status_only_blocks(title: str, status_label: str, extra: str = "") -> list[dict]:
+    text = f"*WhipGuard fix*\n{title}\nStatus: *{status_label}*"
+    if extra:
+        text += f"\n{extra}"
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
+
+
 def verify_signature(headers: dict, body: str, signing_secret: str) -> bool:
     timestamp = headers.get("X-Slack-Request-Timestamp")
     signature = headers.get("X-Slack-Signature")

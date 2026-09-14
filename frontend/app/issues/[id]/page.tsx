@@ -137,6 +137,44 @@ export default function IssueDetailPage({ params }: { params: Promise<{ id: stri
           )}
         </section>
       )}
+
+      {fix?.outcome_check && (
+        <section
+          className={`border rounded-lg p-4 space-y-3 ${
+            fix.outcome_check.agreed ? "border-emerald-800 bg-emerald-950/30" : "border-red-800 bg-red-950/30"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="font-semibold">Cross-app outcome check</h2>
+            <StatusBadge
+              label={fix.outcome_check.agreed ? "All systems agree" : "Outcome check failed"}
+              color={fix.outcome_check.agreed ? "green" : "red"}
+            />
+          </div>
+          <p className="text-xs text-gray-500">
+            Independently reads GitHub, Cloudflare, Slack, and this dashboard back after the run and
+            reduces them to one status. Any disagreement fails the whole run closed, even if every
+            step above reported success.
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            {(["github_state", "cloudflare_state", "slack_state"] as const).map((key) => (
+              <div key={key} className="bg-black/30 rounded p-2">
+                <div className="text-gray-500 mb-1">{key.replace("_state", "")}</div>
+                <pre className="whitespace-pre-wrap break-words">{JSON.stringify(fix.outcome_check![key], null, 1)}</pre>
+              </div>
+            ))}
+            <div className="bg-black/30 rounded p-2">
+              <div className="text-gray-500 mb-1">dashboard</div>
+              <pre>{fix.outcome_check.dashboard_state}</pre>
+            </div>
+          </div>
+          {fix.outcome_check.mismatch_detail && (
+            <div className="text-xs text-red-300">
+              Mismatch: {JSON.stringify(fix.outcome_check.mismatch_detail)}
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }

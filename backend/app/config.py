@@ -49,5 +49,12 @@ class Settings(BaseSettings):
     assurance_threshold: int = 75
     resolution_threshold: int = 80
 
+    # App-level login (replaces the earlier nginx HTTP Basic Auth stopgap --
+    # that showed the browser's native credential popup ahead of the app,
+    # which is what "the login is weird" meant; this is a real session cookie
+    # + a dashboard login page instead).
+    admin_password: str = "whipguard-demo"
+    session_secret: str = "change-me-in-real-deployments"
+
 
 settings = Settings()

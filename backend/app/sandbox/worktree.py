@@ -38,8 +38,16 @@ def ensure_mirror(github_full_name: str) -> Path:
             text=True,
         )
     else:
+        # Scoped to `main` only -- NOT a bare `fetch origin`, which (because
+        # this is a --mirror clone, whose default refspec is +refs/*:refs/*)
+        # tries to update every ref including branches WhipGuard itself pushed
+        # back to origin earlier for an open PR. If one of those is currently
+        # checked out in an active fix worktree, git refuses the whole fetch
+        # outright ("refusing to fetch into branch ... checked out at ...") --
+        # found by hitting it for real once a fix's branch existed on origin
+        # and a second detection run tried to refresh the mirror.
         subprocess.run(
-            ["git", "--git-dir", str(path), "fetch", "--prune", "origin"],
+            ["git", "--git-dir", str(path), "fetch", "origin", "+refs/heads/main:refs/heads/main"],
             check=True,
             capture_output=True,
             text=True,
@@ -53,6 +61,17 @@ def create_worktree(mirror: Path, issue_number: int, slug: str, base_branch: str
     (repo_root / "fixes").mkdir(parents=True, exist_ok=True)
 
     branch_name = f"whipguard/{issue_number}-{slug}"
+    # detect/recheck worktrees reuse a fixed name (issue_number=0) across every
+    # run -- if a prior run's worktree dir was removed but the branch ref
+    # survived (or removal simply hadn't run yet), `-b` below fails outright
+    # because it refuses to create a branch that already exists. These are
+    # always throwaway, so drop any stale ref before recreating it.
+    subprocess.run(
+        ["git", "--git-dir", str(mirror), "branch", "-D", branch_name],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
     subprocess.run(
         [
             "git",

@@ -11,7 +11,7 @@ from app.config import settings
 from app.db import get_db
 from app.enums import FIX_STATUS_RENDER, ISSUE_STATUS_RENDER, FixStatus, IssueStatus
 from app.graphs.approval_graph import resolve_approval
-from app.models import Fix, Issue, Repo
+from app.models import Fix, Issue, OutcomeCheck, Repo
 from app.runner import trigger_fix_council
 
 router = APIRouter(prefix="/api")
@@ -94,13 +94,37 @@ async def list_issues(status: str | None = None, db: AsyncSession = Depends(get_
     return [_issue_dict(i) for i in issues]
 
 
+async def _outcome_check_dict(db: AsyncSession, fix_id) -> dict | None:
+    check = (
+        await db.execute(
+            select(OutcomeCheck).where(OutcomeCheck.fix_id == fix_id).order_by(OutcomeCheck.checked_at.desc())
+        )
+    ).scalars().first()
+    if not check:
+        return None
+    return {
+        "agreed": check.agreed,
+        "github_state": check.github_state,
+        "cloudflare_state": check.cloudflare_state,
+        "slack_state": check.slack_state,
+        "dashboard_state": check.dashboard_state,
+        "mismatch_detail": check.mismatch_detail,
+        "checked_at": check.checked_at.isoformat() if check.checked_at else None,
+    }
+
+
 @router.get("/issues/{issue_id}")
 async def get_issue(issue_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     issue = await db.get(Issue, issue_id)
     if not issue:
         raise HTTPException(404, "issue not found")
     fixes = (await db.execute(select(Fix).where(Fix.issue_id == issue_id).order_by(Fix.created_at.desc()))).scalars().all()
-    return {**_issue_dict(issue), "fixes": [_fix_dict(f) for f in fixes]}
+    fix_dicts = []
+    for f in fixes:
+        d = _fix_dict(f)
+        d["outcome_check"] = await _outcome_check_dict(db, f.id)
+        fix_dicts.append(d)
+    return {**_issue_dict(issue), "fixes": fix_dicts}
 
 
 @router.get("/fixes")

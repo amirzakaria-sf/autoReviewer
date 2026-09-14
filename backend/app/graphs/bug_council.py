@@ -17,6 +17,7 @@ from app import azure_client
 from app.category_rules import UI_CATEGORY_RULES
 from app.config import settings
 from app.prompts import build_prefix, build_volatile_suffix, pad_to_cache_floor
+from app.routers.ws import emit_event
 from app.sandbox.docker_runner import run_in_sandbox
 from app.sandbox.worktree import create_worktree, ensure_mirror, remove_worktree
 from app.workspace_map import build_workspace_map
@@ -38,6 +39,7 @@ class BugCouncilState(TypedDict, total=False):
 def detect_node(state: BugCouncilState) -> BugCouncilState:
     """Runs the repo's own Playwright suite headlessly in the sandbox. A failing
     assertion is a candidate issue; a clean run means nothing to raise."""
+    emit_event({"type": "node", "node": "detect", "status": "started", "message": "Running Playwright suite in sandbox…"})
     mirror = ensure_mirror(state["repo_full_name"])
     worktree = create_worktree(mirror, issue_number=0, slug="detect")
     try:
@@ -47,6 +49,10 @@ def detect_node(state: BugCouncilState) -> BugCouncilState:
     finally:
         remove_worktree(mirror, worktree)
 
+    emit_event({
+        "type": "node", "node": "detect", "status": "done",
+        "message": "Detected a failing assertion" if exit_code != 0 else "No failure detected",
+    })
     return {
         **state,
         "evidence": {
@@ -78,7 +84,9 @@ def skeptic_node(state: BugCouncilState) -> BugCouncilState:
     suffix = build_volatile_suffix(
         f"Playwright evidence:\n{state['evidence']['assertion_text']}"
     )
+    emit_event({"type": "node", "node": "skeptic", "status": "started", "message": "Skeptic arguing against the finding…"})
     transcript = azure_client.call_skeptic(prefix, suffix)
+    emit_event({"type": "node", "node": "skeptic", "status": "done", "message": "Skeptic transcript ready"})
     return {**state, "skeptic_transcript": transcript}
 
 
@@ -88,6 +96,7 @@ def mechanical_recheck_node(state: BugCouncilState) -> BugCouncilState:
     if not state["evidence"]["failed"]:
         return {**state, "mechanical_result": {"reran": False, "still_fails": False}}
 
+    emit_event({"type": "node", "node": "mechanical_recheck", "status": "started", "message": "Re-running the spec fresh, not from cache…"})
     mirror = ensure_mirror(state["repo_full_name"])
     worktree = create_worktree(mirror, issue_number=0, slug="recheck")
     try:
@@ -97,7 +106,12 @@ def mechanical_recheck_node(state: BugCouncilState) -> BugCouncilState:
     finally:
         remove_worktree(mirror, worktree)
 
-    return {**state, "mechanical_result": {"reran": True, "still_fails": exit_code != 0}}
+    still_fails = exit_code != 0
+    emit_event({
+        "type": "node", "node": "mechanical_recheck", "status": "done",
+        "message": "Still fails on rerun" if still_fails else "Passed on rerun — dropped as a flake",
+    })
+    return {**state, "mechanical_result": {"reran": True, "still_fails": still_fails}}
 
 
 def arbiter_node(state: BugCouncilState) -> BugCouncilState:
@@ -121,7 +135,9 @@ def arbiter_node(state: BugCouncilState) -> BugCouncilState:
         f"Skeptic transcript: {state['skeptic_transcript']}\n\n"
         f"Mechanical recheck: still fails = {state['mechanical_result']['still_fails']}"
     )
+    emit_event({"type": "node", "node": "arbiter", "status": "started", "message": "Arbiter scoring the finding…"})
     verdict = azure_client.call_arbiter(prefix, suffix)
+    emit_event({"type": "node", "node": "arbiter", "status": "done", "message": f"Score computed: {verdict.score}/100"})
     return {
         **state,
         "score": verdict.score,
@@ -156,15 +172,27 @@ async def run_and_persist(db, repo) -> "Issue":
     scoring nodes stay pure and unit-testable with mocked model calls (per this
     plan's own Task 9 test), while DB/GitHub side effects live in one place here.
     """
+    import asyncio
+
     from app.enums import IssueStatus, ISSUE_STATUS_RENDER
     from app.integrations import github_client, slack_client
     from app.models import Issue
     from app.notifications import mark_notified, record_condition, should_notify
 
+    emit_event({"type": "run", "kind": "bug_council", "status": "started", "message": f"Bug Council scanning {repo.github_full_name}…"})
+
     graph = build_bug_council_graph()
-    result: BugCouncilState = graph.invoke({"repo_full_name": repo.github_full_name})
+    # Every node does blocking sync I/O (subprocess, sync httpx) -- run the
+    # whole invoke() off the event loop thread, or it would freeze this
+    # process (including the websocket and every other concurrent run) for
+    # the full duration of a single Bug Council pass.
+    result: BugCouncilState = await asyncio.to_thread(graph.invoke, {"repo_full_name": repo.github_full_name})
 
     raised = result["score"] >= settings.assurance_threshold
+    emit_event({
+        "type": "run", "kind": "bug_council", "status": "done",
+        "message": f"Bug raised (score {result['score']})" if raised else "Nothing raised (below threshold)",
+    })
     issue = Issue(
         repo_id=repo.id,
         category="ui",
