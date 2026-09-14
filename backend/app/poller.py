@@ -40,6 +40,8 @@ async def _poll_once() -> None:
         repo = (await db.execute(select(Repo).where(Repo.github_full_name == settings.fixture_repo))).scalars().first()
         if repo is None:
             return
+        if not settings.github_token:
+            return
 
         try:
             open_issues = github_client.list_issues_with_label(repo.github_full_name, FIX_ME_LABEL)

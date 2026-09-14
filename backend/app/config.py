@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     slack_channel_id: str = ""
 
     github_token: str = ""
+    # OAuth App credentials (Settings -> Developer settings -> OAuth Apps),
+    # not a GitHub App -- this type has no private key/JWT auth, only the
+    # standard authorization-code exchange below (routers/github.py's
+    # /oauth/start + /oauth/callback). A successful exchange overwrites
+    # github_token above, both in memory and back into .env, so every
+    # existing github_client.py call site keeps working unchanged.
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    github_oauth_redirect_uri: str = "https://whip-guard.zakarias.in/api/github/oauth/callback"
     fixture_repo: str = "amirzakaria-sf/whipguard-demo-ui"
 
     # Where THIS process sees the workspace directory. Defaults to the

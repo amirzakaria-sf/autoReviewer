@@ -8,6 +8,14 @@ export default function ConnectPage() {
   const [repos, setRepos] = useState<GithubRepo[]>([]);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Read directly off window instead of next/navigation's useSearchParams --
+  // that hook forces this page into a Suspense boundary at build time for no
+  // benefit here, since this is a client-only redirect-landing read.
+  const [oauthError, setOauthError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setOauthError(new URLSearchParams(window.location.search).get("github_error"));
+  }, []);
 
   async function refresh() {
     try {
@@ -38,6 +46,9 @@ export default function ConnectPage() {
       <section className="border border-border bg-panel rounded-lg p-4">
         <h2 className="font-semibold mb-3">GitHub</h2>
         {error && <p className="text-sm text-red-400">{error}</p>}
+        {oauthError && (
+          <p className="text-sm text-red-400 mb-2">GitHub sign-in failed: {oauthError}</p>
+        )}
         {profile?.connected ? (
           <div className="flex items-center gap-3">
             {profile.avatar_url && (
@@ -53,9 +64,15 @@ export default function ConnectPage() {
             <span className="badge badge-green ml-auto">Connected</span>
           </div>
         ) : (
-          <p className="text-sm text-gray-500">
-            Not connected — set <code className="text-xs">GITHUB_TOKEN</code> in the server's environment.
-          </p>
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-gray-500">Not connected to GitHub yet.</p>
+            <a
+              href="/api/github/oauth/start"
+              className="text-xs px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20"
+            >
+              Connect to GitHub
+            </a>
+          </div>
         )}
       </section>
 

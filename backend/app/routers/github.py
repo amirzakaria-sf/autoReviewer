@@ -1,17 +1,26 @@
-"""GitHub "connection" for the dashboard's profile + repo-picker.
+"""GitHub "connection" for the dashboard's profile + repo-picker, plus the
+real OAuth App authorization-code flow that produces the server's working
+token.
 
-Not OAuth: WhipGuard already holds a server-side PAT (plan.md §6.1 names this
-as the Tier-0 shortcut for a GitHub App). Building a second, real OAuth flow
-just to re-derive an identity this token already has access to would be
-redundant ceremony for a single-operator demo -- this exposes that existing
-access as a "Connect to GitHub" / profile / repo-picker UI instead of hiding
-it behind a raw env var, which is what made the dashboard feel incomplete.
+The registered app ("Whip") is a GitHub OAuth App, not a GitHub App -- that
+means there is no private key/JWT server-to-server identity available, only
+the standard three-legged OAuth exchange: send the operator to GitHub's
+consent screen, GitHub redirects back here with a one-time `code`, this
+server exchanges it for an access token using github_client_id +
+github_client_secret. That token becomes settings.github_token -- every
+existing github_client.py call site (issue/PR creation, push) reads that
+same field dynamically, so nothing else needed to change.
 """
 
 from __future__ import annotations
 
+import re
+import secrets
+from pathlib import Path
+
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 
 from app.config import settings
@@ -21,10 +30,75 @@ from app.models import Repo
 router = APIRouter(prefix="/api/github")
 
 API_BASE = "https://api.github.com"
+_ENV_PATH = Path(__file__).resolve().parents[3] / ".env"
+
+
+def _persist_github_token(token: str) -> None:
+    """Writes the freshly-exchanged token into settings (for this running
+    process) AND back into .env on disk (so a container restart doesn't lose
+    it and fall back to the empty default -- mirrors exactly what pasting a
+    manually-generated PAT into .env did before this flow existed)."""
+    settings.github_token = token
+    if not _ENV_PATH.exists():
+        return
+    text = _ENV_PATH.read_text()
+    if re.search(r"^GITHUB_TOKEN=.*$", text, flags=re.MULTILINE):
+        text = re.sub(r"^GITHUB_TOKEN=.*$", f"GITHUB_TOKEN={token}", text, flags=re.MULTILINE)
+    else:
+        text += f"\nGITHUB_TOKEN={token}\n"
+    _ENV_PATH.write_text(text)
 
 
 def _headers() -> dict:
     return {"Authorization": f"Bearer {settings.github_token}", "Accept": "application/vnd.github+json"}
+
+
+@router.get("/oauth/start")
+async def oauth_start(request: Request):
+    if not settings.github_client_id:
+        raise HTTPException(400, "GITHUB_CLIENT_ID is not configured")
+    state = secrets.token_urlsafe(24)
+    request.session["github_oauth_state"] = state
+    params = httpx.QueryParams(
+        {
+            "client_id": settings.github_client_id,
+            "redirect_uri": settings.github_oauth_redirect_uri,
+            "scope": "repo",
+            "state": state,
+        }
+    )
+    return RedirectResponse(f"https://github.com/login/oauth/authorize?{params}")
+
+
+@router.get("/oauth/callback")
+async def oauth_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None):
+    if error:
+        return RedirectResponse(f"/connect?github_error={error}")
+    expected_state = request.session.pop("github_oauth_state", None)
+    if not state or not expected_state or not secrets.compare_digest(state, expected_state):
+        return RedirectResponse("/connect?github_error=state_mismatch")
+    if not code:
+        return RedirectResponse("/connect?github_error=missing_code")
+
+    resp = httpx.post(
+        "https://github.com/login/oauth/access_token",
+        headers={"Accept": "application/json"},
+        data={
+            "client_id": settings.github_client_id,
+            "client_secret": settings.github_client_secret,
+            "code": code,
+            "redirect_uri": settings.github_oauth_redirect_uri,
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    token = payload.get("access_token")
+    if not token:
+        return RedirectResponse(f"/connect?github_error={payload.get('error', 'exchange_failed')}")
+
+    _persist_github_token(token)
+    return RedirectResponse("/connect?github_connected=1")
 
 
 @router.get("/profile")
