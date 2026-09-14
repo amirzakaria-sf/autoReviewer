@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type Overview, type IssueSummary } from "@/lib/api";
+import { api, type Overview, type IssueSummary, type HumanInputRequest } from "@/lib/api";
 import { StatusBadge } from "@/components/StatusBadge";
 
 const STATUS_FILTERS = [
@@ -20,17 +20,32 @@ export default function OverviewPage() {
   const [error, setError] = useState<string | null>(null);
   const [repoId, setRepoId] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [clarifications, setClarifications] = useState<HumanInputRequest[]>([]);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
 
   async function refresh() {
     try {
-      const [ov, list, repos] = await Promise.all([api.overview(), api.issues(filter || undefined), api.repos()]);
+      const [ov, list, repos, pending] = await Promise.all([
+        api.overview(),
+        api.issues(filter || undefined),
+        api.repos(),
+        api.pendingClarifications(),
+      ]);
       setOverview(ov);
       setIssues(list);
       if (repos[0]) setRepoId(repos[0].id);
+      setClarifications(pending);
       setError(null);
     } catch (e) {
       setError("Could not reach the WhipGuard API. Is the backend running?");
     }
+  }
+
+  async function submitAnswer(id: string) {
+    const answer = answers[id];
+    if (!answer) return;
+    await api.answerClarification(id, answer);
+    refresh();
   }
 
   async function scanNow() {
@@ -78,6 +93,48 @@ export default function OverviewPage() {
           <StatCard label="Failed" value={overview?.failed} color="red" />
         </div>
       </section>
+
+      {clarifications.length > 0 && (
+        <section className="border border-yellow-800 bg-yellow-950/20 rounded-lg p-4 space-y-4">
+          <h2 className="font-semibold flex items-center gap-2">
+            <span className="badge badge-yellow">Needs your input</span>
+            The council paused instead of guessing ({clarifications.length})
+          </h2>
+          {clarifications.map((c) => (
+            <div key={c.id} className="border-t border-yellow-900/50 pt-3 first:border-t-0 first:pt-0">
+              <p className="text-sm mb-2">{c.question}</p>
+              {c.options ? (
+                <div className="flex flex-wrap gap-2">
+                  {c.options.map((opt) => (
+                    <button
+                      key={opt.id}
+                      onClick={() => api.answerClarification(c.id, opt.label).then(refresh)}
+                      className="text-xs px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20"
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <input
+                    value={answers[c.id] || ""}
+                    onChange={(e) => setAnswers({ ...answers, [c.id]: e.target.value })}
+                    placeholder="Your answer…"
+                    className="flex-1 px-2 py-1.5 text-sm rounded-md bg-black/30 border border-border"
+                  />
+                  <button
+                    onClick={() => submitAnswer(c.id)}
+                    className="text-xs px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20"
+                  >
+                    Answer
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
 
       {inFlight.length > 0 && (
         <section>

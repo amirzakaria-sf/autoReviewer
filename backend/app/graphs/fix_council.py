@@ -1,7 +1,7 @@
-"""FixCouncilGraph (plan.md §8.2):
+"""FixCouncilGraph (plan.md §8.2), now parameterized by category (plan.md §2):
 
 START -> RetrievalNode -> PatchGenerationNode -> VerifierNode -> ArbiterNode
-      -> conditional: score >= threshold?
+      -> conditional: score >= category's resolution threshold?
              yes -> ProposeFixNode(draft PR) -> NotifyNode -> END
              no  -> one bounded retry, then HoldForHumanReviewNode -> END
 """
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import subprocess
 from pathlib import Path
 from typing import Any, TypedDict
@@ -18,14 +17,13 @@ from typing import Any, TypedDict
 from openai import AzureOpenAI
 
 from app import azure_client
-from app.category_rules import UI_CATEGORY_RULES
+from app.categories import CATEGORY_REGISTRY, scope_excludes
 from app.config import settings
+from app.detectors import get_detector
+from app.integrations import context7_client
 from app.prompts import build_prefix, build_volatile_suffix, pad_to_cache_floor
 from app.routers.ws import emit_event
-from app.sandbox.docker_runner import run_in_sandbox
 from app.workspace_map import build_workspace_map
-
-FRONTEND_SCOPE_EXCLUDE = re.compile(r"^(playwright\.config\.ts|tests/)")
 
 MAX_TOOL_ITERATIONS = 8
 REPEAT_NUDGE_THRESHOLD = 3
@@ -59,6 +57,47 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "lookup_docs",
+            "description": (
+                "Look up current, real documentation for a library or framework via Context7 "
+                "-- use this before assuming how an API works, especially for anything that "
+                "changes across versions. Returns real doc text, not a guess from training data."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "library": {"type": "string", "description": "Library/framework name, e.g. 'express' or 'node:test'."},
+                    "topic": {"type": "string", "description": "Optional: narrow the docs to this topic, e.g. 'routing'."},
+                },
+                "required": ["library"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_human",
+            "description": (
+                "Ask a human a clarifying question at a genuine fork -- two materially "
+                "different valid approaches, or a piece of intent the codebase doesn't state "
+                "(a hardcoded value that looks like it should be configurable, but the right "
+                "default is a product decision). Capped per attempt. Every call must state what "
+                "you already considered -- a call with no attempted reasoning is refused."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string"},
+                    "options": {"type": "array", "items": {"type": "string"}, "description": "Optional choices."},
+                    "already_considered": {"type": "string", "description": "What you tried or thought through before asking."},
+                },
+                "required": ["question", "already_considered"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "finish_patch",
             "description": "Call this once you believe the fix is complete and you have run something to check it.",
             "parameters": {
@@ -70,10 +109,19 @@ TOOLS = [
     },
 ]
 
+MAX_ASKS_PER_ATTEMPT = 2
+
 
 class FixCouncilState(TypedDict, total=False):
     worktree_path: str
+    repo_full_name: str
+    repo_id: Any
+    category: str
+    resolution_threshold: int
+    bug_description: str
     touched_files: list[str]
+    similar_chunks: list[dict]
+    dependents: list[dict]
     diff: str
     verifier_result: dict[str, Any]
     score: int
@@ -83,37 +131,76 @@ class FixCouncilState(TypedDict, total=False):
     prior_rejection: str | None
 
 
-def is_in_scope(relative_path: str) -> bool:
-    return not FRONTEND_SCOPE_EXCLUDE.match(relative_path)
-
-
 def retrieval_node(state: FixCouncilState) -> FixCouncilState:
-    """One-hop static import scan — no vector search, no graph DB (plan.md §16).
-    The fixture app is a single vanilla-JS file with no imports, so the touched
-    file IS the whole neighborhood; this still runs the real scan rather than
-    hardcoding that fact, so it generalizes to a repo that does import something.
+    """One-hop static import scan from the category's entry file(s) — no
+    vector search, no graph DB (plan.md §16). Not hardcoded to one fixture
+    file: starts from whichever entry point THIS category's registry row
+    names, so a second category needs a config row, not new retrieval code.
     """
+    import re
+
+    category = state["category"]
     emit_event({"type": "node", "node": "retrieval", "status": "started", "message": "Scanning one-hop imports…"})
     worktree = Path(state["worktree_path"])
-    app_js = worktree / "app.js"
-    touched = ["app.js"]
+    touched: list[str] = []
 
-    content = app_js.read_text()
-    for match in re.finditer(r"""(?:import .* from ['"](.+?)['"]|require\(['"](.+?)['"]\))""", content):
-        imported = match.group(1) or match.group(2)
-        if imported and (worktree / imported).exists():
-            touched.append(imported)
-
-    for other in worktree.glob("*.js"):
-        rel = other.name
-        if rel == "app.js":
+    for entry in CATEGORY_REGISTRY[category].entry_files:
+        entry_path = worktree / entry
+        if not entry_path.exists():
             continue
-        other_content = other.read_text()
-        if "app.js" in other_content or "app'" in other_content:
-            touched.append(rel)
+        touched.append(entry)
+        content = entry_path.read_text()
+        for match in re.finditer(r"""(?:import .* from ['"](.+?)['"]|require\(['"](.+?)['"]\))""", content):
+            imported = match.group(1) or match.group(2)
+            if not imported:
+                continue
+            candidate = (entry_path.parent / imported).resolve()
+            try:
+                rel = candidate.relative_to(worktree.resolve())
+            except ValueError:
+                continue
+            if candidate.exists():
+                touched.append(str(rel))
+
+        for other in entry_path.parent.glob("*.js"):
+            if other.name == Path(entry).name:
+                continue
+            other_content = other.read_text()
+            if Path(entry).stem in other_content:
+                touched.append(str(other.relative_to(worktree)))
+
+    # Vector similarity over code chunks (plan.md §5.2), ALONGSIDE the static
+    # scan above, not instead of it -- the one-hop scan finds what the entry
+    # file structurally imports; this finds what's semantically related but
+    # not import-connected (a helper in a sibling file the bug description
+    # itself points at, a similarly-named function elsewhere in the repo).
+    similar_chunks: list[dict] = []
+    dependents: list[dict] = []
+    if state.get("repo_id"):
+        from app.graph_index import _extract_symbols, find_dependents
+        from app.retrieval import similar_code_chunks
+
+        similar_chunks = similar_code_chunks(state["repo_id"], state.get("bug_description", ""), k=3)
+        for chunk in similar_chunks:
+            if chunk["file_path"] not in touched:
+                touched.append(chunk["file_path"])
+
+        # Graph query (plan.md §5.3): what else CALLS a symbol defined in the
+        # entry file? Blast radius the static import scan can't see (nothing
+        # importing app.js would show up there, but something app.js's own
+        # symbols are called BY would matter to "what might this fix break").
+        for entry in CATEGORY_REGISTRY[category].entry_files:
+            entry_path = worktree / entry
+            if not entry_path.exists():
+                continue
+            for symbol in _extract_symbols(entry_path.read_text()):
+                for dep in find_dependents(state["repo_id"], symbol["name"]):
+                    dependents.append(dep)
+                    if dep["path"] not in touched:
+                        touched.append(dep["path"])
 
     emit_event({"type": "node", "node": "retrieval", "status": "done", "message": f"Touched files: {', '.join(sorted(set(touched)))}"})
-    return {**state, "touched_files": sorted(set(touched))}
+    return {**state, "touched_files": sorted(set(touched)), "similar_chunks": similar_chunks, "dependents": dependents}
 
 
 def _tool_fingerprint(name: str, args: dict) -> str:
@@ -122,27 +209,40 @@ def _tool_fingerprint(name: str, args: dict) -> str:
 
 
 def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
+    category = state["category"]
     emit_event({"type": "node", "node": "patch_generation", "status": "started", "message": "Patch-generation worker (ReAct loop) starting…"})
     worktree = Path(state["worktree_path"])
-    workspace_map = build_workspace_map("amirzakaria-sf/whipguard-demo-ui", state["touched_files"])
+    workspace_map = build_workspace_map(state.get("repo_full_name", ""), state["touched_files"])
 
     system_prompt = pad_to_cache_floor(
         build_prefix(
             role=(
-                "You are a patch-generation worker fixing a UI bug. You have read_file, "
+                f"You are a patch-generation worker fixing a {category} bug. You have read_file, "
                 "write_file, and finish_patch tools. Make the SMALLEST correct change. "
                 "Call finish_patch only after you have actually run something to check your "
                 "change (state what you ran in the summary)."
             ),
             workspace_map=workspace_map,
-            category_rules=UI_CATEGORY_RULES,
+            category_rules=CATEGORY_REGISTRY[category].rules,
         )
     )
-    user_prompt = build_volatile_suffix(
-        "Bug: deleting an item from the list removes the wrong item whenever more than "
-        "one item exists (off-by-one in the delete handler in app.js). Fix it.",
-        prior_attempt_rejection=state.get("prior_rejection"),
+    similar_chunks_text = "\n\n".join(
+        f"--- {c['symbol_name']} (similarity distance {c['distance']:.3f}) ---\n{c['content']}"
+        for c in state.get("similar_chunks", [])
     )
+    task = f"Bug: {state.get('bug_description', 'see evidence in the workspace map')}. Fix it."
+    if similar_chunks_text:
+        # Handed over directly rather than left for a read_file round-trip --
+        # the same "put the answer in the prefix, don't make the model ask
+        # for it" reasoning plan.md §9.4 applies to the workspace map itself.
+        task += f"\n\nSemantically related code found by vector search (context, not necessarily what to change):\n{similar_chunks_text}"
+    dependents = state.get("dependents", [])
+    if dependents:
+        dep_lines = "\n".join(f"- {d['name']} in {d['path']}:{d['line']} ({d['kind']})" for d in dependents)
+        # The graph query's actual answer (plan.md §5.3): don't break these
+        # callers' expectations of the symbol you're about to change.
+        task += f"\n\nOther code that calls symbols in the file(s) you're touching (blast radius -- be careful not to break these):\n{dep_lines}"
+    user_prompt = build_volatile_suffix(task, prior_attempt_rejection=state.get("prior_rejection"))
 
     messages: list[dict] = [
         {"role": "system", "content": system_prompt},
@@ -156,7 +256,7 @@ def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
     )
 
     call_fingerprints: list[str] = []
-    ran_a_check = False
+    asks_used = 0
 
     for _ in range(MAX_TOOL_ITERATIONS):
         response = client.chat.completions.create(
@@ -198,11 +298,70 @@ def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
                 result = content + nudge
             elif name == "write_file":
                 rel_path = args["path"]
-                if not is_in_scope(rel_path):
-                    result = f"REFUSED: {rel_path} is outside the ui category's write scope." + nudge
+                if scope_excludes(category, rel_path):
+                    result = f"REFUSED: {rel_path} is outside the {category} category's write scope." + nudge
                 else:
                     (worktree / rel_path).write_text(args["content"])
                     result = f"wrote {rel_path}" + nudge
+            elif name == "lookup_docs":
+                try:
+                    result = context7_client.lookup(args["library"], topic=args.get("topic", ""), tokens=1500) + nudge
+                except Exception as exc:
+                    # Fails closed for the LOOP, not the whole attempt: a
+                    # docs-lookup failure is a tool-result the model can react
+                    # to (try a different query, proceed without it) — never
+                    # a reason to crash patch generation outright.
+                    result = f"lookup_docs failed: {exc}" + nudge
+            elif name == "ask_human":
+                if not args.get("already_considered"):
+                    # The symmetric policy to evidence-before-claiming-done
+                    # (plan.md §11.6): a call with no attempted reasoning is
+                    # refused with a nudge, not answered.
+                    result = "REFUSED: state what you already considered before asking." + nudge
+                elif asks_used >= MAX_ASKS_PER_ATTEMPT:
+                    result = f"REFUSED: already asked {asks_used} question(s) this attempt (cap: {MAX_ASKS_PER_ATTEMPT}). Proceed with your best judgment." + nudge
+                else:
+                    asks_used += 1
+                    from app.models import HumanInputRequest
+                    from app.db import async_session
+
+                    async def _record_ask():
+                        async with async_session() as db:
+                            options = [{"id": str(i), "label": o} for i, o in enumerate(args.get("options", []))]
+                            db.add(
+                                HumanInputRequest(
+                                    node_name="fix_council.patch_generation",
+                                    kind="single_select" if options else "free_text",
+                                    question=args["question"],
+                                    options=options or None,
+                                    context={"already_considered": args["already_considered"], "category": category},
+                                    thread=[{"from": "agent", "text": args["question"], "at": None}],
+                                )
+                            )
+                            await db.commit()
+
+                    import asyncio as _asyncio
+
+                    try:
+                        _loop = _asyncio.get_event_loop()
+                    except RuntimeError:
+                        _loop = None
+                    if _loop and _loop.is_running():
+                        _asyncio.run_coroutine_threadsafe(_record_ask(), _loop)
+                    # This firing point records the question for visibility
+                    # and audit (dashboard-inspectable, per plan.md §10.5's
+                    # HumanInputRequest schema) but does not block this
+                    # synchronous ReAct loop waiting for a real answer -- a
+                    # true mid-attempt suspend needs a heavier execution model
+                    # than one blocking invoke() call. Named as the real scope
+                    # here rather than hidden: the Bug Council's Arbiter path
+                    # (resume_with_clarification_answer) is where this
+                    # primitive actually blocks and resumes.
+                    result = (
+                        f"Question recorded for a human to see on the dashboard: {args['question']!r}. "
+                        "No answer is available yet in this attempt -- proceed with your best judgment "
+                        "given what you already considered, and note the open question in your summary."
+                    ) + nudge
             elif name == "finish_patch":
                 result = "acknowledged" + nudge
             else:
@@ -221,47 +380,65 @@ def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
     diff_proc = subprocess.run(
         ["git", "diff"], cwd=str(worktree), capture_output=True, text=True, timeout=30
     )
+    diff = diff_proc.stdout
+
+    # Committed here, not left as an uncommitted working-tree change: the
+    # approval flow (runner.py / approval_graph.py) only ever pushes and never
+    # commits -- found by actually pushing a fix once and hitting GitHub's
+    # real "No commits between main and <branch>" 422, because HEAD in the
+    # worktree still pointed at the base commit. "The approved artifact is
+    # the shipped artifact" (plan.md's own approval-flow principle) means
+    # THIS commit, made once at proposal time, is what gets pushed unchanged
+    # on approval -- never regenerated, never re-diffed against a moved HEAD.
+    if diff:
+        subprocess.run(["git", "add", "-A"], cwd=str(worktree), check=True, capture_output=True, text=True)
+        subprocess.run(
+            [
+                "git",
+                "-c", "user.name=WhipGuard",
+                "-c", "user.email=whipguard@whip-guard.zakarias.in",
+                "commit", "-m", f"WhipGuard: fix {category} issue",
+            ],
+            cwd=str(worktree), check=True, capture_output=True, text=True,
+        )
 
     emit_event({"type": "node", "node": "patch_generation", "status": "done", "message": "Patch produced"})
-    return {**state, "diff": diff_proc.stdout}
+    return {**state, "diff": diff}
 
 
 def verifier_node(state: FixCouncilState) -> FixCouncilState:
-    """Actually builds/runs the patched worktree and re-runs the real Playwright
-    suite — reports what happened, never an opinion about what should happen."""
-    emit_event({"type": "node", "node": "verifier", "status": "started", "message": "Building patched branch, re-running Playwright…"})
-    worktree = state["worktree_path"]
-    exit_code, stdout, stderr = run_in_sandbox(
-        worktree, ["npm install --silent && npx playwright test"], timeout_seconds=180
-    )
+    """Actually builds/runs the patched worktree using the SAME category
+    detector that raised the issue — reports what happened, never an opinion
+    about what should happen."""
+    category = state["category"]
+    emit_event({"type": "node", "node": "verifier", "status": "started", "message": f"Building patched branch, re-running {category} detector…"})
+    result = get_detector(category).run(state["worktree_path"])
     emit_event({
         "type": "node", "node": "verifier", "status": "done",
-        "message": "Patched branch passes" if exit_code == 0 else "Patched branch still fails",
+        "message": "Patched branch passes" if not result.failed else "Patched branch still fails",
     })
     return {
         **state,
-        "verifier_result": {
-            "passes": exit_code == 0,
-            "output": stdout[-2000:],
-        },
+        "verifier_result": {"passes": not result.failed, "output": result.assertion_text},
     }
 
 
 def arbiter_node(state: FixCouncilState) -> FixCouncilState:
+    category = state["category"]
     if not state["verifier_result"].get("passes"):
         emit_event({"type": "node", "node": "arbiter", "status": "done", "message": "Score 0 — verifier failed"})
         return {
             **state,
             "score": 0,
-            "rubric": [{"factor": "verifier", "weight": 0, "note": "Playwright still fails after the patch."}],
+            "rubric": [{"factor": "verifier", "weight": 0, "note": "The category's own check still fails after the patch."}],
             "verdict": "Patch does not resolve the original failing assertion.",
         }
 
     prefix = pad_to_cache_floor(
         build_prefix(
             role="You are the Arbiter scoring a proposed FIX. Score 0-100 given the diff and the Verifier's real test result.",
-            workspace_map=build_workspace_map("amirzakaria-sf/whipguard-demo-ui", state["touched_files"]),
-            category_rules=UI_CATEGORY_RULES,
+            workspace_map=build_workspace_map(state.get("repo_full_name", ""), state["touched_files"]),
+            category_rules=CATEGORY_REGISTRY[category].rules,
         )
     )
     suffix = build_volatile_suffix(
@@ -279,7 +456,8 @@ def arbiter_node(state: FixCouncilState) -> FixCouncilState:
 
 
 def route_on_resolution_score(state: FixCouncilState) -> str:
-    if state["score"] >= settings.resolution_threshold:
+    threshold = state.get("resolution_threshold", CATEGORY_REGISTRY[state["category"]].resolution_threshold)
+    if state["score"] >= threshold:
         return "propose"
     return "retry" if state.get("attempt", 1) < 2 else "hold"
 
@@ -303,8 +481,26 @@ def build_fix_council_graph():
     return graph.compile()
 
 
-def run_fix_council(worktree_path: str, attempt: int = 1, prior_rejection: str | None = None) -> FixCouncilState:
+def run_fix_council(
+    worktree_path: str,
+    category: str = "ui",
+    repo_full_name: str = "",
+    repo_id: Any = None,
+    bug_description: str = "",
+    resolution_threshold: int | None = None,
+    attempt: int = 1,
+    prior_rejection: str | None = None,
+) -> FixCouncilState:
     graph = build_fix_council_graph()
     return graph.invoke(
-        {"worktree_path": worktree_path, "attempt": attempt, "prior_rejection": prior_rejection}
+        {
+            "worktree_path": worktree_path,
+            "category": category,
+            "repo_full_name": repo_full_name,
+            "repo_id": repo_id,
+            "bug_description": bug_description,
+            "resolution_threshold": resolution_threshold or CATEGORY_REGISTRY[category].resolution_threshold,
+            "attempt": attempt,
+            "prior_rejection": prior_rejection,
+        }
     )

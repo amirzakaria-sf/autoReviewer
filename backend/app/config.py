@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     azure_worker_deployment: str = ""
     azure_planner_deployment: str = ""
     azure_mechanical_deployment: str = ""
+    azure_embedding_deployment: str = "text-embedding-3-small"
 
     cloudflare_account_id: str = ""
     cloudflare_api_token: str = ""

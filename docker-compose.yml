@@ -1,6 +1,9 @@
 services:
   postgres:
-    image: postgres:16
+    # pgvector, not plain postgres:16 -- same Postgres 16, the pgvector
+    # extension pre-built in. Compatible with the existing data volume (it's
+    # the same base image plus one extension), no migration needed to switch.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: whipguard
       POSTGRES_USER: whipguard

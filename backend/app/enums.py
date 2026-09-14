@@ -6,6 +6,11 @@ class IssueStatus(str, Enum):
     RAISED = "raised"
     FIX_PROPOSED = "fix-proposed"
     CLOSED = "closed"
+    # The Arbiter returned needs_clarification instead of a forced score
+    # (plan.md §10.5) -- held here until a human answers the
+    # HumanInputRequest, then the Arbiter runs again with that answer folded
+    # into context.
+    AWAITING_CLARIFICATION = "awaiting-clarification"
 
 
 class FixStatus(str, Enum):
@@ -17,6 +22,11 @@ class FixStatus(str, Enum):
     VERIFICATION_FAILED = "verification-failed"
     OUTCOME_CHECK_FAILED = "outcome-check-failed"
     REJECTED = "rejected"
+    # A human merged the PR directly on GitHub -- WhipGuard itself never does
+    # this (no merge_pr capability exists, tested directly), but the dashboard
+    # still has to reflect reality once it happens, via the pull_request
+    # webhook (routers/webhooks.py), not stay stuck on a stale "verified".
+    MERGED = "merged"
 
 
 # The one place status ever becomes a GitHub label or a dashboard badge string.
@@ -42,6 +52,11 @@ ISSUE_STATUS_RENDER: dict[IssueStatus, dict] = {
         "github_label": "whipguard:closed",
         "dashboard_badge": "Closed",
         "dashboard_color": "gray",
+    },
+    IssueStatus.AWAITING_CLARIFICATION: {
+        "github_label": "whipguard:awaiting-clarification",
+        "dashboard_badge": "Awaiting your answer",
+        "dashboard_color": "yellow",
     },
 }
 
@@ -85,5 +100,10 @@ FIX_STATUS_RENDER: dict[FixStatus, dict] = {
         "github_label": "whipguard:rejected",
         "dashboard_badge": "Rejected",
         "dashboard_color": "gray",
+    },
+    FixStatus.MERGED: {
+        "github_label": "whipguard:merged",
+        "dashboard_badge": "Merged (by human)",
+        "dashboard_color": "green",
     },
 }

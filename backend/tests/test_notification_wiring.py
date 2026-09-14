@@ -80,12 +80,23 @@ class _FakeDB:
 def _bug_council_patches(mock_record_condition):
     """Patches for everything run_and_persist's graph touches besides the
     scoring itself, mirroring tests/test_bug_council_graph.py's own patch set."""
+    from app.categories import DetectionResult
+
+    mock_detector = MagicMock()
+    mock_detector.run.return_value = DetectionResult(failed=True, assertion_text="assertion failed here")
+
+    mock_azure = MagicMock()
+    mock_skeptic_opinion = MagicMock(confidence=10, transcript="looks real")
+    mock_corroborator_opinion = MagicMock(confidence=90, transcript="mechanical evidence supports it")
+    mock_azure.call_skeptic_opinion.return_value = mock_skeptic_opinion
+    mock_azure.call_corroborator_opinion.return_value = mock_corroborator_opinion
+
     return (
-        patch("app.graphs.bug_council.run_in_sandbox", return_value=(1, "assertion failed here", "")),
+        patch("app.graphs.bug_council.get_detector", return_value=mock_detector),
         patch("app.graphs.bug_council.ensure_mirror"),
         patch("app.graphs.bug_council.create_worktree"),
         patch("app.graphs.bug_council.remove_worktree"),
-        patch("app.graphs.bug_council.azure_client"),
+        patch("app.graphs.bug_council.azure_client", mock_azure),
         patch("app.integrations.github_client.create_issue", return_value=101),
         patch("app.notifications.record_condition", new_callable=AsyncMock, side_effect=mock_record_condition),
         patch("app.integrations.slack_client.post_message", return_value="1700000000.000100"),
@@ -97,6 +108,7 @@ def _above_threshold_verdict():
     verdict.score = 92
     verdict.factors = []
     verdict.verdict = "clear bug"
+    verdict.needs_clarification = None
     return verdict
 
 
@@ -108,7 +120,7 @@ async def test_bug_raised_notifies_immediately_on_first_occurrence():
     a second occurrence (as an ordinary condition_key would) means this would
     never fire in production, since occurrence_count of a fresh UUID never
     reaches 2 — this is why bug_council.py passes is_escalation=True."""
-    repo = types.SimpleNamespace(id=uuid.uuid4(), github_full_name="acme/demo")
+    repo = types.SimpleNamespace(id=uuid.uuid4(), github_full_name="acme/demo", thresholds=None)
     db = _FakeDB()
     record_condition_fake = _make_record_condition_fake()
 
@@ -132,7 +144,7 @@ async def test_bug_raised_empty_slack_token_does_not_crash_the_flow():
     """No live Slack app configured yet (slack_bot_token == '') -- issue
     creation must still succeed without raising, and without a real Slack call
     succeeding (mirrors the approval-flow empty-token test below)."""
-    repo = types.SimpleNamespace(id=uuid.uuid4(), github_full_name="acme/demo")
+    repo = types.SimpleNamespace(id=uuid.uuid4(), github_full_name="acme/demo", thresholds=None)
     db = _FakeDB()
     record_condition_fake = _make_record_condition_fake()
 

@@ -58,8 +58,28 @@ def _fix_dict(fix: Fix) -> dict:
 
 @router.get("/overview")
 async def overview(db: AsyncSession = Depends(get_db)):
-    raised = (await db.execute(select(func.count()).select_from(Issue).where(Issue.status == IssueStatus.RAISED))).scalar()
-    verified = (await db.execute(select(func.count()).select_from(Fix).where(Fix.status == FixStatus.VERIFIED))).scalar()
+    # "Raised by AI" is cumulative -- every issue that ever cleared the
+    # assurance threshold, not just ones currently stuck in the bare RAISED
+    # state before a fix got proposed (which undercounted the moment a fix
+    # moved it on to FIX_PROPOSED or CLOSED -- the actual raised->approved->
+    # resolved flow this counter is supposed to represent end to end).
+    raised = (
+        await db.execute(
+            select(func.count()).select_from(Issue).where(
+                Issue.status.in_([IssueStatus.RAISED, IssueStatus.FIX_PROPOSED, IssueStatus.CLOSED])
+            )
+        )
+    ).scalar()
+    # MERGED counts as resolved too -- a human merging the PR directly on
+    # GitHub is a real resolution (plan.md's forbidden-action rule is that
+    # WHIPGUARD never merges, not that a human can't), and this is the exact
+    # count that read "0" while a merged fix sat unrecognized before the
+    # pull_request webhook synced it back.
+    verified = (
+        await db.execute(
+            select(func.count()).select_from(Fix).where(Fix.status.in_([FixStatus.VERIFIED, FixStatus.MERGED]))
+        )
+    ).scalar()
     awaiting = (await db.execute(select(func.count()).select_from(Fix).where(Fix.status == FixStatus.AWAITING_APPROVAL))).scalar()
     failed = (
         await db.execute(
@@ -157,25 +177,30 @@ async def reject_fix(fix_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/repos/{repo_id}/scan")
-async def scan_repo(repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Manual trigger for the Bug Council — fire-and-forget so several scans (or
-    a scan plus in-flight fixes) can run concurrently, never queued one at a
-    time (plan.md §15)."""
+async def scan_repo(repo_id: uuid.UUID, category: str | None = None, db: AsyncSession = Depends(get_db)):
+    """Manual trigger for the Bug Council — fans out one independent task per
+    enabled category (plan.md §10.1's RepoWatchGraph fan-out), fire-and-forget
+    so several categories (and several repos) run concurrently, never queued
+    one at a time (plan.md §15). Pass `category` to scan just one."""
+    from app.categories import enabled_categories_for
     from app.graphs.bug_council import run_and_persist
 
     repo = await db.get(Repo, repo_id)
     if not repo:
         raise HTTPException(404, "repo not found")
 
-    async def _run():
+    categories = [category] if category else enabled_categories_for(repo)
+
+    async def _run(cat: str):
         from app.db import async_session
 
         async with async_session() as scoped_db:
             fresh_repo = await scoped_db.get(Repo, repo_id)
-            await run_and_persist(scoped_db, fresh_repo)
+            await run_and_persist(scoped_db, fresh_repo, category=cat)
 
-    asyncio.create_task(_run())
-    return {"ok": True, "message": "scan started"}
+    for cat in categories:
+        asyncio.create_task(_run(cat))
+    return {"ok": True, "message": f"scan started for categories: {', '.join(categories)}"}
 
 
 @router.post("/issues/{issue_id}/trigger-fix")

@@ -94,7 +94,22 @@ export type GithubRepo = {
   connected: boolean;
 };
 
+export type HumanInputRequest = {
+  id: string;
+  issue_id: string | null;
+  fix_id: string | null;
+  node_name: string;
+  kind: string;
+  question: string;
+  options: { id: string; label: string }[] | null;
+  status: string;
+  created_at: string | null;
+};
+
 export const api = {
+  pendingClarifications: () => getJSON<HumanInputRequest[]>("/api/human-input?status=pending"),
+  answerClarification: (id: string, answer: string) =>
+    postJSON<{ ok: boolean }>(`/api/human-input/${id}/answer`, { answer }),
   overview: () => getJSON<Overview>("/api/overview"),
   issues: (status?: string) => getJSON<IssueSummary[]>(`/api/issues${status ? `?status=${status}` : ""}`),
   issue: (id: string) => getJSON<IssueSummary & { fixes: FixSummary[] }>(`/api/issues/${id}`),

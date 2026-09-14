@@ -12,7 +12,7 @@ import uuid
 from app.db import async_session
 from app.enums import FIX_STATUS_RENDER, FixStatus, IssueStatus
 from app.integrations import github_client, slack_client
-from app.models import Fix, Issue
+from app.models import Fix, Issue, Repo
 from app.routers.ws import emit_event
 from app.sandbox.worktree import create_worktree, ensure_mirror
 
@@ -20,32 +20,49 @@ logger = logging.getLogger("whipguard.runner")
 
 
 async def trigger_fix_council(issue_id: uuid.UUID) -> None:
-    from app.graphs.fix_council import build_fix_council_graph
+    from app.categories import resolution_threshold_for
     from app.config import settings
+    from app.graphs.fix_council import build_fix_council_graph
 
     async with async_session() as db:
         issue = await db.get(Issue, issue_id)
         if issue is None:
             return
 
+        repo = await db.get(Repo, issue.repo_id)
+        category = issue.category
+        threshold = resolution_threshold_for(repo, category) if repo else settings.resolution_threshold
         repo_full_name = settings.fixture_repo
         slug = f"issue-{issue.github_issue_number}"
+
+        evidence_text = (issue.evidence or {}).get("assertion_text", "")
+        bug_description = f"{issue.title}. Evidence: {evidence_text[:500]}" if evidence_text else issue.title
 
         mirror = ensure_mirror(repo_full_name)
         worktree = create_worktree(mirror, issue.github_issue_number or 0, slug)
 
         try:
-            emit_event({"type": "run", "kind": "fix_council", "status": "started", "message": f"Fix Council working on: {issue.title}"})
+            emit_event({"type": "run", "kind": "fix_council", "status": "started", "message": f"Fix Council ({category}) working on: {issue.title}"})
             graph = build_fix_council_graph()
             # Blocking sync I/O throughout (Azure calls, subprocess, sandbox
             # runs) -- off the event loop thread, so several of these firing
             # from the poller/dashboard genuinely run at the same time instead
             # of serializing behind one blocked loop.
             result = await asyncio.to_thread(
-                graph.invoke, {"worktree_path": str(worktree), "attempt": 1, "prior_rejection": None}
+                graph.invoke,
+                {
+                    "worktree_path": str(worktree),
+                    "category": category,
+                    "repo_full_name": repo_full_name,
+                    "repo_id": repo.id if repo else None,
+                    "bug_description": bug_description,
+                    "resolution_threshold": threshold,
+                    "attempt": 1,
+                    "prior_rejection": None,
+                },
             )
 
-            proposed = result["score"] >= settings.resolution_threshold
+            proposed = result["score"] >= threshold
             emit_event({
                 "type": "run", "kind": "fix_council", "status": "done",
                 "message": f"Fix proposed (score {result['score']})" if proposed else "No fix proposed (below threshold)",
@@ -69,7 +86,7 @@ async def trigger_fix_council(issue_id: uuid.UUID) -> None:
                     "main",
                     f"Fix for #{issue.github_issue_number}",
                     f"Closes #{issue.github_issue_number}\n\nAutomated fix. Resolution score: {result.get('score')}/100.\n\n```diff\n{result.get('diff', '')}\n```",
-                    ["whipguard:fix-proposed", "whipguard:awaiting-approval"],
+                    ["whipguard:fix-proposed", "whipguard:awaiting-approval", f"whipguard:category/{category}"],
                 )
                 fix.pr_number = pr_number
                 issue.status = IssueStatus.FIX_PROPOSED

@@ -10,7 +10,7 @@ from app import models  # noqa: F401  (registers tables on Base.metadata)
 from app.config import settings
 from app.db import Base, engine
 from app.poller import poll_for_externally_filed_bugs
-from app.routers import api, auth, github, webhooks, ws
+from app.routers import api, auth, github, human_input, webhooks, ws
 
 # Paths callable without a session: the login endpoint itself, GitHub/Slack's
 # own servers (they don't carry this app's session cookie), and the container
@@ -61,6 +61,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(api.router)
 app.include_router(github.router)
+app.include_router(human_input.router)
 app.include_router(webhooks.router)
 app.include_router(ws.router)
 

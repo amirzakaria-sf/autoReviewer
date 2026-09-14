@@ -24,19 +24,20 @@ def test_retry_stable_prefix_is_byte_identical_across_attempts(tmp_path):
         response.choices = [MagicMock(message=finish_message)]
         return response
 
-    with (
-        patch("app.graphs.fix_council.AzureOpenAI") as mock_client_cls,
-        patch("app.graphs.fix_council.run_in_sandbox", return_value=(0, "", "")),
-    ):
+    with patch("app.graphs.fix_council.AzureOpenAI") as mock_client_cls:
         mock_client = MagicMock()
         mock_client.chat.completions.create.side_effect = fake_create
         mock_client_cls.return_value = mock_client
 
-        state1 = {"worktree_path": str(tmp_path), "touched_files": ["app.js"], "attempt": 1, "prior_rejection": None}
+        state1 = {
+            "worktree_path": str(tmp_path), "category": "ui", "touched_files": ["app.js"],
+            "attempt": 1, "prior_rejection": None,
+        }
         patch_generation_node(state1)
 
         state2 = {
             "worktree_path": str(tmp_path),
+            "category": "ui",
             "touched_files": ["app.js"],
             "attempt": 2,
             "prior_rejection": "patch touched the add handler too, out of scope",
