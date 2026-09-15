@@ -22,6 +22,7 @@ from app.models import Fix, Issue, Repo
 from app.notifications import mark_notified, record_condition, should_notify
 from app.routers.ws import emit_event
 from app.sandbox.docker_runner import run_in_sandbox
+from app.sandbox.worktree import repo_slug
 
 logger = logging.getLogger("whipguard.approval_graph")
 
@@ -114,7 +115,7 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
     # containerized layouts (backend/ is nested locally, but IS the container
     # root at /srv), so deriving it here separately drifted from worktree.py's
     # own fix for the identical problem.
-    worktree_path = Path(settings.workspace_root) / issue_repo_slug(issue) / "fixes" / fix.branch_name.split("/")[-1]
+    worktree_path = Path(settings.workspace_root) / repo_slug(repo.github_full_name) / "fixes" / fix.branch_name.split("/")[-1]
 
     # Freshness check: has the base branch moved since the patch was generated?
     # If so, re-verify before applying rather than force-applying a stale diff.
@@ -143,8 +144,14 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
     base_moved = rebase_check.returncode != 0
 
     if base_moved:
+        # pnpm + shared store, not `npm install --silent` -- same fix as
+        # every other install site in this codebase (app/detectors/ui.py
+        # explains both the store and the --silent-swallows-real-errors bug
+        # in full).
         exit_code, _, _ = await asyncio.to_thread(
-            run_in_sandbox, str(worktree_path), ["npm install --silent && npx playwright test"]
+            run_in_sandbox,
+            str(worktree_path),
+            ["npx --yes pnpm@9 install --store-dir=/pnpm-store --reporter=append-only && npx playwright test"],
         )
         if exit_code != 0:
             fix.status = FixStatus.VERIFICATION_FAILED
@@ -319,7 +326,3 @@ async def _run_outcome_check(
     )
     await db.commit()
     return outcome
-
-
-def issue_repo_slug(issue: Issue) -> str:
-    return "amirzakaria-sf__whipguard-demo-ui"

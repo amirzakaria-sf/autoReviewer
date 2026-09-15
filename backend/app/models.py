@@ -23,6 +23,14 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(sa.String, nullable=False)
     role: Mapped[UserRole] = mapped_column(sa.Enum(UserRole, name="user_role"), default=UserRole.MEMBER)
     status: Mapped[UserStatus] = mapped_column(sa.Enum(UserStatus, name="user_status"), default=UserStatus.ACTIVE)
+    first_name: Mapped[str | None] = mapped_column(sa.String, nullable=True)
+    last_name: Mapped[str | None] = mapped_column(sa.String, nullable=True)
+    mobile_number: Mapped[str | None] = mapped_column(sa.String, nullable=True)
+    # Set the moment the user either connects something or explicitly skips
+    # the first-login onboarding modal (routers/api.py's /me/onboarding) --
+    # null is exactly "never decided yet", which is what gates the modal,
+    # not a separate boolean that could drift out of sync with this.
+    onboarding_completed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     approved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True)

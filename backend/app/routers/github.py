@@ -117,6 +117,17 @@ async def profile():
     }
 
 
+@router.post("/disconnect")
+async def disconnect():
+    """Clears the server-wide GitHub token (OAuth token or App identity --
+    whichever _headers() would have used). This is a single shared
+    credential, not per-user, so disconnecting affects every repo's GitHub
+    writes until someone reconnects -- the same scope the Connect button
+    itself already operates at."""
+    _persist_github_token("")
+    return {"ok": True}
+
+
 @router.get("/repos")
 async def list_repos():
     if not settings.github_token:

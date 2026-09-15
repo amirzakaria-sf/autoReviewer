@@ -42,10 +42,37 @@ def _host_path(worktree_path: str) -> str:
     return worktree_path
 
 
+# A pnpm content-addressable store, shared across every sandbox invocation for
+# every category/fix/repo -- every detector that installs JS deps (ui.py,
+# accessibility.py) uses `pnpm install --store-dir=/pnpm-store` instead of
+# `npm install`, so a package already resolved once (by ANY worktree, for ANY
+# repo) is never re-downloaded again. Verified live: a cold install took 26s;
+# a second worktree reusing this same store took ~2s, "reused 88, downloaded
+# 0". Filesystem-level hardlink deduplication of node_modules itself did NOT
+# work in this environment despite the store and worktrees sharing a device
+# (found by actually comparing inodes after forcing
+# --package-import-method=hardlink, not by assuming pnpm's docs applied
+# unmodified here) -- each worktree's node_modules is still a real,
+# undeduplicated copy on disk. The network/CPU savings are real and kept;
+# the disk-bloat problem this was ALSO meant to solve still has to be solved
+# by prompt worktree cleanup (webhooks.py deletes a fix's worktree once its
+# PR merges), not by this store.
+_PNPM_STORE_HOST_PATH = os.path.join(settings.workspace_host_path or settings.workspace_root, ".pnpm-store")
+PNPM_STORE_CONTAINER_PATH = "/pnpm-store"
+
+
 def run_in_sandbox(
     worktree_path: str, command: list[str], timeout_seconds: int = 300
 ) -> tuple[int, str, str]:
     mount_source = _host_path(worktree_path)
+    # Created by THIS process, which runs as root in the containerized
+    # deployment -- same class of bug as worktree.py's own chown (a
+    # root-created directory blocks the non-root sandbox from writing into
+    # it at all), so this needs the identical fix.
+    store_dir = os.path.join(settings.workspace_root, ".pnpm-store")
+    if not os.path.isdir(store_dir):
+        os.makedirs(store_dir, exist_ok=True)
+        os.chown(store_dir, int(SANDBOX_UID), int(SANDBOX_GID))
 
     docker_command = [
         "docker",
@@ -57,6 +84,8 @@ def run_in_sandbox(
         "HOME=/tmp",
         "-v",
         f"{mount_source}:/work",
+        "-v",
+        f"{_PNPM_STORE_HOST_PATH}:{PNPM_STORE_CONTAINER_PATH}",
         "-w",
         "/work",
         SANDBOX_IMAGE,

@@ -63,3 +63,37 @@ def get_deployment_status(project_name: str) -> dict:
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def delete_deployments_for_branch(project_name: str, branch: str) -> int:
+    """Deletes every live deployment for one branch -- called once a fix's
+    PR merges (webhooks.py), so a preview nobody will ever look at again
+    doesn't sit there indefinitely. Cloudflare Pages has no "delete by
+    branch" endpoint; this lists deployments and filters on
+    deployment_trigger.metadata.branch (verified against this project's
+    real deployment list before writing this, not assumed from docs), then
+    deletes each matching id with force=true (a deployment can be the
+    current alias target for that branch, which DELETE refuses without it).
+    Returns how many were actually deleted."""
+    resp = httpx.get(
+        f"{API_BASE}/accounts/{settings.cloudflare_account_id}/pages/projects/{project_name}/deployments",
+        headers={"Authorization": f"Bearer {settings.cloudflare_api_token}"},
+        params={"per_page": 50},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    deployments = resp.json().get("result", [])
+    matching = [d for d in deployments if d.get("deployment_trigger", {}).get("metadata", {}).get("branch") == branch]
+
+    deleted = 0
+    for deployment in matching:
+        delete_resp = httpx.delete(
+            f"{API_BASE}/accounts/{settings.cloudflare_account_id}/pages/projects/{project_name}/deployments/{deployment['id']}",
+            headers={"Authorization": f"Bearer {settings.cloudflare_api_token}"},
+            params={"force": "true"},
+            timeout=15,
+        )
+        delete_resp.raise_for_status()
+        if delete_resp.json().get("success"):
+            deleted += 1
+    return deleted

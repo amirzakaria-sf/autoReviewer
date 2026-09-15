@@ -1,5 +1,13 @@
 FROM python:3.12-slim
 
+# uv, not pip -- a real dependency resolver with a persistent, content-
+# addressable cache (this stage's own layer cache still short-circuits an
+# unchanged pyproject.toml either way, but a rebuild AFTER a real dependency
+# change resolves and installs meaningfully faster with uv than pip). The
+# static-binary COPY-from-image pattern is uv's own documented Docker
+# approach -- no curl/install-script, no extra apt package.
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /usr/local/bin/uv
+
 WORKDIR /srv
 
 # docker-runner.py shells out to `docker run` against the mounted host socket —
@@ -18,7 +26,7 @@ RUN apt-get update \
 COPY pyproject.toml ./
 COPY app ./app
 
-RUN pip install --no-cache-dir . \
+RUN uv pip install --system --no-cache . \
     && playwright install --with-deps chromium
 
 EXPOSE 8300

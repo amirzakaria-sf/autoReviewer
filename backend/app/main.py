@@ -14,7 +14,7 @@ from app.db import Base, async_session, engine
 from app.enums import UserRole, UserStatus
 from app.models import User
 from app.poller import poll_for_externally_filed_bugs
-from app.routers import admin, api, auth, email_actions, github, human_input, slack_connect, webhooks, ws
+from app.routers import admin, api, auth, email_actions, github, human_input, me, slack_connect, webhooks, ws
 from app.security import decode_access_token, hash_password
 from app.stuck_run_sweeper import sweep_stuck_runs
 
@@ -104,6 +104,7 @@ app.include_router(api.router)
 app.include_router(email_actions.router)
 app.include_router(github.router)
 app.include_router(human_input.router)
+app.include_router(me.router)
 app.include_router(slack_connect.router)
 app.include_router(webhooks.router)
 app.include_router(ws.router)

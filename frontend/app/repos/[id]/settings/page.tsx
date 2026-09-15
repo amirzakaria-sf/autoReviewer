@@ -16,6 +16,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [slackNotice, setSlackNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [disconnectingSlack, setDisconnectingSlack] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -55,6 +56,17 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
 
   function patchCategory(key: string, field: keyof CategorySetting, value: unknown) {
     patch({ categories: { [key]: { [field]: value } } });
+  }
+
+  async function disconnectSlack() {
+    if (!confirm("Disconnect Slack from this repo? Fix-proposed and escalation messages will stop posting until reconnected.")) return;
+    setDisconnectingSlack(true);
+    try {
+      await api.disconnectSlack(id);
+      await refresh();
+    } finally {
+      setDisconnectingSlack(false);
+    }
   }
 
   if (error) return <div className="badge badge-red">{error}</div>;
@@ -113,9 +125,14 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
                 <div className="text-xs text-gray-500">{settings.slack_channel_name ? `#${settings.slack_channel_name}` : settings.slack_channel_id}</div>
               </div>
             </div>
-            <a href={`/api/slack/oauth/start?repo_id=${id}`} className="btn btn-ghost px-3 py-1.5 text-xs">
-              Change channel
-            </a>
+            <div className="flex gap-2">
+              <a href={`/api/slack/oauth/start?repo_id=${id}`} className="btn btn-ghost px-3 py-1.5 text-xs">
+                Change channel
+              </a>
+              <button onClick={disconnectSlack} disabled={disconnectingSlack} className="btn btn-danger px-3 py-1.5 text-xs">
+                {disconnectingSlack ? "…" : "Disconnect"}
+              </button>
+            </div>
           </div>
         ) : (
           <div className="flex items-center justify-between p-3.5 rounded-lg bg-white/[0.02] border border-border">

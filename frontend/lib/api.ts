@@ -163,7 +163,22 @@ export type HumanInputRequest = {
   created_at: string | null;
 };
 
-export type SessionInfo = { authenticated: boolean; email?: string; role?: "admin" | "member" };
+export type SessionInfo = {
+  authenticated: boolean;
+  email?: string;
+  role?: "admin" | "member";
+  onboarding_completed?: boolean;
+};
+
+export type MyProfile = {
+  email: string;
+  first_name: string | null;
+  last_name: string | null;
+  mobile_number: string | null;
+  role: "admin" | "member";
+  onboarding_completed: boolean;
+  created_at: string | null;
+};
 
 export type AdminUser = {
   id: string;
@@ -272,6 +287,16 @@ export const api = {
   githubProfile: () => getJSON<GithubProfile>("/api/github/profile"),
   githubRepos: () => getJSON<GithubRepo[]>("/api/github/repos"),
   connectRepo: (full_name: string) => postJSON<{ ok: boolean; repo_id: string }>("/api/github/connect", { full_name }),
+  disconnectGithub: () => postJSON<{ ok: boolean }>("/api/github/disconnect"),
+  disconnectSlack: (repoId: string) => postJSON<{ ok: boolean }>(`/api/slack/disconnect?repo_id=${repoId}`),
+
+  me: () => getJSON<MyProfile>("/api/me"),
+  updateMe: (patch: { first_name?: string; last_name?: string; mobile_number?: string }) =>
+    patchJSON<{ ok: boolean; profile: MyProfile }>("/api/me", patch),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    postJSON<{ ok: boolean }>("/api/me/password", { current_password: currentPassword, new_password: newPassword }),
+  completeOnboarding: () => postJSON<{ ok: boolean }>("/api/me/onboarding/complete"),
+
   wsUrl: () => {
     if (API_BASE) return API_BASE.replace(/^http/, "ws") + "/ws/activity";
     const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss" : "ws";

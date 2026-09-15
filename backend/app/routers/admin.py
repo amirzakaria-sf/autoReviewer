@@ -304,11 +304,21 @@ async def redeploy_status():
     reachable -- during the brief window where the sibling container
     (deploy.sh) is swapping the backend for a freshly-built one, this
     endpoint simply won't answer, which the frontend's poll loop reads as
-    "still swapping," not as an error to surface."""
+    "still swapping," not as an error to surface.
+
+    Keys off the HANDOFF line, not deploy.sh's own final "finished OK" --
+    when deploy.sh is launched detached (this trigger, not a human running
+    it from their own CLI), the copy of the script doing the handoff is
+    running INSIDE the old container, which gets torn down moments later;
+    it never survives to print a final line, health-check loop included.
+    The handoff line is the last thing guaranteed to be written by the
+    process that's still alive to write it -- build and the frontend swap
+    already succeeded by the time it's reached (set -euo pipefail would
+    have aborted the script, and the log, before then otherwise)."""
     if not DEPLOY_LOG_PATH.exists():
         return {"running": False, "log": None}
     log_text = DEPLOY_LOG_PATH.read_text()[-8000:]
-    dispatched = "redeploy dispatched OK" in log_text
+    dispatched = "handing the backend swap" in log_text or "deploy finished OK" in log_text
     return {"running": not dispatched, "succeeded": dispatched, "log": log_text}
 
 

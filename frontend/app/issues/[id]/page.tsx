@@ -112,20 +112,22 @@ export default function IssueDetailPage({ params }: { params: Promise<{ id: stri
           </div>
 
           {fix.status === "awaiting-approval" && (
-            <div className="flex gap-2 pt-2">
+            <div className="flex gap-3 pt-3">
               <button
                 disabled={acting}
                 onClick={() => act("approve")}
-                className="px-4 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
+                className="group flex-1 flex items-center justify-center gap-2 px-5 py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-b from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 shadow-[0_1px_0_rgba(255,255,255,0.15)_inset,0_4px_14px_rgba(16,185,129,0.35)] hover:shadow-[0_1px_0_rgba(255,255,255,0.2)_inset,0_6px_20px_rgba(16,185,129,0.5)] transition-all disabled:opacity-50 disabled:pointer-events-none active:scale-[0.98]"
               >
-                Approve
+                <span className="text-base group-disabled:hidden">✓</span>
+                {acting ? "Working…" : "Approve"}
               </button>
               <button
                 disabled={acting}
                 onClick={() => act("reject")}
-                className="px-4 py-1.5 rounded-md bg-red-600/80 hover:bg-red-500 text-sm font-medium disabled:opacity-50"
+                className="group flex-1 flex items-center justify-center gap-2 px-5 py-3 rounded-xl text-sm font-semibold text-red-100 bg-gradient-to-b from-red-500/90 to-red-600/90 hover:from-red-500 hover:to-red-600 shadow-[0_1px_0_rgba(255,255,255,0.1)_inset,0_4px_14px_rgba(239,68,68,0.25)] hover:shadow-[0_1px_0_rgba(255,255,255,0.15)_inset,0_6px_20px_rgba(239,68,68,0.4)] transition-all disabled:opacity-50 disabled:pointer-events-none active:scale-[0.98]"
               >
-                Reject
+                <span className="text-base group-disabled:hidden">✕</span>
+                {acting ? "Working…" : "Reject"}
               </button>
             </div>
           )}

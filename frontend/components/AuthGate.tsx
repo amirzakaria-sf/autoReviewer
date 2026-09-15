@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { api, type SessionInfo } from "@/lib/api";
+import { OnboardingModal } from "./OnboardingModal";
 
 // The marketing landing page ("/"), login, and signup need no session at
 // all -- everything else (the actual dashboard) is gated.
@@ -17,6 +18,7 @@ export function useSession() {
 export function AuthGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<"checking" | "authed" | "anon">("checking");
   const [session, setSession] = useState<SessionInfo>({ authenticated: false });
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
   const isPublic = PUBLIC_PATHS.includes(pathname);
@@ -54,5 +56,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
       </div>
     );
   }
-  return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>;
+  const showOnboarding = !isPublic && session.authenticated && session.onboarding_completed === false && !onboardingDismissed;
+
+  return (
+    <SessionContext.Provider value={session}>
+      {children}
+      {showOnboarding && <OnboardingModal onDone={() => setOnboardingDismissed(true)} />}
+    </SessionContext.Provider>
+  );
 }

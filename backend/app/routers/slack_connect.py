@@ -125,3 +125,17 @@ async def oauth_callback(code: str | None = None, state: str | None = None, erro
             return RedirectResponse(f"/repos/{repo.id}/settings?slack_connected=1")
 
     return RedirectResponse("/connect?slack_error=repo_not_found")
+
+
+@router.post("/disconnect")
+async def disconnect(repo_id: uuid.UUID):
+    """Clears just this repo's channel selection -- the workspace bot token
+    itself stays put (it isn't per-repo, and other repos may still use it)."""
+    async with async_session() as db:
+        repo = await db.get(Repo, repo_id)
+        if not repo:
+            raise HTTPException(404, "repo not found")
+        repo.slack_channel_id = None
+        repo.slack_channel_name = None
+        await db.commit()
+    return {"ok": True}

@@ -29,12 +29,12 @@ _SANDBOX_UID = int(os.environ.get("SANDBOX_UID", "1000"))
 _SANDBOX_GID = int(os.environ.get("SANDBOX_GID", "1000"))
 
 
-def _repo_slug(github_full_name: str) -> str:
+def repo_slug(github_full_name: str) -> str:
     return github_full_name.replace("/", "__")
 
 
 def mirror_path(github_full_name: str) -> Path:
-    return WORKSPACE_ROOT / _repo_slug(github_full_name) / "mirror"
+    return WORKSPACE_ROOT / repo_slug(github_full_name) / "mirror"
 
 
 def ensure_mirror(github_full_name: str) -> Path:

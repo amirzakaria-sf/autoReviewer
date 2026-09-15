@@ -98,6 +98,12 @@ export function HeaderBar() {
                     {session.email}
                     {session.role === "admin" && <span className="badge badge-accent ml-1.5">admin</span>}
                   </div>
+                  <a
+                    href="/profile"
+                    className="block w-full text-left px-2.5 py-1.5 rounded-md text-sm text-gray-300 hover:bg-white/5 hover:text-white transition"
+                  >
+                    Profile
+                  </a>
                   <button
                     onClick={logout}
                     className="w-full text-left px-2.5 py-1.5 rounded-md text-sm text-gray-300 hover:bg-white/5 hover:text-white transition"

@@ -12,12 +12,15 @@ class AccessibilityDetector:
     color-contrast violation in the fixture app before this was wired in."""
 
     def run(self, worktree_path: str) -> DetectionResult:
-        # Not `npm install --silent` -- see ui.py's UiDetector for the exact
-        # failure that flag caused here (a real EACCES on package-lock.json
-        # coming back as an opaque, contentless exit 243).
+        # pnpm + shared store (docker_runner.py) -- see UiDetector for why.
+        # Not `--silent`: see UiDetector for the exact opaque-exit-243 bug
+        # a quiet install caused here before.
         exit_code, stdout, stderr = run_in_sandbox(
             worktree_path,
-            ["npm install --no-audit --no-fund --loglevel=error && npx playwright test tests/accessibility.spec.ts"],
+            [
+                'npx --yes pnpm@9 install --store-dir=/pnpm-store --reporter=append-only '
+                "&& npx playwright test tests/accessibility.spec.ts"
+            ],
             timeout_seconds=180,
         )
         return DetectionResult(

@@ -194,12 +194,18 @@ async def complete_invite(request: Request, response: Response):
         # account is actually created instead of when it's requested.
         is_first_user = (await db.execute(select(User.id).limit(1))).scalars().first() is None
 
+        name_parts = access_request.name.strip().split(maxsplit=1)
+        first_name = name_parts[0] if name_parts else None
+        last_name = name_parts[1] if len(name_parts) > 1 else None
+
         user = User(
             email=access_request.email,
             password_hash=hash_password(password),
             role=UserRole.ADMIN if is_first_user else UserRole.MEMBER,
             status=UserStatus.ACTIVE,
             approved_by=access_request.decided_by,
+            first_name=first_name,
+            last_name=last_name,
         )
         db.add(user)
         access_request.invite_consumed_at = datetime.now(timezone.utc)
@@ -309,4 +315,9 @@ async def session_status(request: Request):
         user = await db.get(User, uuid.UUID(decoded["sub"]))
         if not user or user.status != UserStatus.ACTIVE:
             return {"authenticated": False}
-        return {"authenticated": True, "email": user.email, "role": user.role.value}
+        return {
+            "authenticated": True,
+            "email": user.email,
+            "role": user.role.value,
+            "onboarding_completed": user.onboarding_completed_at is not None,
+        }

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
@@ -127,11 +128,41 @@ async def _handle_pull_request(db: AsyncSession, payload: dict) -> None:
             except Exception:
                 logger.exception("could not delete merged branch %s on %s", fix.branch_name, repo_full_name)
 
+            # A merged fix's preview and local worktree exist purely to be
+            # reviewed before/around the merge -- nobody looks at either
+            # again afterward, and every one left behind is real disk
+            # (worktree: node_modules, playwright browsers already installed
+            # via the sandbox mount) or a live Cloudflare deployment nobody
+            # asked to keep running.
+            try:
+                from app.config import settings
+                from app.integrations import cloudflare_client
+
+                deleted = await asyncio.to_thread(
+                    cloudflare_client.delete_deployments_for_branch, settings.cloudflare_pages_project, fix.branch_name
+                )
+                logger.info("deleted %d Cloudflare deployment(s) for merged branch %s", deleted, fix.branch_name)
+            except Exception:
+                logger.exception("could not delete Cloudflare deployments for merged branch %s", fix.branch_name)
+
+            if issue:
+                try:
+                    from app.sandbox.worktree import ensure_mirror, remove_worktree, repo_slug
+
+                    mirror = await asyncio.to_thread(ensure_mirror, repo_full_name)
+                    worktree_path = (
+                        Path(settings.workspace_root) / repo_slug(repo_full_name) / "fixes" / fix.branch_name.split("/")[-1]
+                    )
+                    await asyncio.to_thread(remove_worktree, mirror, worktree_path)
+                    logger.info("removed local worktree for merged branch %s", fix.branch_name)
+                except Exception:
+                    logger.exception("could not remove local worktree for merged branch %s", fix.branch_name)
+
             from app.routers.ws import emit_event
 
             emit_event({
                 "type": "run", "kind": "cleanup", "status": "done",
-                "message": f"PR #{pr_number} merged — branch {fix.branch_name} deleted",
+                "message": f"PR #{pr_number} merged — branch, preview, and worktree cleaned up",
             })
     elif fix.status not in (FixStatus.REJECTED, FixStatus.MERGED):
         # Closed WITHOUT merging, and not already resolved some other way --
