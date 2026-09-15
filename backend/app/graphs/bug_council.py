@@ -343,7 +343,7 @@ async def run_and_persist(db, repo, category: str = "ui") -> "Issue":
 
     from app.categories import assurance_threshold_for
     from app.enums import IssueStatus, ISSUE_STATUS_RENDER
-    from app.integrations import github_client, slack_client
+    from app.integrations import email_client, github_client, slack_client
     from app.models import Issue
     from app.notifications import mark_notified, record_condition, should_notify
 
@@ -464,13 +464,27 @@ async def run_and_persist(db, repo, category: str = "ui") -> "Issue":
         if should_notify(notification, is_escalation=True):
             issue_url = f"https://github.com/{repo.github_full_name}/issues/{issue_number}"
             text = f"WhipGuard raised a bug: category={category} score={result['score']}/100 issue={issue_url}"
+            notified_anything = False
             try:
                 if not settings.slack_bot_token:
                     raise RuntimeError("slack_bot_token is not configured")
                 slack_client.post_message(settings.slack_channel_id, blocks=[], text=text)
+                notified_anything = True
             except Exception:
                 logger.exception("Slack notify failed for bug-raised issue %s", issue.id)
-            else:
+
+            if email_client.smtp_configured() and settings.notify_email:
+                try:
+                    subject, html, mail_text = email_client.build_status_email(
+                        issue.title, f"bug raised ({category}, score {result['score']}/100)",
+                        f'<a href="{issue_url}">{issue_url}</a>',
+                    )
+                    await asyncio.to_thread(email_client.send_email, settings.notify_email, subject, html, mail_text)
+                    notified_anything = True
+                except Exception:
+                    logger.exception("bug-raised email failed for issue %s", issue.id)
+
+            if notified_anything:
                 mark_notified(notification)
 
     await db.commit()

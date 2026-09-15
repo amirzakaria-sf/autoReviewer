@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.categories import Detector
+from app.detectors.accessibility import AccessibilityDetector
 from app.detectors.backend import BackendDetector
 from app.detectors.documentation import DocumentationDetector
 from app.detectors.performance import PerformanceDetector
@@ -13,6 +14,7 @@ _DETECTORS: dict[str, Detector] = {
     "security": SecurityDetector(),
     "performance": PerformanceDetector(),
     "documentation": DocumentationDetector(),
+    "accessibility": AccessibilityDetector(),
 }
 
 

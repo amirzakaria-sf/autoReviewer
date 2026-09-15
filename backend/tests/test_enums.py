@@ -18,3 +18,19 @@ def test_github_labels_are_unique_and_prefixed():
     assert len(labels) == len(set(labels)), "two statuses collide on the same GitHub label"
     for label in labels:
         assert label.startswith("whipguard:"), f"{label!r} does not start with 'whipguard:'"
+
+
+def test_accessibility_category_is_registered():
+    """New category added this pass -- confirms the data-driven registry
+    claim (plan.md §2): a category is a config row + a detector module,
+    never new graph code."""
+    from app.categories import CATEGORY_REGISTRY
+    from app.detectors import get_detector
+    from app.detectors.accessibility import AccessibilityDetector
+
+    assert "accessibility" in CATEGORY_REGISTRY
+    config = CATEGORY_REGISTRY["accessibility"]
+    assert config.entry_files == ("index.html", "style.css")
+    assert "axe-core" in config.rules
+
+    assert isinstance(get_detector("accessibility"), AccessibilityDetector)

@@ -35,7 +35,7 @@ export default function IssueDetailPage({ params }: { params: Promise<{ id: stri
 
   return (
     <div className="space-y-6">
-      <Link href="/" className="text-sm text-gray-400 hover:text-white">← back to overview</Link>
+      <Link href="/dashboard" className="text-sm text-gray-400 hover:text-white">← back to overview</Link>
 
       <div className="flex items-start justify-between">
         <div>

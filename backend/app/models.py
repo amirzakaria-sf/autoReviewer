@@ -71,6 +71,12 @@ class Fix(Base):
     deployed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     verified_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+    # Bumped by the ORM on every UPDATE (any column, not just status) --
+    # what the stuck-run sweeper (app/stuck_run_sweeper.py) reads to tell a
+    # genuinely-abandoned IN_PROGRESS row from one still mid-flow.
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()
+    )
 
 
 class CouncilRun(Base):
@@ -103,6 +109,22 @@ class Notification(Base):
     last_seen_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
     notified_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     notify_count: Mapped[int] = mapped_column(sa.Integer, default=0)
+
+
+class CalibrationEvent(Base):
+    """plan.md §5.1/§5.4: a real, mechanically-observed outcome for a fix
+    AFTER it shipped -- merged, reopened, rejected, verification/outcome
+    failed, or swept as stuck. app/calibration.py's threshold-tuning job
+    reads these to nudge Repo.thresholds in code; never fed back into a
+    prompt (that would be the model grading its own homework)."""
+
+    __tablename__ = "calibration_events"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    fix_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("fixes.id"))
+    outcome: Mapped[str] = mapped_column(sa.String)
+    detail: Mapped[dict] = mapped_column(JSONB, default=dict)
+    observed_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
 
 
 class AuditLog(Base):

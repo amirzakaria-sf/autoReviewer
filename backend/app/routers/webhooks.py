@@ -9,10 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.calibration import record_calibration_event
 from app.config import settings
 from app.db import get_db
 from app.enums import FixStatus, IssueStatus
 from app.graphs.approval_graph import resolve_approval
+from app.integrations import github_client
 from app.integrations.slack_client import verify_signature
 from app.models import Fix, Issue, Repo
 
@@ -113,12 +115,29 @@ async def _handle_pull_request(db: AsyncSession, payload: dict) -> None:
         if issue:
             issue.status = IssueStatus.CLOSED
         logger.info("PR #%s merged by a human directly on GitHub; fix %s -> merged", pr_number, fix.id)
+        await record_calibration_event(db, fix_id=fix.id, outcome="merged")
+
+        repo_full_name = payload.get("repository", {}).get("full_name")
+        if repo_full_name and fix.branch_name:
+            try:
+                await asyncio.to_thread(github_client.delete_branch, repo_full_name, fix.branch_name)
+                logger.info("deleted merged branch %s on %s", fix.branch_name, repo_full_name)
+            except Exception:
+                logger.exception("could not delete merged branch %s on %s", fix.branch_name, repo_full_name)
+
+            from app.routers.ws import emit_event
+
+            emit_event({
+                "type": "run", "kind": "cleanup", "status": "done",
+                "message": f"PR #{pr_number} merged — branch {fix.branch_name} deleted",
+            })
     elif fix.status not in (FixStatus.REJECTED, FixStatus.MERGED):
         # Closed WITHOUT merging, and not already resolved some other way --
         # a human decided not to take this fix. Reject, don't leave it stuck
         # showing "awaiting approval" for a PR that no longer exists as open.
         fix.status = FixStatus.REJECTED
         logger.info("PR #%s closed without merging; fix %s -> rejected", pr_number, fix.id)
+        await record_calibration_event(db, fix_id=fix.id, outcome="rejected_on_github")
 
     await db.commit()
 
@@ -130,20 +149,46 @@ async def _handle_pull_request(db: AsyncSession, payload: dict) -> None:
 
 async def _handle_issues(db: AsyncSession, payload: dict) -> None:
     """A human closing the GitHub issue directly (not via a merged fix) is
-    also a real resolution the dashboard has to reflect."""
-    if payload.get("action") != "closed":
+    also a real resolution the dashboard has to reflect. A REOPEN is the
+    strongest calibration signal this app can observe mechanically: the jury
+    said fixed, a human merged it, and it turned out not to hold -- record
+    that against whichever fix most recently claimed to resolve it."""
+    action = payload.get("action")
+    if action not in ("closed", "reopened"):
         return
 
     issue_number = payload.get("issue", {}).get("number")
     issue = (
         await db.execute(select(Issue).where(Issue.github_issue_number == issue_number))
     ).scalars().first()
-    if not issue or issue.status == IssueStatus.CLOSED:
+    if not issue:
         return
 
-    issue.status = IssueStatus.CLOSED
+    if action == "closed":
+        if issue.status == IssueStatus.CLOSED:
+            return
+        issue.status = IssueStatus.CLOSED
+        await db.commit()
+        logger.info("issue #%s closed on GitHub; issue %s -> closed", issue_number, issue.id)
+        return
+
+    # action == "reopened"
+    last_merged_fix = (
+        await db.execute(
+            select(Fix)
+            .where(Fix.issue_id == issue.id, Fix.status == FixStatus.MERGED)
+            .order_by(Fix.approved_at.desc().nullslast(), Fix.created_at.desc())
+        )
+    ).scalars().first()
+
+    if last_merged_fix:
+        await record_calibration_event(db, fix_id=last_merged_fix.id, outcome="reopened")
+        logger.warning("issue #%s reopened on GitHub after fix %s was merged -- calibration event recorded", issue_number, last_merged_fix.id)
+
+    from app.graphs.approval_graph import _reopen_issue_for_retry
+
+    _reopen_issue_for_retry(issue)
     await db.commit()
-    logger.info("issue #%s closed on GitHub; issue %s -> closed", issue_number, issue.id)
 
 
 async def _handle_issue_comment(db: AsyncSession, payload: dict) -> None:

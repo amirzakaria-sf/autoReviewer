@@ -13,16 +13,52 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from app.calibration import record_calibration_event
 from app.config import settings
-from app.enums import FIX_STATUS_RENDER, FixStatus
+from app.enums import FIX_STATUS_RENDER, FixStatus, IssueStatus
 from app.graphs.outcome_checker import check_outcome
-from app.integrations import cloudflare_client, github_client, slack_client
+from app.integrations import cloudflare_client, email_client, github_client, slack_client
 from app.models import Fix, Issue
 from app.notifications import mark_notified, record_condition, should_notify
 from app.routers.ws import emit_event
 from app.sandbox.docker_runner import run_in_sandbox
 
 logger = logging.getLogger("whipguard.approval_graph")
+
+# Network op only (talks to origin, not the sandbox) -- should be seconds; a
+# generous ceiling, not a tuned one.
+GIT_TIMEOUT_SECONDS = 30
+
+# Every status this flow can leave a Fix sitting in mid-way -- each is a real
+# "in-flight" marker, not just FixStatus.IN_PROGRESS by name. APPROVED sits
+# through the git fetch/merge-base check and (on a stale base) a sandbox
+# re-verify; DEPLOYED sits through the post-deploy oracle re-run. A crash or
+# unhandled exception anywhere in resolve_approval after fix.status = APPROVED
+# leaves the row here forever with nothing left to move it forward -- this is
+# exactly what app/stuck_run_sweeper.py sweeps.
+IN_FLIGHT_FIX_STATUSES = (FixStatus.APPROVED, FixStatus.IN_PROGRESS, FixStatus.DEPLOYED)
+
+# Worst-case sum of every bounded step this flow can block on, in one pass:
+# git fetch (30s) + merge-base check (30s) + an optional sandbox re-verify
+# when the base moved (run_in_sandbox's own 300s default) + git push (60s,
+# github_client.push_branch) + Cloudflare deploy (cloudflare_client's own
+# 180s) + the post-deploy oracle's sandbox re-run (300s) = 900s. None of
+# these retry internally (no backoff to add), so a healthy run can never sit
+# in an in-flight status past this sum. The sweeper's threshold below adds
+# real headroom on top rather than sweeping right at the edge of that budget.
+STUCK_RUN_THRESHOLD_SECONDS = 1200
+
+
+def _reopen_issue_for_retry(issue: Issue | None) -> None:
+    """A failed fix (real verification failure, outcome-check mismatch, or a
+    swept stuck run) otherwise leaves the Issue stuck at FIX_PROPOSED with no
+    retry surface -- the dashboard's "Resolve this" button only appears for
+    status == raised (found while wiring the stuck-run sweeper: neither path
+    ever reset this, so a real verification failure was ALSO a dead end
+    before this). Reopening the underlying issue reuses that existing
+    affordance instead of building a second one."""
+    if issue is not None and issue.status != IssueStatus.CLOSED:
+        issue.status = IssueStatus.RAISED
 
 
 def _update_slack_status(fix: Fix, issue_title: str, extra: str = "") -> None:
@@ -59,6 +95,7 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
 
     if not approved:
         fix.status = FixStatus.REJECTED
+        await record_calibration_event(db, fix_id=fix.id, outcome="rejected_by_human", detail={"surface": surface})
         await db.commit()
         _update_slack_status(fix, issue.title, f"rejected by {actor} via {surface}")
         emit_event({"type": "run", "kind": "approval", "status": "done", "message": f"Rejected by {actor} via {surface}"})
@@ -80,15 +117,25 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
     # If so, re-verify before applying rather than force-applying a stale diff.
     # Every blocking call below runs via asyncio.to_thread -- otherwise each
     # one freezes the whole event loop (including the websocket and any other
-    # concurrent run) for its full duration.
+    # concurrent run) for its full duration. GIT_TIMEOUT_SECONDS bounds these
+    # explicitly -- a bare subprocess.run with no timeout can hang forever on
+    # a network stall, leaving the Fix stuck at IN_PROGRESS with no exception
+    # ever raised to unstick it; the stuck-run sweeper (app/stuck_run_sweeper.py)
+    # assumes every step in this flow has a hard ceiling, so this has to hold.
     await asyncio.to_thread(
-        subprocess.run, ["git", "fetch", "origin", "main"], cwd=str(worktree_path), capture_output=True, text=True
+        subprocess.run,
+        ["git", "fetch", "origin", "main"],
+        cwd=str(worktree_path),
+        capture_output=True,
+        text=True,
+        timeout=GIT_TIMEOUT_SECONDS,
     )
     rebase_check = await asyncio.to_thread(
         subprocess.run,
         ["git", "merge-base", "--is-ancestor", "origin/main", "HEAD"],
         cwd=str(worktree_path),
         capture_output=True,
+        timeout=GIT_TIMEOUT_SECONDS,
     )
     base_moved = rebase_check.returncode != 0
 
@@ -98,6 +145,8 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
         )
         if exit_code != 0:
             fix.status = FixStatus.VERIFICATION_FAILED
+            _reopen_issue_for_retry(issue)
+            await record_calibration_event(db, fix_id=fix.id, outcome="verification_failed", detail={"stage": "base_moved_reverify"})
             await db.commit()
             emit_event({"type": "run", "kind": "approval", "status": "done", "message": "Base branch moved; re-verify failed"})
             return {"ok": False, "status": fix.status.value, "reason": "base branch moved; re-verify failed"}
@@ -122,6 +171,9 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
         run_in_sandbox, str(worktree_path), [f"PLAYWRIGHT_BASE_URL={preview_url} npx playwright test"]
     )
     fix.status = FixStatus.VERIFIED if exit_code == 0 else FixStatus.VERIFICATION_FAILED
+    if fix.status == FixStatus.VERIFICATION_FAILED:
+        _reopen_issue_for_retry(issue)
+        await record_calibration_event(db, fix_id=fix.id, outcome="verification_failed", detail={"stage": "post_deploy_oracle"})
     await db.commit()
     _update_slack_status(fix, issue.title, f"preview: {preview_url}")
     emit_event({
@@ -133,13 +185,26 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
         notification = await record_condition(db, fix_id=fix.id, issue_id=None, condition_key="verification-failed")
         if should_notify(notification, is_escalation=True):
             text = f"WhipGuard: fix verification FAILED for fix {fix.id} (preview: {preview_url})"
+            notified_anything = False
             try:
                 if not settings.slack_bot_token:
                     raise RuntimeError("slack_bot_token is not configured")
                 slack_client.post_message(settings.slack_channel_id, blocks=[], text=text)
+                notified_anything = True
             except Exception:
                 logger.exception("Slack notify failed for verification-failed fix %s", fix.id)
-            else:
+
+            if email_client.smtp_configured() and settings.notify_email:
+                try:
+                    subject, html, mail_text = email_client.build_status_email(
+                        issue.title, "verification failed", f"Preview: {preview_url}"
+                    )
+                    await asyncio.to_thread(email_client.send_email, settings.notify_email, subject, html, mail_text)
+                    notified_anything = True
+                except Exception:
+                    logger.exception("verification-failed email failed for fix %s", fix.id)
+
+            if notified_anything:
                 mark_notified(notification)
         await db.commit()
         return {"ok": True, "status": fix.status.value, "preview_url": preview_url}
@@ -158,18 +223,34 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
 
     if not outcome["agreed"]:
         fix.status = FixStatus.OUTCOME_CHECK_FAILED
+        _reopen_issue_for_retry(issue)
+        await record_calibration_event(db, fix_id=fix.id, outcome="outcome_check_failed", detail={"mismatch": outcome["mismatch_detail"]})
         await db.commit()
         _update_slack_status(fix, issue.title, f"mismatch: {outcome['mismatch_detail']}")
         notification = await record_condition(db, fix_id=fix.id, issue_id=None, condition_key="outcome-check-failed")
-        if should_notify(notification, is_escalation=True) and settings.slack_bot_token:
-            try:
-                slack_client.post_message(
-                    settings.slack_channel_id, blocks=[],
-                    text=f"WhipGuard: outcome check FAILED for fix {fix.id}: {outcome['mismatch_detail']}",
-                )
-            except Exception:
-                logger.exception("Slack notify failed for outcome-check-failed fix %s", fix.id)
-            else:
+        if should_notify(notification, is_escalation=True):
+            notified_anything = False
+            if settings.slack_bot_token:
+                try:
+                    slack_client.post_message(
+                        settings.slack_channel_id, blocks=[],
+                        text=f"WhipGuard: outcome check FAILED for fix {fix.id}: {outcome['mismatch_detail']}",
+                    )
+                    notified_anything = True
+                except Exception:
+                    logger.exception("Slack notify failed for outcome-check-failed fix %s", fix.id)
+
+            if email_client.smtp_configured() and settings.notify_email:
+                try:
+                    subject, html, mail_text = email_client.build_status_email(
+                        issue.title, "outcome check failed", str(outcome["mismatch_detail"])
+                    )
+                    await asyncio.to_thread(email_client.send_email, settings.notify_email, subject, html, mail_text)
+                    notified_anything = True
+                except Exception:
+                    logger.exception("outcome-check-failed email failed for fix %s", fix.id)
+
+            if notified_anything:
                 mark_notified(notification)
 
     return {

@@ -95,4 +95,15 @@ def push_branch(worktree_path: str, branch: str) -> None:
         check=True,
         capture_output=True,
         text=True,
+        timeout=60,
     )
+
+
+def delete_branch(repo: str, branch: str) -> None:
+    """Deletes a head branch from origin. Called only after GitHub itself
+    confirms the branch's PR was merged (webhooks.py's pull_request handler)
+    -- never speculatively, and never for main/base branches since callers
+    only ever pass a Fix.branch_name (always a whipguard/fix-* branch)."""
+    resp = httpx.delete(f"{API_BASE}/repos/{repo}/git/refs/heads/{branch}", headers=_headers(), timeout=30)
+    if resp.status_code not in (204, 422):
+        resp.raise_for_status()

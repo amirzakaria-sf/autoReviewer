@@ -59,6 +59,19 @@ class Settings(BaseSettings):
     assurance_threshold: int = 75
     resolution_threshold: int = 80
 
+    # Transactional email (plan.md §6.4): same Brevo SMTP relay jobFlowAuto
+    # already uses on this same domain (zakarias.in) -- reusing a
+    # deliverability-proven sender rather than standing up a fresh one.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_key: str = ""
+    email_from_address: str = ""
+    email_from_name: str = "WhipGuard"
+    # Who gets fix-proposed / escalation email. A single operator's inbox for
+    # this deployment, same role ADMIN_EMAILS plays in jobFlowAuto.
+    notify_email: str = ""
+
     # App-level login (replaces the earlier nginx HTTP Basic Auth stopgap --
     # that showed the browser's native credential popup ahead of the app,
     # which is what "the login is weird" meant; this is a real session cookie

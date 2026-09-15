@@ -9,13 +9,16 @@ from starlette.middleware.sessions import SessionMiddleware
 from app import models  # noqa: F401  (registers tables on Base.metadata)
 from app.config import settings
 from app.db import Base, engine
+from app.calibration import run_calibration_loop
 from app.poller import poll_for_externally_filed_bugs
-from app.routers import api, auth, github, human_input, webhooks, ws
+from app.routers import api, auth, email_actions, github, human_input, webhooks, ws
+from app.stuck_run_sweeper import sweep_stuck_runs
 
 # Paths callable without a session: the login endpoint itself, GitHub/Slack's
-# own servers (they don't carry this app's session cookie), and the container
-# healthcheck.
-_PUBLIC_PATHS = ("/api/auth/", "/api/webhooks/", "/api/slack/interactions", "/healthz")
+# own servers (they don't carry this app's session cookie), a magic-link
+# clicked straight from an inbox (its own signed/expiring token IS the
+# credential -- see email_client.verify_action_token), and the healthcheck.
+_PUBLIC_PATHS = ("/api/auth/", "/api/webhooks/", "/api/slack/interactions", "/api/email/action", "/healthz")
 
 
 @asynccontextmanager
@@ -24,8 +27,12 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     ws.set_main_loop(asyncio.get_running_loop())
     poll_task = asyncio.create_task(poll_for_externally_filed_bugs())
+    sweep_task = asyncio.create_task(sweep_stuck_runs())
+    calibration_task = asyncio.create_task(run_calibration_loop())
     yield
     poll_task.cancel()
+    sweep_task.cancel()
+    calibration_task.cancel()
 
 
 app = FastAPI(title="WhipGuard", lifespan=lifespan)
@@ -60,6 +67,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(api.router)
+app.include_router(email_actions.router)
 app.include_router(github.router)
 app.include_router(human_input.router)
 app.include_router(webhooks.router)

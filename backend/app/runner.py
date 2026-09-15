@@ -11,7 +11,7 @@ import uuid
 
 from app.db import async_session
 from app.enums import FIX_STATUS_RENDER, FixStatus, IssueStatus
-from app.integrations import github_client, slack_client
+from app.integrations import email_client, github_client, slack_client
 from app.models import Fix, Issue, Repo
 from app.routers.ws import emit_event
 from app.sandbox.worktree import create_worktree, ensure_mirror
@@ -92,9 +92,10 @@ async def trigger_fix_council(issue_id: uuid.UUID) -> None:
                 issue.status = IssueStatus.FIX_PROPOSED
                 await db.flush()
 
+                pr_url = f"https://github.com/{repo_full_name}/pull/{pr_number}"
+
                 if settings.slack_bot_token and settings.slack_channel_id:
                     try:
-                        pr_url = f"https://github.com/{repo_full_name}/pull/{pr_number}"
                         blocks = slack_client.build_fix_proposed_blocks(
                             fix.id, issue.title, result.get("score", 0), pr_url,
                             FIX_STATUS_RENDER[FixStatus.AWAITING_APPROVAL]["dashboard_badge"],
@@ -105,6 +106,15 @@ async def trigger_fix_council(issue_id: uuid.UUID) -> None:
                         fix.slack_message_ts = ts
                     except Exception:
                         logger.exception("Slack fix-proposed post failed for fix %s", fix.id)
+
+                if email_client.smtp_configured() and settings.notify_email:
+                    try:
+                        subject, html, text = email_client.build_fix_proposed_email(
+                            issue.title, category, result.get("score", 0), pr_url, str(fix.id)
+                        )
+                        await asyncio.to_thread(email_client.send_email, settings.notify_email, subject, html, text)
+                    except Exception:
+                        logger.exception("fix-proposed email failed for fix %s", fix.id)
 
             await db.commit()
             logger.info("fix council finished for issue %s: score=%s proposed=%s", issue_id, result.get("score"), proposed)
