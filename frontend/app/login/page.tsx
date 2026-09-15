@@ -1,53 +1,93 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 
 export default function LoginPage() {
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("expired")) setNotice("Your session expired. Sign in again to continue.");
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError(null);
     try {
-      await api.login(password);
+      await api.login(email.trim().toLowerCase(), password);
       router.push("/dashboard");
       router.refresh();
-    } catch {
-      setError("Incorrect password.");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "";
+      if (message.includes("awaiting admin approval")) {
+        setError("Your account is awaiting admin approval. You'll get an email once it's reviewed.");
+      } else if (message.includes("declined")) {
+        setError("This access request was declined.");
+      } else {
+        setError("Incorrect email or password.");
+      }
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4">
-      <form onSubmit={submit} className="w-full max-w-sm border border-border bg-panel rounded-xl p-6 space-y-4">
-        <div className="flex items-center gap-2 text-lg font-semibold">
-          <span>🛡️</span> WhipGuard
+    <div className="min-h-screen flex items-center justify-center px-4 bg-grid-fade">
+      <form onSubmit={submit} className="w-full max-w-sm card p-7 space-y-5 animate-fade-in">
+        <div className="flex items-center gap-2.5 text-lg font-semibold">
+          <span className="text-xl">🛡️</span> WhipGuard
         </div>
-        <p className="text-sm text-gray-400">Sign in to view the bug council dashboard.</p>
-        <input
-          type="password"
-          autoFocus
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Password"
-          className="w-full px-3 py-2 rounded-md bg-black/30 border border-border focus:outline-none focus:border-gray-500"
-        />
+        <p className="text-sm text-gray-500 -mt-3">Sign in to your bug council dashboard.</p>
+
+        {notice && (
+          <div className="text-sm bg-accent-dim border border-accent/30 text-accent-soft rounded-lg px-3 py-2.5">
+            {notice}
+          </div>
+        )}
+
+        <div className="space-y-3">
+          <div>
+            <label className="section-label mb-1.5 block">Email</label>
+            <input
+              type="email"
+              autoFocus
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@company.com"
+              className="input w-full px-3 py-2.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="section-label mb-1.5 block">Password</label>
+            <input
+              type="password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              className="input w-full px-3 py-2.5 text-sm"
+            />
+          </div>
+        </div>
+
         {error && <p className="text-sm text-red-400">{error}</p>}
-        <button
-          type="submit"
-          disabled={loading || !password}
-          className="w-full py-2 rounded-md bg-white/10 hover:bg-white/20 font-medium disabled:opacity-50"
-        >
+
+        <button type="submit" disabled={loading || !email || !password} className="btn btn-primary w-full py-2.5 text-sm">
           {loading ? "Signing in…" : "Sign in"}
         </button>
+
+        <p className="text-center text-sm text-gray-500">
+          No account? <a href="/signup" className="text-accent-soft hover:underline">Request access</a>
+        </p>
       </form>
     </div>
   );

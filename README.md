@@ -4,12 +4,7 @@
 verified fix, and only ships after a human approves and a live re-check confirms
 the fix actually holds.**
 
-Live demo: **https://whip-guard.zakarias.in** — login `judge` / `Emd43UvOlwZhhSDs`
-(HTTP Basic Auth at the nginx layer; no application-level login was built for
-this Tier-0 scope, see [Security & scope](#security--scope)).
-
-Demo video: _[Adding it - just give me 10 mins please ]_
-
+Live demo: **https://whip-guard.zakarias.in**
 ---
 
 ## Table of contents

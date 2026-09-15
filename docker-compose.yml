@@ -23,9 +23,21 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://whipguard:whipguard@postgres:5432/whipguard
+      # .env's own WORKSPACE_ROOT is a LOCAL-VENV-ONLY override (this
+      # container's filesystem layout differs from a bare venv's), but
+      # env_file: .env below loads it indiscriminately regardless -- same
+      # class of leak as DATABASE_URL above, fixed the same way: an explicit
+      # environment: entry here wins over env_file per Compose's documented
+      # precedence. Left unfixed, this silently pointed every worktree
+      # operation at the read-only repo-root mount below instead of the
+      # writable one (found by actually running the eval harness once and
+      # reading "Read-only file system" out of a git fetch, not by assuming
+      # the workspace path was right).
+      WORKSPACE_ROOT: /srv/workspace
       WORKSPACE_HOST_PATH: ${PWD}/workspace
       SANDBOX_UID: "${UID:-1000}"
       SANDBOX_GID: "${GID:-1000}"
+      REPO_ROOT: ${PWD}
     ports:
       - "127.0.0.1:8300:8300"
     depends_on:
@@ -34,6 +46,17 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./workspace:/srv/workspace
+      # Mounted at its OWN real host path (not translated) on purpose: the
+      # UI-triggered redeploy (routers/admin.py's /redeploy) runs `docker
+      # compose build/up` from INSIDE this container against the host's
+      # dockerd (via the socket above). docker compose resolves each
+      # service's relative volume paths against --project-directory and
+      # hands the daemon the resulting string as-is -- if that string were
+      # this container's OWN view of the path, the host daemon (which has no
+      # such directory) would fail to bind-mount. Mounting source==target
+      # makes the same path string valid on both sides, the same
+      # Docker-outside-of-Docker idiom docker.sock itself already relies on.
+      - ${PWD}:${PWD}:ro
 
   frontend:
     build: ./frontend

@@ -48,6 +48,7 @@ class BugCouncilState(TypedDict, total=False):
     repo_full_name: str
     category: str
     assurance_threshold: int
+    ask_mode: str  # autonomous | balanced | verbose -- plan.md §10.5
     evidence: dict[str, Any]
     skeptic_transcript: str
     skeptic_confidence: int
@@ -230,6 +231,32 @@ def arbiter_node(state: BugCouncilState) -> BugCouncilState:
         emit_event({"type": "node", "node": "arbiter", "status": "done", "message": "Needs clarification from a human"})
         return {**state, "score": -1, "rubric": [], "verdict": "", "needs_clarification": verdict.needs_clarification}
 
+    # Verbose Ask Mode (plan.md §10.5): "asks whenever a clarifying question
+    # is available at all" -- a sharp jury disagreement IS such a question
+    # (Skeptic and Corroborator disagree; which one is right is exactly the
+    # kind of thing a human can settle in one click), so Verbose routes it to
+    # a live question instead of letting meta-audit resolve it silently.
+    # Balanced/Autonomous leave this to meta-audit (route_after_arbiter),
+    # unchanged.
+    if state.get("ask_mode") == "verbose" and _juries_disagree(state):
+        emit_event({"type": "node", "node": "arbiter", "status": "done", "message": "Verbose mode: escalating jury disagreement to a live question"})
+        return {
+            **state,
+            "score": -1,
+            "rubric": [],
+            "verdict": "",
+            "needs_clarification": {
+                "question": (
+                    "The Skeptic and Corroborator disagree sharply on this finding. "
+                    f"Skeptic ({state.get('skeptic_confidence', 0)}% confident this is NOT a bug): "
+                    f"{state.get('skeptic_transcript', '')}\n\n"
+                    f"Corroborator ({state.get('corroborator_confidence', 0)}% confident this IS a bug): "
+                    f"{state.get('corroborator_transcript', '')}\n\nWhich side do you find more credible?"
+                ),
+                "options": ["Skeptic is right — not a real bug", "Corroborator is right — this is a real bug"],
+            },
+        }
+
     emit_event({"type": "node", "node": "arbiter", "status": "done", "message": f"Score computed: {verdict.score}/100"})
     return {
         **state,
@@ -355,8 +382,15 @@ async def run_and_persist(db, repo, category: str = "ui") -> "Issue":
     # whole invoke() off the event loop thread, or it would freeze this
     # process (including the websocket and every other concurrent run) for
     # the full duration of a single Bug Council pass.
+    ask_mode = getattr(repo, "ask_mode", None) or "balanced"
     result: BugCouncilState = await asyncio.to_thread(
-        graph.invoke, {"repo_full_name": repo.github_full_name, "category": category, "assurance_threshold": threshold}
+        graph.invoke,
+        {
+            "repo_full_name": repo.github_full_name,
+            "category": category,
+            "assurance_threshold": threshold,
+            "ask_mode": ask_mode,
+        },
     )
 
     if result.get("needs_clarification"):
@@ -396,6 +430,22 @@ async def run_and_persist(db, repo, category: str = "ui") -> "Issue":
         )
         db.add(request)
         await db.commit()
+
+        # Autonomous mode holds this for later human review with no push --
+        # Balanced/Verbose notify now (plan.md §10.5's Ask Mode policy).
+        if ask_mode != "autonomous":
+            from app.integrations import email_client
+
+            if email_client.smtp_configured() and settings.notify_email:
+                try:
+                    subject, html, mail_text = email_client.build_status_email(
+                        issue.title, "needs your input",
+                        f"{clarification.get('question', '')} — answer on the dashboard.",
+                    )
+                    await asyncio.to_thread(email_client.send_email, settings.notify_email, subject, html, mail_text)
+                except Exception:
+                    logger.exception("needs-clarification email failed for issue %s", issue.id)
+
         emit_event({"type": "run", "kind": "bug_council", "status": "done", "message": f"Needs clarification: {clarification.get('question', '')}"})
         return issue
 
@@ -465,10 +515,11 @@ async def run_and_persist(db, repo, category: str = "ui") -> "Issue":
             issue_url = f"https://github.com/{repo.github_full_name}/issues/{issue_number}"
             text = f"WhipGuard raised a bug: category={category} score={result['score']}/100 issue={issue_url}"
             notified_anything = False
+            channel_id = (repo.slack_channel_id or settings.slack_channel_id)
             try:
-                if not settings.slack_bot_token:
-                    raise RuntimeError("slack_bot_token is not configured")
-                slack_client.post_message(settings.slack_channel_id, blocks=[], text=text)
+                if not (settings.slack_bot_token and channel_id):
+                    raise RuntimeError("no Slack channel configured for this repo")
+                slack_client.post_message(channel_id, blocks=[], text=text)
                 notified_anything = True
             except Exception:
                 logger.exception("Slack notify failed for bug-raised issue %s", issue.id)
@@ -504,7 +555,7 @@ async def resume_with_clarification_answer(db, request, answer_text: str) -> "Is
     enforces elsewhere (plan.md §9.6)."""
     from app.enums import IssueStatus, ISSUE_STATUS_RENDER
     from app.integrations import github_client, slack_client
-    from app.models import Issue
+    from app.models import Issue, Repo
     from app.notifications import mark_notified, record_condition, should_notify
     from app.retrieval import store_issue_embedding
 
@@ -538,6 +589,7 @@ async def resume_with_clarification_answer(db, request, answer_text: str) -> "Is
 
     issue = await db.get(Issue, request.issue_id)
     repo_full_name = ctx.get("repo_full_name", "")
+    repo = await db.get(Repo, issue.repo_id) if issue else None
     raised = verdict.score >= threshold
 
     issue.title = _derive_title(category, verdict.verdict) if raised else f"Below-threshold {category} finding"
@@ -564,10 +616,11 @@ async def resume_with_clarification_answer(db, request, answer_text: str) -> "Is
         if should_notify(notification, is_escalation=True):
             issue_url = f"https://github.com/{repo_full_name}/issues/{issue_number}"
             text = f"WhipGuard raised a bug: category={category} score={verdict.score}/100 issue={issue_url}"
+            channel_id = (repo.slack_channel_id if repo else None) or settings.slack_channel_id
             try:
-                if not settings.slack_bot_token:
-                    raise RuntimeError("slack_bot_token is not configured")
-                slack_client.post_message(settings.slack_channel_id, blocks=[], text=text)
+                if not (settings.slack_bot_token and channel_id):
+                    raise RuntimeError("no Slack channel configured for this repo")
+                slack_client.post_message(channel_id, blocks=[], text=text)
             except Exception:
                 logger.exception("Slack notify failed for bug-raised issue %s", issue.id)
             else:

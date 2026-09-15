@@ -6,6 +6,7 @@ MIN_SAMPLE_SIZE must never trigger an adjustment at all."""
 
 from __future__ import annotations
 
+import pytest_asyncio
 from sqlalchemy import delete, select
 
 from app.calibration import (
@@ -20,6 +21,43 @@ from app.enums import FixStatus, IssueStatus
 from app.models import AuditLog, CalibrationEvent, Fix, Issue, Repo
 
 CATEGORY = "backend"  # registry default resolution_threshold=85, see app/categories.py
+_TEST_REPO_NAMES = ("calibration-test/high-negative", "calibration-test/all-clean", "calibration-test/too-few")
+
+
+async def _delete_repo(github_full_name: str) -> None:
+    async with async_session() as db:
+        existing = (
+            await db.execute(select(Repo).where(Repo.github_full_name == github_full_name))
+        ).scalars().first()
+        if not existing:
+            return
+        await db.execute(delete(AuditLog).where(AuditLog.target_id.like(f"{existing.id}:%")))
+        await db.execute(
+            delete(CalibrationEvent).where(
+                CalibrationEvent.fix_id.in_(
+                    select(Fix.id).join(Issue, Issue.id == Fix.issue_id).where(Issue.repo_id == existing.id)
+                )
+            )
+        )
+        await db.execute(delete(Fix).where(Fix.issue_id.in_(select(Issue.id).where(Issue.repo_id == existing.id))))
+        await db.execute(delete(Issue).where(Issue.repo_id == existing.id))
+        await db.execute(delete(Repo).where(Repo.id == existing.id))
+        await db.commit()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _cleanup_test_repos_after_every_test():
+    """This module's tests write real rows against the live DB (this
+    project's established pattern -- no isolated test database exists).
+    Without an unconditional teardown, a PASSING test leaves its
+    calibration-test/* repo behind forever -- _fresh_repo below only ever
+    cleaned up at the START of the NEXT run, which is silent pollution of
+    real dashboard counts if there never is a next run in the same
+    session (found by actually checking the live admin overview and
+    seeing 4 repos instead of 1, per plan.md §9.8's own principle)."""
+    yield
+    for name in _TEST_REPO_NAMES:
+        await _delete_repo(name)
 
 
 async def _fresh_repo(github_full_name: str) -> Repo:

@@ -21,7 +21,7 @@ from app.config import settings
 from app.enums import FixStatus
 from app.graphs.approval_graph import resolve_approval
 from app.graphs.bug_council import run_and_persist
-from app.models import Fix, Issue, Notification
+from app.models import Fix, Issue, Notification, Repo
 
 
 def _make_record_condition_fake():
@@ -120,7 +120,7 @@ async def test_bug_raised_notifies_immediately_on_first_occurrence():
     a second occurrence (as an ordinary condition_key would) means this would
     never fire in production, since occurrence_count of a fresh UUID never
     reaches 2 — this is why bug_council.py passes is_escalation=True."""
-    repo = types.SimpleNamespace(id=uuid.uuid4(), github_full_name="acme/demo", thresholds=None)
+    repo = types.SimpleNamespace(id=uuid.uuid4(), github_full_name="acme/demo", thresholds=None, slack_channel_id="C123TEST")
     db = _FakeDB()
     record_condition_fake = _make_record_condition_fake()
 
@@ -144,7 +144,7 @@ async def test_bug_raised_empty_slack_token_does_not_crash_the_flow():
     """No live Slack app configured yet (slack_bot_token == '') -- issue
     creation must still succeed without raising, and without a real Slack call
     succeeding (mirrors the approval-flow empty-token test below)."""
-    repo = types.SimpleNamespace(id=uuid.uuid4(), github_full_name="acme/demo", thresholds=None)
+    repo = types.SimpleNamespace(id=uuid.uuid4(), github_full_name="acme/demo", thresholds=None, slack_channel_id="C123TEST")
     db = _FakeDB()
     record_condition_fake = _make_record_condition_fake()
 
@@ -173,6 +173,10 @@ def _make_issue():
     return issue
 
 
+def _make_repo(repo_id):
+    return types.SimpleNamespace(id=repo_id, github_full_name="acme/demo", slack_channel_id="C123TEST")
+
+
 def _approval_patches(mock_record_condition, sandbox_exit_code):
     return (
         patch("app.graphs.approval_graph.subprocess.run", side_effect=[MagicMock(returncode=0), MagicMock(returncode=0)]),
@@ -189,7 +193,7 @@ async def test_verification_failed_notifies_immediately_on_first_occurrence():
     the very first verification failure for a fix must still notify."""
     fix = _make_fix()
     issue = _make_issue()
-    db = _FakeDB(get_map={Fix: fix, Issue: issue})
+    db = _FakeDB(get_map={Fix: fix, Issue: issue, Repo: _make_repo(issue.repo_id)})
     record_condition_fake = _make_record_condition_fake()
 
     patches = _approval_patches(record_condition_fake, sandbox_exit_code=1)
@@ -208,7 +212,7 @@ async def test_empty_slack_bot_token_does_not_crash_the_flow():
     and without a real Slack call succeeding."""
     fix = _make_fix()
     issue = _make_issue()
-    db = _FakeDB(get_map={Fix: fix, Issue: issue})
+    db = _FakeDB(get_map={Fix: fix, Issue: issue, Repo: _make_repo(issue.repo_id)})
     record_condition_fake = _make_record_condition_fake()
 
     patches = _approval_patches(record_condition_fake, sandbox_exit_code=1)

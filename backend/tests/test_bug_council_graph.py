@@ -186,3 +186,37 @@ def test_arbiter_needs_clarification_short_circuits_before_score_routing():
     mock_azure.call_meta_auditor.assert_not_called()
     assert result["needs_clarification"]["question"].startswith("Is this hardcoded value")
     assert result["score"] == -1
+
+
+def test_verbose_ask_mode_escalates_disagreement_to_a_live_question_instead_of_meta_audit():
+    """plan.md §10.5: Verbose asks whenever a clarifying question is
+    available at all -- a sharp jury disagreement counts, so Verbose must
+    route to a live question rather than letting meta-audit silently
+    resolve it (Balanced/Autonomous keep the meta-audit path, unchanged --
+    see the disagreement test above)."""
+    mock_azure = MagicMock()
+    mock_azure.call_skeptic_opinion.return_value = _opinion(90, "this looks like an environment issue, not a real bug")
+    mock_azure.call_corroborator_opinion.return_value = _opinion(95, "the mechanical evidence clearly reproduces a real defect")
+    mock_azure.call_arbiter.return_value = _verdict(60, "first-pass: uncertain")
+
+    with (
+        patch("app.graphs.bug_council.get_detector") as mock_get_detector,
+        patch("app.graphs.bug_council.ensure_mirror"),
+        patch("app.graphs.bug_council.create_worktree"),
+        patch("app.graphs.bug_council.remove_worktree"),
+        patch("app.graphs.bug_council.azure_client", mock_azure),
+    ):
+        mock_detector = MagicMock()
+        mock_detector.run.return_value = DetectionResult(failed=True, assertion_text="assertion failed here")
+        mock_get_detector.return_value = mock_detector
+
+        graph = build_bug_council_graph()
+        result = graph.invoke({
+            "repo_full_name": "amirzakaria-sf/whipguard-demo-ui", "category": "ui", "ask_mode": "verbose",
+        })
+
+    mock_azure.call_meta_auditor.assert_not_called()
+    assert result["score"] == -1
+    assert result["needs_clarification"] is not None
+    assert "disagree" in result["needs_clarification"]["question"].lower()
+    assert len(result["needs_clarification"]["options"]) == 2

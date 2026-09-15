@@ -6,11 +6,13 @@ Detector has no entry here — it is mechanical (a Playwright run), not a model 
 from __future__ import annotations
 
 import json
+import time
 
 from openai import AzureOpenAI
 from pydantic import BaseModel
 
 from app.config import settings
+from app.council_runs import record_council_run
 
 
 class ArbiterFactor(BaseModel):
@@ -45,8 +47,9 @@ def _client() -> AzureOpenAI:
     )
 
 
-def _chat(deployment: str, prefix: str, suffix: str) -> str:
+def _chat(deployment: str, prefix: str, suffix: str, role: str = "unknown") -> str:
     client = _client()
+    started = time.monotonic()
     response = client.chat.completions.create(
         model=deployment,
         messages=[
@@ -54,7 +57,31 @@ def _chat(deployment: str, prefix: str, suffix: str) -> str:
             {"role": "user", "content": suffix},
         ],
     )
-    return response.choices[0].message.content or ""
+    latency_ms = int((time.monotonic() - started) * 1000)
+    content = response.choices[0].message.content or ""
+
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+        try:
+            record_council_run(
+                role=role,
+                model=deployment,
+                prefix=prefix,
+                input_tokens=usage.prompt_tokens or 0,
+                cached_input_tokens=cached,
+                output_tokens=usage.completion_tokens or 0,
+                latency_ms=latency_ms,
+                # The parsed verdict/opinion already lives on the Issue/Fix
+                # row itself (assurance_rubric/resolution_rubric) once a
+                # caller persists it -- this table's job is usage/cost/
+                # latency accounting, not a second copy of that JSON.
+                verdict={},
+            )
+        except Exception:
+            pass  # never let usage bookkeeping break a model call
+
+    return content
 
 
 _JUROR_SCHEMA_INSTRUCTION = (
@@ -63,8 +90,8 @@ _JUROR_SCHEMA_INSTRUCTION = (
 )
 
 
-def _call_juror(deployment: str, prefix: str, suffix: str) -> JurorOpinion:
-    raw = _chat(deployment, prefix + _JUROR_SCHEMA_INSTRUCTION, suffix)
+def _call_juror(deployment: str, prefix: str, suffix: str, role: str) -> JurorOpinion:
+    raw = _chat(deployment, prefix + _JUROR_SCHEMA_INSTRUCTION, suffix, role=role)
     data = json.loads(raw)
     return JurorOpinion.model_validate(data)
 
@@ -72,42 +99,42 @@ def _call_juror(deployment: str, prefix: str, suffix: str) -> JurorOpinion:
 def call_skeptic(prefix: str, suffix: str) -> str:
     """Legacy plain-text form, kept for callers that don't need a confidence
     score (e.g. the retry-contract test)."""
-    return _chat(settings.azure_fast_deployment, prefix, suffix)
+    return _chat(settings.azure_fast_deployment, prefix, suffix, role="skeptic")
 
 
 def call_skeptic_opinion(prefix: str, suffix: str) -> JurorOpinion:
-    return _call_juror(settings.azure_fast_deployment, prefix, suffix)
+    return _call_juror(settings.azure_fast_deployment, prefix, suffix, role="skeptic")
 
 
 def call_corroborator_opinion(prefix: str, suffix: str) -> JurorOpinion:
     """Corroborator: mid-tier model (needs to reason about code relevance and
     read mechanical evidence carefully — plan.md §12's routing table)."""
-    return _call_juror(settings.azure_worker_deployment, prefix, suffix)
+    return _call_juror(settings.azure_worker_deployment, prefix, suffix, role="corroborator")
 
 
 def call_verifier(prefix: str, suffix: str) -> str:
-    return _chat(settings.azure_worker_deployment, prefix, suffix)
+    return _chat(settings.azure_worker_deployment, prefix, suffix, role="verifier")
 
 
 def call_fix_skeptic_opinion(prefix: str, suffix: str) -> JurorOpinion:
     """Fix Council's "Skeptic-for-regressions" (plan.md §10.3) — argues the
     patch could break something else, run in parallel with the mechanical
     VerifierNode rather than after it."""
-    return _call_juror(settings.azure_fast_deployment, prefix, suffix)
+    return _call_juror(settings.azure_fast_deployment, prefix, suffix, role="fix_skeptic")
 
 
 def call_patch_worker(prefix: str, suffix: str) -> str:
-    return _chat(settings.azure_worker_deployment, prefix, suffix)
+    return _chat(settings.azure_worker_deployment, prefix, suffix, role="patch_worker")
 
 
 def call_meta_auditor(prefix: str, suffix: str) -> ArbiterVerdict:
     """The meta-council's own Arbiter call, escalated to on jury disagreement
     (plan.md §10.2) — routed to the strongest deployment, same as the regular
     Arbiter, since this is spending MORE compute on a close call, not less."""
-    return call_arbiter(prefix, suffix)
+    return call_arbiter(prefix, suffix, role="meta_auditor")
 
 
-def call_arbiter(prefix: str, suffix: str) -> ArbiterVerdict:
+def call_arbiter(prefix: str, suffix: str, role: str = "arbiter") -> ArbiterVerdict:
     """Structured-output score. Asks for strict JSON and validates it — no free-text
     parsing of a model's prose, per plan.md §11.9."""
     schema_instruction = (
@@ -124,6 +151,6 @@ def call_arbiter(prefix: str, suffix: str) -> ArbiterVerdict:
         "Forcing a confident number when the missing piece is a human's own undocumented intent "
         "manufactures false confidence; that is worse than asking."
     )
-    raw = _chat(settings.azure_planner_deployment, prefix + schema_instruction, suffix)
+    raw = _chat(settings.azure_planner_deployment, prefix + schema_instruction, suffix, role=role)
     data = json.loads(raw)
     return ArbiterVerdict.model_validate(data)

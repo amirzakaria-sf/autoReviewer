@@ -59,22 +59,79 @@ export type FixSummary = {
 
 export class UnauthorizedError extends Error {}
 
+// A single in-flight refresh at a time -- several components can each hit a
+// 401 at nearly the same moment (overview + issues + repos all poll every
+// 4s); without this they'd each fire their own /refresh, and the refresh
+// token rotates on every use (app/routers/auth.py), so only the FIRST of a
+// concurrent burst would still hold a valid cookie by the time the others
+// tried theirs -- the others would wrongly log the user out.
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function tryRefresh(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = fetch(`${API_BASE}/api/auth/refresh`, { method: "POST", credentials: "include" })
+      .then((r) => r.ok)
+      .catch(() => false)
+      .finally(() => {
+        refreshInFlight = null;
+      });
+  }
+  return refreshInFlight;
+}
+
+function forceLogout() {
+  if (typeof window === "undefined") return;
+  if (window.location.pathname === "/login" || window.location.pathname === "/") return;
+  window.location.href = "/login?expired=1";
+}
+
+async function authedFetch(path: string, init: RequestInit): Promise<Response> {
+  let res = await fetch(`${API_BASE}${path}`, { ...init, credentials: "include" });
+  if (res.status === 401) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      res = await fetch(`${API_BASE}${path}`, { ...init, credentials: "include" });
+    }
+    if (res.status === 401) {
+      forceLogout();
+      throw new UnauthorizedError();
+    }
+  }
+  return res;
+}
+
 async function getJSON<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, { cache: "no-store", credentials: "include" });
-  if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  const res = await authedFetch(path, { cache: "no-store" });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail || `${path} -> ${res.status}`);
+  }
   return res.json();
 }
 
 async function postJSON<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await authedFetch(path, {
     method: "POST",
-    credentials: "include",
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail || `${path} -> ${res.status}`);
+  }
+  return res.json();
+}
+
+async function patchJSON<T>(path: string, body: unknown): Promise<T> {
+  const res = await authedFetch(path, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail || `${path} -> ${res.status}`);
+  }
   return res.json();
 }
 
@@ -106,6 +163,66 @@ export type HumanInputRequest = {
   created_at: string | null;
 };
 
+export type SessionInfo = { authenticated: boolean; email?: string; role?: "admin" | "member" };
+
+export type AdminUser = {
+  id: string;
+  email: string;
+  role: "admin" | "member";
+  status: "active" | "deactivated";
+  created_at: string | null;
+  last_login_at: string | null;
+};
+
+export type AccessRequest = {
+  id: string;
+  name: string;
+  email: string;
+  reason: string;
+  status: "pending" | "approved" | "rejected";
+  created_at: string | null;
+  decided_at: string | null;
+  decision_reason: string | null;
+  invite_consumed: boolean;
+};
+
+export type AdminOverview = {
+  users: { active: number; deactivated: number };
+  access_requests: { pending: number; approved: number; rejected: number };
+  repos: number;
+  issues: number;
+  fixes: number;
+};
+
+export type UsageStats = {
+  window_days: number;
+  totals: { calls: number; input_tokens: number; cached_input_tokens: number; output_tokens: number; avg_latency_ms: number };
+  by_role: { role: string; calls: number; input_tokens: number; output_tokens: number; avg_latency_ms: number }[];
+  by_day: { day: string; calls: number; total_tokens: number }[];
+};
+
+export type CategorySetting = {
+  key: string;
+  label: string;
+  issues_enabled: boolean;
+  fixes_enabled: boolean;
+  assurance_threshold: number;
+  resolution_threshold: number;
+  default_assurance_threshold: number;
+  default_resolution_threshold: number;
+};
+
+export type RepoSettings = {
+  id: string;
+  github_full_name: string;
+  ask_mode: "autonomous" | "balanced" | "verbose";
+  detection_paused: boolean;
+  proposals_paused: boolean;
+  slack_channel_id: string | null;
+  slack_channel_name: string | null;
+  categories: CategorySetting[];
+};
+
 export const api = {
   pendingClarifications: () => getJSON<HumanInputRequest[]>("/api/human-input?status=pending"),
   answerClarification: (id: string, answer: string) =>
@@ -117,10 +234,41 @@ export const api = {
   rejectFix: (id: string) => postJSON(`/api/fixes/${id}/reject`),
   scanRepo: (repoId: string) => postJSON(`/api/repos/${repoId}/scan`),
   triggerFix: (issueId: string) => postJSON(`/api/issues/${issueId}/trigger-fix`),
-  repos: () => getJSON<{ id: string; github_full_name: string; default_branch: string }[]>("/api/repos"),
-  login: (password: string) => postJSON<{ ok: boolean }>("/api/auth/login", { password }),
+  repos: () =>
+    getJSON<{ id: string; github_full_name: string; default_branch: string; detection_paused: boolean; proposals_paused: boolean }[]>(
+      "/api/repos"
+    ),
+  repoSettings: (repoId: string) => getJSON<RepoSettings>(`/api/repos/${repoId}/settings`),
+  updateRepoSettings: (repoId: string, patch: Record<string, unknown>) =>
+    patchJSON<{ ok: boolean }>(`/api/repos/${repoId}/settings`, patch),
+
+  requestAccess: (name: string, email: string, reason: string) =>
+    postJSON<{ ok: boolean; status: "pending" | "approved"; invite_token?: string }>("/api/auth/request-access", {
+      name,
+      email,
+      reason,
+    }),
+  checkInvite: (token: string) => getJSON<{ name: string; email: string }>(`/api/auth/invite?token=${encodeURIComponent(token)}`),
+  completeInvite: (token: string, password: string) =>
+    postJSON<{ ok: boolean; role: string }>("/api/auth/complete-invite", { token, password }),
+  login: (email: string, password: string) => postJSON<{ ok: boolean; role: string }>("/api/auth/login", { email, password }),
   logout: () => postJSON<{ ok: boolean }>("/api/auth/logout"),
-  session: () => getJSON<{ authenticated: boolean }>("/api/auth/session"),
+  session: () => getJSON<SessionInfo>("/api/auth/session"),
+
+  adminUsers: () => getJSON<AdminUser[]>("/api/admin/users"),
+  setUserRole: (id: string, role: "admin" | "member") => postJSON<{ ok: boolean }>(`/api/admin/users/${id}/role`, { role }),
+  deactivateUser: (id: string) => postJSON<{ ok: boolean }>(`/api/admin/users/${id}/deactivate`),
+  reactivateUser: (id: string) => postJSON<{ ok: boolean }>(`/api/admin/users/${id}/reactivate`),
+
+  accessRequests: () => getJSON<AccessRequest[]>("/api/admin/access-requests"),
+  approveAccessRequest: (id: string) => postJSON<{ ok: boolean; request: AccessRequest }>(`/api/admin/access-requests/${id}/approve`),
+  rejectAccessRequest: (id: string, reason: string) =>
+    postJSON<{ ok: boolean; request: AccessRequest }>(`/api/admin/access-requests/${id}/reject`, { reason }),
+  adminOverview: () => getJSON<AdminOverview>("/api/admin/overview"),
+  usageStats: () => getJSON<UsageStats>("/api/admin/usage"),
+  triggerRedeploy: () => postJSON<{ ok: boolean; message: string }>("/api/admin/redeploy"),
+  redeployStatus: () => getJSON<{ running: boolean; succeeded?: boolean; log: string | null }>("/api/admin/redeploy/status"),
+
   githubProfile: () => getJSON<GithubProfile>("/api/github/profile"),
   githubRepos: () => getJSON<GithubRepo[]>("/api/github/repos"),
   connectRepo: (full_name: string) => postJSON<{ ok: boolean; repo_id: string }>("/api/github/connect", { full_name }),

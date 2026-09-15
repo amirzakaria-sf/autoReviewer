@@ -15,7 +15,6 @@ same field dynamically, so nothing else needed to change.
 from __future__ import annotations
 
 import re
-import secrets
 from pathlib import Path
 
 import httpx
@@ -25,7 +24,9 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db import async_session
+from app.deps import current_user_id
 from app.models import Repo
+from app.security import sign_state, verify_state
 
 router = APIRouter(prefix="/api/github")
 
@@ -57,8 +58,7 @@ def _headers() -> dict:
 async def oauth_start(request: Request):
     if not settings.github_client_id:
         raise HTTPException(400, "GITHUB_CLIENT_ID is not configured")
-    state = secrets.token_urlsafe(24)
-    request.session["github_oauth_state"] = state
+    state = sign_state("github_oauth")
     params = httpx.QueryParams(
         {
             "client_id": settings.github_client_id,
@@ -74,8 +74,7 @@ async def oauth_start(request: Request):
 async def oauth_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None):
     if error:
         return RedirectResponse(f"/connect?github_error={error}")
-    expected_state = request.session.pop("github_oauth_state", None)
-    if not state or not expected_state or not secrets.compare_digest(state, expected_state):
+    if not state or not verify_state(state, "github_oauth"):
         return RedirectResponse("/connect?github_error=state_mismatch")
     if not code:
         return RedirectResponse("/connect?github_error=missing_code")
@@ -141,7 +140,7 @@ async def list_repos():
 
 
 @router.post("/connect")
-async def connect_repo(body: dict):
+async def connect_repo(body: dict, request: Request):
     full_name = body.get("full_name")
     if not full_name:
         raise HTTPException(400, "full_name is required")
@@ -153,7 +152,7 @@ async def connect_repo(body: dict):
         if existing:
             return {"ok": True, "repo_id": str(existing.id), "already_connected": True}
 
-        repo = Repo(github_full_name=full_name)
+        repo = Repo(github_full_name=full_name, owner_user_id=current_user_id(request))
         db.add(repo)
         await db.commit()
         return {"ok": True, "repo_id": str(repo.id)}

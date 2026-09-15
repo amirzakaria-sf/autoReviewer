@@ -1,6 +1,29 @@
 from enum import Enum
 
 
+class UserRole(str, Enum):
+    ADMIN = "admin"
+    MEMBER = "member"
+
+
+class UserStatus(str, Enum):
+    # A User row is only ever created already-ACTIVE now -- either the
+    # bootstrap admin at startup, or a real person completing an approved
+    # AccessRequest's invite link. No User exists in a pending state; a
+    # request that hasn't been decided yet has no User row at all (see
+    # AccessRequestStatus below). ACTIVE is the only status a fresh row is
+    # ever created with; the others exist for an admin to deactivate someone
+    # later.
+    ACTIVE = "active"
+    DEACTIVATED = "deactivated"
+
+
+class AccessRequestStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
 class IssueStatus(str, Enum):
     DETECTED_BELOW_THRESHOLD = "detected-below-threshold"
     RAISED = "raised"

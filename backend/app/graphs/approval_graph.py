@@ -18,7 +18,7 @@ from app.config import settings
 from app.enums import FIX_STATUS_RENDER, FixStatus, IssueStatus
 from app.graphs.outcome_checker import check_outcome
 from app.integrations import cloudflare_client, email_client, github_client, slack_client
-from app.models import Fix, Issue
+from app.models import Fix, Issue, Repo
 from app.notifications import mark_notified, record_condition, should_notify
 from app.routers.ws import emit_event
 from app.sandbox.docker_runner import run_in_sandbox
@@ -61,18 +61,16 @@ def _reopen_issue_for_retry(issue: Issue | None) -> None:
         issue.status = IssueStatus.RAISED
 
 
-def _update_slack_status(fix: Fix, issue_title: str, extra: str = "") -> None:
+def _update_slack_status(fix: Fix, issue_title: str, channel_id: str, extra: str = "") -> None:
     """Best-effort: keep the Slack thread's text in sync with the current
     status, since the outcome checker (§11) reads this back and a stale
     message is exactly the disagreement it's designed to catch."""
-    if not (settings.slack_bot_token and fix.slack_message_ts):
+    if not (settings.slack_bot_token and fix.slack_message_ts and channel_id):
         return
     try:
         label = FIX_STATUS_RENDER[fix.status]["dashboard_badge"]
         blocks = slack_client.status_only_blocks(issue_title, label, extra)
-        slack_client.update_message(
-            settings.slack_channel_id, fix.slack_message_ts, blocks, text=f"WhipGuard fix: {label}"
-        )
+        slack_client.update_message(channel_id, fix.slack_message_ts, blocks, text=f"WhipGuard fix: {label}")
     except Exception:
         logger.exception("Slack status update failed for fix %s", fix.id)
 
@@ -92,18 +90,23 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
     fix.approved_by = actor
     fix.approved_via = surface
     issue = await db.get(Issue, fix.issue_id)
+    repo = await db.get(Repo, issue.repo_id) if issue else None
+    # Falls back to the single global env var when a repo hasn't gone
+    # through the Slack Connect flow (routers/slack_connect.py) yet -- never
+    # silently drops a channel that used to work while repos migrate over.
+    channel_id = (repo.slack_channel_id if repo else None) or settings.slack_channel_id
 
     if not approved:
         fix.status = FixStatus.REJECTED
         await record_calibration_event(db, fix_id=fix.id, outcome="rejected_by_human", detail={"surface": surface})
         await db.commit()
-        _update_slack_status(fix, issue.title, f"rejected by {actor} via {surface}")
+        _update_slack_status(fix, issue.title, channel_id, f"rejected by {actor} via {surface}")
         emit_event({"type": "run", "kind": "approval", "status": "done", "message": f"Rejected by {actor} via {surface}"})
         return {"ok": True, "status": fix.status.value}
 
     fix.status = FixStatus.APPROVED
     await db.commit()
-    _update_slack_status(fix, issue.title, f"approved by {actor} via {surface}")
+    _update_slack_status(fix, issue.title, channel_id, f"approved by {actor} via {surface}")
     emit_event({"type": "run", "kind": "approval", "status": "started", "message": f"Approved by {actor} via {surface} — applying patch…"})
 
     # Same layout worktree.py uses (settings.workspace_root, not a path derived
@@ -175,7 +178,7 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
         _reopen_issue_for_retry(issue)
         await record_calibration_event(db, fix_id=fix.id, outcome="verification_failed", detail={"stage": "post_deploy_oracle"})
     await db.commit()
-    _update_slack_status(fix, issue.title, f"preview: {preview_url}")
+    _update_slack_status(fix, issue.title, channel_id, f"preview: {preview_url}")
     emit_event({
         "type": "node", "node": "post_deploy_oracle", "status": "done",
         "message": "Live URL verified" if exit_code == 0 else "Live URL verification FAILED",
@@ -187,9 +190,9 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
             text = f"WhipGuard: fix verification FAILED for fix {fix.id} (preview: {preview_url})"
             notified_anything = False
             try:
-                if not settings.slack_bot_token:
-                    raise RuntimeError("slack_bot_token is not configured")
-                slack_client.post_message(settings.slack_channel_id, blocks=[], text=text)
+                if not (settings.slack_bot_token and channel_id):
+                    raise RuntimeError("no Slack channel configured for this repo")
+                slack_client.post_message(channel_id, blocks=[], text=text)
                 notified_anything = True
             except Exception:
                 logger.exception("Slack notify failed for verification-failed fix %s", fix.id)
@@ -215,7 +218,7 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
     # whole run closed on any disagreement, even though every step above just
     # individually reported success.
     emit_event({"type": "node", "node": "outcome_check", "status": "started", "message": "Reading GitHub/Cloudflare/Slack/dashboard back independently…"})
-    outcome = await _run_outcome_check(db, issue, fix, preview_url, exit_code == 0)
+    outcome = await _run_outcome_check(db, repo, issue, fix, preview_url, exit_code == 0, channel_id)
     emit_event({
         "type": "node", "node": "outcome_check", "status": "done",
         "message": "All systems agree" if outcome["agreed"] else f"MISMATCH: {outcome['mismatch_detail']}",
@@ -226,14 +229,14 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
         _reopen_issue_for_retry(issue)
         await record_calibration_event(db, fix_id=fix.id, outcome="outcome_check_failed", detail={"mismatch": outcome["mismatch_detail"]})
         await db.commit()
-        _update_slack_status(fix, issue.title, f"mismatch: {outcome['mismatch_detail']}")
+        _update_slack_status(fix, issue.title, channel_id, f"mismatch: {outcome['mismatch_detail']}")
         notification = await record_condition(db, fix_id=fix.id, issue_id=None, condition_key="outcome-check-failed")
         if should_notify(notification, is_escalation=True):
             notified_anything = False
-            if settings.slack_bot_token:
+            if settings.slack_bot_token and channel_id:
                 try:
                     slack_client.post_message(
-                        settings.slack_channel_id, blocks=[],
+                        channel_id, blocks=[],
                         text=f"WhipGuard: outcome check FAILED for fix {fix.id}: {outcome['mismatch_detail']}",
                     )
                     notified_anything = True
@@ -261,10 +264,15 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
     }
 
 
-async def _run_outcome_check(db, issue: Issue, fix: Fix, preview_url: str, assertion_passes: bool) -> dict:
+async def _run_outcome_check(
+    db, repo: Repo | None, issue: Issue, fix: Fix, preview_url: str, assertion_passes: bool, channel_id: str
+) -> dict:
     from app.models import OutcomeCheck
 
-    repo_full_name = "amirzakaria-sf/whipguard-demo-ui"
+    # Falls back to the fixture repo only if this fix's own repo somehow
+    # can't be resolved -- every real path has repo already, from
+    # resolve_approval's own lookup via issue.repo_id.
+    repo_full_name = repo.github_full_name if repo else settings.fixture_repo
 
     try:
         gh_issue = await asyncio.to_thread(github_client.get_issue, repo_full_name, issue.github_issue_number)
@@ -283,9 +291,9 @@ async def _run_outcome_check(db, issue: Issue, fix: Fix, preview_url: str, asser
     cloudflare_state = {"reachable": True, "assertion_passes": assertion_passes}
 
     slack_state: dict = {"status_text": None}
-    if fix.slack_message_ts and settings.slack_bot_token:
+    if fix.slack_message_ts and settings.slack_bot_token and channel_id:
         try:
-            slack_state = {"status_text": slack_client.get_message_text(settings.slack_channel_id, fix.slack_message_ts)}
+            slack_state = {"status_text": slack_client.get_message_text(channel_id, fix.slack_message_ts)}
         except Exception:
             logger.exception("outcome check: could not read Slack state for fix %s", fix.id)
 

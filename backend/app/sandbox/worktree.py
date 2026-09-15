@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -13,6 +14,19 @@ from pathlib import Path
 from app.config import settings
 
 WORKSPACE_ROOT = Path(settings.workspace_root)
+
+# Matches docker_runner.py's own SANDBOX_UID/GID -- the sandbox container
+# runs as this UID (the HOST user's, not root), but this backend process
+# itself runs as root (no USER in the Dockerfile), so every worktree it
+# creates is root-owned. A root-owned directory blocks the non-root sandbox
+# from writing into it at all -- `npm install` inside failed completely
+# silent (Docker returned an exit code with empty stdout/stderr, no
+# "permission denied" visible anywhere) until this was tracked down by
+# actually running the eval harness and comparing a raw `ls -la` against
+# the sandbox's own `id`, not by assuming detection working once meant
+# every worktree path was fine.
+_SANDBOX_UID = int(os.environ.get("SANDBOX_UID", "1000"))
+_SANDBOX_GID = int(os.environ.get("SANDBOX_GID", "1000"))
 
 
 def _repo_slug(github_full_name: str) -> str:
@@ -88,6 +102,18 @@ def create_worktree(mirror: Path, issue_number: int, slug: str, base_branch: str
         capture_output=True,
         text=True,
     )
+    # Recursive, not just the top directory: `npm install` doesn't only
+    # CREATE new entries (node_modules) -- it also REWRITES package-lock.json,
+    # an EXISTING checked-out file. A checked-out file's default mode (git's
+    # normal 644) denies write to anyone but its owner regardless of the
+    # containing directory's own ownership, so chowning only the directory
+    # (an earlier version of this fix) still left npm hitting a bare EACCES
+    # on that one file -- found by dropping --silent, which had been
+    # swallowing the real error behind an opaque, contentless exit 243.
+    for root, dirs, files in os.walk(worktree_path):
+        for name in dirs + files:
+            os.chown(os.path.join(root, name), _SANDBOX_UID, _SANDBOX_GID)
+    os.chown(worktree_path, _SANDBOX_UID, _SANDBOX_GID)
     return worktree_path
 
 

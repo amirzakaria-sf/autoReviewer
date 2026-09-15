@@ -100,9 +100,107 @@ async def overview(db: AsyncSession = Depends(get_db)):
 async def list_repos(db: AsyncSession = Depends(get_db)):
     repos = (await db.execute(select(Repo))).scalars().all()
     return [
-        {"id": str(r.id), "github_full_name": r.github_full_name, "default_branch": r.default_branch}
+        {
+            "id": str(r.id),
+            "github_full_name": r.github_full_name,
+            "default_branch": r.default_branch,
+            "detection_paused": r.detection_paused,
+            "proposals_paused": r.proposals_paused,
+        }
         for r in repos
     ]
+
+
+@router.get("/repos/{repo_id}/settings")
+async def get_repo_settings(repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    from app.categories import CATEGORY_REGISTRY
+
+    repo = await db.get(Repo, repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+
+    categories = []
+    for key, config in CATEGORY_REGISTRY.items():
+        toggle = (repo.enabled_categories or {}).get(key, {})
+        thresholds = (repo.thresholds or {}).get(key, {})
+        categories.append({
+            "key": key,
+            "label": config.label,
+            "issues_enabled": toggle.get("issues", True),
+            "fixes_enabled": toggle.get("fixes", True),
+            "assurance_threshold": thresholds.get("assurance", config.assurance_threshold),
+            "resolution_threshold": thresholds.get("resolution", config.resolution_threshold),
+            "default_assurance_threshold": config.assurance_threshold,
+            "default_resolution_threshold": config.resolution_threshold,
+        })
+
+    return {
+        "id": str(repo.id),
+        "github_full_name": repo.github_full_name,
+        "ask_mode": repo.ask_mode,
+        "detection_paused": repo.detection_paused,
+        "proposals_paused": repo.proposals_paused,
+        "slack_channel_id": repo.slack_channel_id,
+        "slack_channel_name": repo.slack_channel_name,
+        "categories": categories,
+    }
+
+
+@router.patch("/repos/{repo_id}/settings")
+async def update_repo_settings(repo_id: uuid.UUID, body: dict, db: AsyncSession = Depends(get_db)):
+    from app.categories import CATEGORY_REGISTRY
+
+    repo = await db.get(Repo, repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+
+    if "ask_mode" in body:
+        if body["ask_mode"] not in ("autonomous", "balanced", "verbose"):
+            raise HTTPException(400, "ask_mode must be autonomous, balanced, or verbose")
+        repo.ask_mode = body["ask_mode"]
+
+    if "detection_paused" in body:
+        repo.detection_paused = bool(body["detection_paused"])
+    if "proposals_paused" in body:
+        repo.proposals_paused = bool(body["proposals_paused"])
+
+    # Per-category patches: {"ui": {"issues_enabled": false, "resolution_threshold": 85}, ...}
+    # Merged key-by-key into the existing JSONB rather than replacing it
+    # wholesale, so patching one category never silently resets the others.
+    categories_patch = body.get("categories") or {}
+    enabled = dict(repo.enabled_categories or {})
+    thresholds = dict(repo.thresholds or {})
+    for key, patch in categories_patch.items():
+        if key not in CATEGORY_REGISTRY:
+            raise HTTPException(400, f"unknown category: {key}")
+        toggle = dict(enabled.get(key, {}))
+        if "issues_enabled" in patch:
+            toggle["issues"] = bool(patch["issues_enabled"])
+        if "fixes_enabled" in patch:
+            toggle["fixes"] = bool(patch["fixes_enabled"])
+        if toggle:
+            enabled[key] = toggle
+
+        thresh = dict(thresholds.get(key, {}))
+        if "assurance_threshold" in patch:
+            value = int(patch["assurance_threshold"])
+            if not (0 <= value <= 100):
+                raise HTTPException(400, "assurance_threshold must be 0-100")
+            thresh["assurance"] = value
+        if "resolution_threshold" in patch:
+            value = int(patch["resolution_threshold"])
+            if not (0 <= value <= 100):
+                raise HTTPException(400, "resolution_threshold must be 0-100")
+            thresh["resolution"] = value
+        if thresh:
+            thresholds[key] = thresh
+
+    if categories_patch:
+        repo.enabled_categories = enabled
+        repo.thresholds = thresholds
+
+    await db.commit()
+    return {"ok": True}
 
 
 @router.get("/issues")
@@ -188,6 +286,8 @@ async def scan_repo(repo_id: uuid.UUID, category: str | None = None, db: AsyncSe
     repo = await db.get(Repo, repo_id)
     if not repo:
         raise HTTPException(404, "repo not found")
+    if repo.detection_paused:
+        raise HTTPException(409, "detection is paused for this repo (kill switch)")
 
     categories = [category] if category else enabled_categories_for(repo)
 

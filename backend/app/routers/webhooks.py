@@ -88,6 +88,8 @@ async def _handle_push(db: AsyncSession, payload: dict) -> None:
             await run_and_persist(scoped_db, fresh_repo, category=cat)
 
     asyncio.create_task(_reindex())
+    if repo.detection_paused:
+        return
     for cat in enabled_categories_for(repo):
         asyncio.create_task(_scan(cat))
 
@@ -142,9 +144,12 @@ async def _handle_pull_request(db: AsyncSession, payload: dict) -> None:
     await db.commit()
 
     if issue:
+        from app.config import settings
         from app.graphs.approval_graph import _update_slack_status
 
-        _update_slack_status(fix, issue.title, f"PR #{pr_number} {'merged' if merged else 'closed'} on GitHub")
+        repo = await db.get(Repo, issue.repo_id)
+        channel_id = (repo.slack_channel_id if repo else None) or settings.slack_channel_id
+        _update_slack_status(fix, issue.title, channel_id, f"PR #{pr_number} {'merged' if merged else 'closed'} on GitHub")
 
 
 async def _handle_issues(db: AsyncSession, payload: dict) -> None:

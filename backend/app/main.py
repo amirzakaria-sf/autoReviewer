@@ -1,30 +1,63 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.middleware.sessions import SessionMiddleware
+from sqlalchemy import select
 
 from app import models  # noqa: F401  (registers tables on Base.metadata)
-from app.config import settings
-from app.db import Base, engine
 from app.calibration import run_calibration_loop
+from app.config import settings
+from app.db import Base, async_session, engine
+from app.enums import UserRole, UserStatus
+from app.models import User
 from app.poller import poll_for_externally_filed_bugs
-from app.routers import api, auth, email_actions, github, human_input, webhooks, ws
+from app.routers import admin, api, auth, email_actions, github, human_input, slack_connect, webhooks, ws
+from app.security import decode_access_token, hash_password
 from app.stuck_run_sweeper import sweep_stuck_runs
 
-# Paths callable without a session: the login endpoint itself, GitHub/Slack's
-# own servers (they don't carry this app's session cookie), a magic-link
-# clicked straight from an inbox (its own signed/expiring token IS the
-# credential -- see email_client.verify_action_token), and the healthcheck.
+logger = logging.getLogger("whipguard.main")
+
+# Paths callable without a valid access token: auth endpoints themselves,
+# GitHub/Slack's own servers (they don't carry this app's cookies), a
+# magic-link clicked straight from an inbox (its own signed/expiring token
+# IS the credential -- see email_client.verify_action_token), and the
+# healthcheck.
 _PUBLIC_PATHS = ("/api/auth/", "/api/webhooks/", "/api/slack/interactions", "/api/email/action", "/healthz")
+
+
+async def _seed_bootstrap_admin() -> None:
+    """First-ever boot after the User/RefreshToken migration: without this,
+    a deployment with zero User rows has no way to log in at all -- signup
+    exists, but signing up creates the FIRST admin only if the DB already
+    has none, so this just makes that same guarantee hold at container
+    start too, using the same ADMIN_PASSWORD/NOTIFY_EMAIL operators already
+    had configured, not a new credential to distribute."""
+    if not settings.notify_email:
+        return
+    async with async_session() as db:
+        any_user = (await db.execute(select(User.id).limit(1))).scalars().first()
+        if any_user is not None:
+            return
+        db.add(
+            User(
+                email=settings.notify_email.strip().lower(),
+                password_hash=hash_password(settings.admin_password),
+                role=UserRole.ADMIN,
+                status=UserStatus.ACTIVE,
+            )
+        )
+        await db.commit()
+        logger.info("bootstrapped initial admin account for %s", settings.notify_email)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _seed_bootstrap_admin()
     ws.set_main_loop(asyncio.get_running_loop())
     poll_task = asyncio.create_task(poll_for_externally_filed_bugs())
     sweep_task = asyncio.create_task(sweep_stuck_runs())
@@ -37,25 +70,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="WhipGuard", lifespan=lifespan)
 
-# Starlette wraps middleware LIFO -- the LAST one added becomes the OUTERMOST
-# layer and runs FIRST on a request. SessionMiddleware has to be added after
-# (and therefore run before, i.e. outside) require_session below, or
-# request.session doesn't exist yet when require_session checks it -- found by
-# actually running this once and reading the 500: "SessionMiddleware must be
-# installed to access request.session", raised from inside require_session
-# itself despite SessionMiddleware being registered, just in the wrong order.
-
 
 @app.middleware("http")
 async def require_session(request: Request, call_next):
     if request.url.path.startswith(_PUBLIC_PATHS) or not request.url.path.startswith("/api/"):
         return await call_next(request)
-    if not request.session.get("authenticated"):
-        return JSONResponse({"detail": "not authenticated"}, status_code=401)
+
+    token = request.cookies.get("access_token")
+    decoded = decode_access_token(token) if token else None
+    if not decoded:
+        # Distinguishable from a generic 403 so the frontend knows a silent
+        # POST /api/auth/refresh is worth trying before it gives up and
+        # redirects to /login -- see frontend/lib/api.ts.
+        return JSONResponse({"detail": "not authenticated", "code": "token_expired"}, status_code=401)
+
+    request.state.user_id = decoded["sub"]
+    request.state.role = decoded["role"]
     return await call_next(request)
 
 
-app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, same_site="lax")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://whip-guard.zakarias.in", "http://localhost:3300"],
@@ -65,11 +98,13 @@ app.add_middleware(
 )
 
 
+app.include_router(admin.router)
 app.include_router(auth.router)
 app.include_router(api.router)
 app.include_router(email_actions.router)
 app.include_router(github.router)
 app.include_router(human_input.router)
+app.include_router(slack_connect.router)
 app.include_router(webhooks.router)
 app.include_router(ws.router)
 

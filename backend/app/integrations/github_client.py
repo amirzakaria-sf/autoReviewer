@@ -4,18 +4,32 @@ defaults off, an absent capability (plan.md §1's forbidden-action rule).
 
 from __future__ import annotations
 
+import logging
 import subprocess
 
 import httpx
 
 from app.config import settings
+from app.integrations import github_app_auth
 
 API_BASE = "https://api.github.com"
+logger = logging.getLogger("whipguard.github_client")
 
 
 def _headers() -> dict:
+    # Prefers the GitHub App installation token (a real, distinct bot
+    # identity -- see github_app_auth.py) whenever an App is configured;
+    # falls back to the existing OAuth/PAT bearer token unchanged otherwise,
+    # so nothing breaks for a deployment that hasn't generated an App
+    # private key yet.
+    token = settings.github_token
+    if github_app_auth.github_app_configured():
+        try:
+            token = github_app_auth.get_installation_token()
+        except Exception:
+            logger.exception("GitHub App token mint failed; falling back to the configured PAT/OAuth token")
     return {
-        "Authorization": f"Bearer {settings.github_token}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
     }
 

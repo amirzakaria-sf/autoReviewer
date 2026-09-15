@@ -8,11 +8,79 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
 from app.embeddings import EMBEDDING_DIMENSIONS
-from app.enums import FixStatus, IssueStatus
+from app.enums import AccessRequestStatus, FixStatus, IssueStatus, UserRole, UserStatus
 
 
 def _uuid_pk() -> Mapped[uuid.UUID]:
     return mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    email: Mapped[str] = mapped_column(sa.String, nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(sa.String, nullable=False)
+    role: Mapped[UserRole] = mapped_column(sa.Enum(UserRole, name="user_role"), default=UserRole.MEMBER)
+    status: Mapped[UserStatus] = mapped_column(sa.Enum(UserStatus, name="user_status"), default=UserStatus.ACTIVE)
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+    last_login_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True)
+
+
+class AccessRequest(Base):
+    """A request for access, collected BEFORE any account exists (name,
+    email, reason -- the thing this app was missing: the old flow let
+    someone pick a password at signup time and created a real, if inactive,
+    User row immediately). An admin reviews name/email/reason and decides;
+    only on approval does anyone get a way to actually set a password, via a
+    signed, single-use, expiring invite link mailed to the request's own
+    email address (routers/auth.py's /complete-invite). Rejecting, or never
+    deciding, leaves no account behind at all.
+    """
+
+    __tablename__ = "access_requests"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(sa.String, nullable=False)
+    email: Mapped[str] = mapped_column(sa.String, nullable=False)
+    reason: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    status: Mapped[AccessRequestStatus] = mapped_column(
+        sa.Enum(AccessRequestStatus, name="access_request_status"), default=AccessRequestStatus.PENDING
+    )
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    # Single-use guard for the invite link -- checked/set atomically inside
+    # the same transaction that creates the User row, not just relied on
+    # implicitly (an approved request being reused after the account already
+    # exists must fail loudly, not silently create a second account attempt).
+    invite_consumed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+
+
+class RefreshToken(Base):
+    """A stateful, revocable refresh token -- deliberately NOT a bare long-
+    lived JWT, since a pure-stateless refresh token can't be revoked without
+    a separate blocklist anyway. token_hash is a SHA-256 hash of the raw
+    secret (the raw value only ever lives in the httpOnly cookie); rotated
+    on every use (routers/auth.py's /refresh) -- a token presented twice is
+    proof of theft or a replay, so the second use revokes the whole chain.
+    """
+
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("users.id"))
+    token_hash: Mapped[str] = mapped_column(sa.String, nullable=False, unique=True)
+    # The token this one was rotated FROM, so a reused (already-rotated) token
+    # can be traced back to revoke every descendant in the same chain -- the
+    # actual theft-detection mechanism, not just single-token expiry.
+    replaced_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+    user_agent: Mapped[str | None] = mapped_column(sa.String, nullable=True)
 
 
 class Repo(Base):
@@ -21,6 +89,7 @@ class Repo(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     github_full_name: Mapped[str] = mapped_column(sa.String, nullable=False, unique=True)
     default_branch: Mapped[str] = mapped_column(sa.String, default="main")
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True)
     # {category_key: {"issues": bool, "fixes": bool}} -- the toggle matrix
     # (plan.md §8) rendered straight from CATEGORY_REGISTRY keys; absent here
     # means "on" (see enabled_categories_for in app/categories.py).
@@ -28,6 +97,18 @@ class Repo(Base):
     # {category_key: {"assurance": int, "resolution": int}} overriding the
     # registry's own defaults, per-repo (plan.md §7.1's threshold sliders).
     thresholds: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Autonomous | balanced | verbose (plan.md §10.5) -- see app/ask_mode.py.
+    ask_mode: Mapped[str] = mapped_column(sa.String, default="balanced")
+    # The visible kill switch (plan.md §7.1) -- not decoration: a runaway
+    # detector has to be stoppable in one click, per-repo.
+    detection_paused: Mapped[bool] = mapped_column(sa.Boolean, default=False)
+    proposals_paused: Mapped[bool] = mapped_column(sa.Boolean, default=False)
+    # Picked via Slack's own OAuth channel-picker consent screen
+    # (routers/slack_connect.py), never hand-typed -- slack_channel_name is
+    # display-only (shown in the UI), slack_channel_id is what every
+    # slack_client.post_message call actually uses.
+    slack_channel_id: Mapped[str | None] = mapped_column(sa.String, nullable=True)
+    slack_channel_name: Mapped[str | None] = mapped_column(sa.String, nullable=True)
     connected_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
 
 

@@ -30,6 +30,10 @@ async def trigger_fix_council(issue_id: uuid.UUID) -> None:
             return
 
         repo = await db.get(Repo, issue.repo_id)
+        if repo and repo.proposals_paused:
+            logger.info("fix proposals paused for repo %s (kill switch) -- skipping issue %s", repo.id, issue_id)
+            return
+
         category = issue.category
         threshold = resolution_threshold_for(repo, category) if repo else settings.resolution_threshold
         repo_full_name = settings.fixture_repo
@@ -93,16 +97,15 @@ async def trigger_fix_council(issue_id: uuid.UUID) -> None:
                 await db.flush()
 
                 pr_url = f"https://github.com/{repo_full_name}/pull/{pr_number}"
+                channel_id = (repo.slack_channel_id if repo else None) or settings.slack_channel_id
 
-                if settings.slack_bot_token and settings.slack_channel_id:
+                if settings.slack_bot_token and channel_id:
                     try:
                         blocks = slack_client.build_fix_proposed_blocks(
                             fix.id, issue.title, result.get("score", 0), pr_url,
                             FIX_STATUS_RENDER[FixStatus.AWAITING_APPROVAL]["dashboard_badge"],
                         )
-                        ts = slack_client.post_message(
-                            settings.slack_channel_id, blocks, text=f"WhipGuard fix proposed: {issue.title}"
-                        )
+                        ts = slack_client.post_message(channel_id, blocks, text=f"WhipGuard fix proposed: {issue.title}")
                         fix.slack_message_ts = ts
                     except Exception:
                         logger.exception("Slack fix-proposed post failed for fix %s", fix.id)

@@ -162,3 +162,33 @@ def build_status_email(issue_title: str, status_label: str, detail: str = "") ->
     """
     text = f"WhipGuard: {status_label} — \"{issue_title}\"\n{detail}\n\nhttps://whip-guard.zakarias.in/dashboard"
     return subject, html, text
+
+
+def build_invite_email(name: str, invite_token: str) -> tuple[str, str, str]:
+    accept_url = f"https://whip-guard.zakarias.in/accept-invite?token={invite_token}"
+    subject = "You're in — set up your WhipGuard account"
+    html = f"""
+    <div style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto">
+      <h2 style="margin-bottom:4px">Welcome, {name}</h2>
+      <p style="color:#555">Your access request was approved. Set a password to finish creating your account.</p>
+      <div style="margin:24px 0">
+        <a href="{accept_url}" style="background:#5b7cfa;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none">Set up your account</a>
+      </div>
+      <p style="color:#999;font-size:12px">This link is single-use and expires in 7 days.</p>
+    </div>
+    """
+    text = f"Welcome, {name}\n\nYour access request was approved. Set a password here:\n{accept_url}\n\nSingle-use, expires in 7 days."
+    return subject, html, text
+
+
+def build_access_declined_email(name: str, reason: str) -> tuple[str, str, str]:
+    subject = "WhipGuard access request update"
+    html = f"""
+    <div style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto">
+      <h2 style="margin-bottom:4px">Access request declined</h2>
+      <p style="color:#555">Hi {name}, your request for access to WhipGuard was not approved.</p>
+      {f'<p style="color:#555"><b>Reason:</b> {reason}</p>' if reason else ''}
+    </div>
+    """
+    text = f"Hi {name}, your request for access to WhipGuard was not approved." + (f"\nReason: {reason}" if reason else "")
+    return subject, html, text

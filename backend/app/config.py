@@ -26,7 +26,18 @@ class Settings(BaseSettings):
 
     slack_bot_token: str = ""
     slack_signing_secret: str = ""
+    # Global fallback only -- the real per-repo channel lives on Repo.slack_
+    # channel_id (app/routers/slack_connect.py), chosen via Slack's own
+    # OAuth channel picker (the incoming-webhook scope's consent screen)
+    # rather than anyone hand-typing a channel ID. Repos that haven't
+    # connected Slack yet fall back to this if it's set; the actual send
+    # always uses the existing workspace-wide bot token either way -- the
+    # OAuth flow below is only ever used to pick a channel, never to
+    # re-authenticate the bot itself.
     slack_channel_id: str = ""
+    slack_client_id: str = ""
+    slack_client_secret: str = ""
+    slack_oauth_redirect_uri: str = "https://whip-guard.zakarias.in/api/slack/oauth/callback"
 
     github_token: str = ""
     # OAuth App credentials (Settings -> Developer settings -> OAuth Apps),
@@ -38,6 +49,20 @@ class Settings(BaseSettings):
     github_client_id: str = ""
     github_client_secret: str = ""
     github_oauth_redirect_uri: str = "https://whip-guard.zakarias.in/api/github/oauth/callback"
+
+    # Real GitHub App identity (app/integrations/github_app_auth.py) -- a
+    # DIFFERENT credential shape than the OAuth App above (App ID + a private
+    # key generated on the App's own settings page, not a client secret).
+    # Optional: github_client.py falls back to github_token unchanged while
+    # these are unset. github_app_private_key is the FULL PEM contents (not
+    # a path) -- .env can hold a multi-line value in a quoted string.
+    # github_app_installation_id is optional too: left unset, it's
+    # auto-discovered via GET /app/installations (fine for a single-org
+    # deployment like this one).
+    github_app_id: str = ""
+    github_app_private_key: str = ""
+    github_app_installation_id: str = ""
+
     fixture_repo: str = "amirzakaria-sf/whipguard-demo-ui"
 
     # Where THIS process sees the workspace directory. Defaults to the
@@ -55,6 +80,12 @@ class Settings(BaseSettings):
     # means "not containerized" (local dev via a venv), where the container's own
     # path IS the host path.
     workspace_host_path: str = ""
+
+    # Real host path of the repo root, mounted into this container at that
+    # SAME path (docker-compose.yml's `${PWD}:${PWD}:ro`) so `docker compose`
+    # commands issued from inside here resolve correctly against the host
+    # daemon -- see routers/admin.py's /redeploy and deploy.sh.
+    repo_root: str = ""
 
     assurance_threshold: int = 75
     resolution_threshold: int = 80
