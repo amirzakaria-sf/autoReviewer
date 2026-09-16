@@ -130,3 +130,37 @@ def test_agreement_across_channels_beats_confidence_within_one():
     )
     single_channel_rank_one = _W_STRUCTURAL / (_RRF_K + 1)
     assert agreed > single_channel_rank_one
+
+
+def test_measurements_and_colours_are_not_treated_as_searchable_identifiers():
+    """The quoted-string capture is for error MESSAGES. Against real
+    accessibility output it also matched CSS colours and font sizes, which
+    no codebase is searchable by -- they reached the structural channel as
+    query terms and matched nothing but cost a scan each."""
+    terms = query_identifiers("fgColor #ffffff fontSize 10.0pt (13.3333px) ratio 4.5:1 deleteItem")
+    assert "deleteItem" in terms
+    assert "fgColor" in terms
+    assert "#ffffff" not in terms
+    assert not any(term.startswith("4.5") or term.endswith("px") or term.endswith("pt") for term in terms)
+
+
+def test_multi_word_fragments_are_not_identifiers():
+    assert all(" " not in term and "\n" not in term for term in query_identifiers('a "broken , +\n fragment" here'))
+
+
+def test_history_query_ors_its_terms_rather_than_anding_them():
+    """Postgres's websearch_to_tsquery ANDs terms, which made history search
+    silently return nothing unless the caller already knew a trace's exact
+    wording."""
+    from app.memory_traces import _or_tsquery
+
+    built = _or_tsquery("accessibility contrast accessible name violation")
+    assert "|" in built
+    assert "&" not in built
+    assert "accessibility" in built and "violation" in built
+
+
+def test_history_query_drops_words_that_match_everything():
+    from app.memory_traces import _or_tsquery
+
+    assert _or_tsquery("the and for this that") == ""

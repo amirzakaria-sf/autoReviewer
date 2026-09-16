@@ -30,6 +30,7 @@ Bookkeeping must never fail a run.
 from __future__ import annotations
 
 import logging
+import re
 
 import psycopg
 
@@ -45,6 +46,33 @@ _MAX_RESULTS = 8
 
 def _enabled() -> bool:
     return bool(getattr(settings, "memory_traces_enabled", True))
+
+
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,}")
+
+
+def _or_tsquery(query: str) -> str:
+    """Build an OR tsquery from the words in `query`.
+
+    Postgres's websearch_to_tsquery and plainto_tsquery both AND the terms
+    together, which is the wrong default here and fails silently: asking
+    history for "accessibility contrast accessible name violation" required
+    every one of those words to appear in the SAME trace, so a trace that
+    described the identical failure in slightly different words matched
+    nothing at all. A memory that only answers when you already know its
+    exact wording is not a memory.
+
+    Ranking still orders the results, so a trace matching four terms beats
+    one matching a single term -- OR widens what is FOUND, not what wins.
+    """
+    words = {match.group(0).lower() for match in _WORD_RE.finditer(query or "")}
+    words -= _QUERY_STOPWORDS
+    return " | ".join(sorted(words))
+
+
+_QUERY_STOPWORDS = frozenset(
+    {"the", "and", "for", "with", "that", "this", "from", "was", "were", "has", "have", "not", "check", "failed"},
+)
 
 
 def record_trace(
@@ -146,27 +174,31 @@ def search_history(repo_id, query: str, *, exclude_run_id=None, limit: int = _MA
     if not _enabled() or not repo_id or not (query or "").strip():
         return []
     try:
+        tsquery = _or_tsquery(query)
+        if not tsquery:
+            return []
+
         with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT created_at, category, stage, outcome, failing_command, exit_code, detail,
                        ts_rank(
                          to_tsvector('english', coalesce(failing_command,'') || ' ' || coalesce(detail,'')),
-                         websearch_to_tsquery('english', %s)
+                         to_tsquery('english', %s)
                        ) AS rank
                 FROM memory_traces
                 WHERE repo_id = %s
                   AND (%s::uuid IS NULL OR council_run_id IS DISTINCT FROM %s::uuid)
                   AND to_tsvector('english', coalesce(failing_command,'') || ' ' || coalesce(detail,''))
-                      @@ websearch_to_tsquery('english', %s)
+                      @@ to_tsquery('english', %s)
                 ORDER BY rank DESC, created_at DESC
                 LIMIT %s
                 """,
                 (
-                    query, str(repo_id),
+                    tsquery, str(repo_id),
                     str(exclude_run_id) if exclude_run_id else None,
                     str(exclude_run_id) if exclude_run_id else None,
-                    query, limit,
+                    tsquery, limit,
                 ),
             )
             rows = cur.fetchall()

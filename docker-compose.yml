@@ -20,6 +20,9 @@ services:
 
   backend:
     build: ./backend
+    # Named explicitly so the worker below can reference this exact image
+    # instead of building its own copy -- see the worker service for why.
+    image: whipguard-backend:latest
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://whipguard:whipguard@postgres:5432/whipguard
@@ -59,7 +62,17 @@ services:
   # nothing can reach it, and the arrow between the two halves points one
   # way, through the database.
   worker:
-    build: ./backend
+    # Deliberately NO `build:` -- it reuses the backend's image by tag.
+    #
+    # With its own `build: ./backend`, Compose gave this service a SEPARATE
+    # image (repofixer-worker), so `docker compose build backend` rebuilt the
+    # web process and left the worker on whatever it was first built with.
+    # The worker is the half that actually executes everything, so three
+    # deploys ran against stale code without a single visible error -- the
+    # containers were healthy, the queue drained, and the new code simply
+    # was not there. Sharing one tag makes that drift impossible rather than
+    # something a deploy script has to remember.
+    image: whipguard-backend:latest
     command: ["python", "-m", "app.worker"]
     env_file: .env
     environment:

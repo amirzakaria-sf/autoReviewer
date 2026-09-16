@@ -453,3 +453,24 @@ class WorkItem(Base):
     # somewhere both halves can read.
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+
+
+class AppSetting(Base):
+    """Account-level configuration that both processes must agree on.
+
+    Deliberately the DATABASE and not a rewrite of `.env`, which is how the
+    Slack bot token used to be persisted. Since the security split there are
+    two processes: the web process handles the OAuth callback, but the
+    WORKER is what actually posts to Slack. A value written into .env by one
+    container is not visible to the other until it restarts, so the approval
+    message would keep going to the old channel -- or nowhere -- with nothing
+    to indicate why. A row both read at send time cannot drift.
+    """
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(sa.String, primary_key=True)
+    value: Mapped[str] = mapped_column(sa.Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()
+    )

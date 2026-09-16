@@ -58,8 +58,15 @@ async def enqueue(kind: str, payload: dict) -> uuid.UUID:
     return item_id
 
 
-def claim_next(conn: psycopg.Connection) -> dict | None:
-    """Atomically take the oldest queued item, or None. Worker-side, sync."""
+def claim_next(conn: psycopg.Connection, kinds: list[str] | None = None) -> dict | None:
+    """Atomically take the oldest queued item, or None. Worker-side, sync.
+
+    `kinds` restricts the claim to what this worker can actually run. A
+    worker only ever claims kinds it has a handler for, which matters during
+    a rolling deploy: an old worker that grabbed a kind introduced by newer
+    code would claim it, find no handler, and mark it permanently failed --
+    destroying the work instead of leaving it for a worker that can do it.
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -67,14 +74,14 @@ def claim_next(conn: psycopg.Connection) -> dict | None:
                                   attempts = attempts + 1
             WHERE id = (
                 SELECT id FROM work_items
-                WHERE status = 'queued'
+                WHERE status = 'queued' AND (%s::text[] IS NULL OR kind = ANY(%s::text[]))
                 ORDER BY created_at
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
             )
             RETURNING id, kind, payload, attempts
             """,
-            (WORKER_ID,),
+            (WORKER_ID, kinds, kinds),
         )
         row = cur.fetchone()
         conn.commit()

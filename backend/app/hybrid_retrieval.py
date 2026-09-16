@@ -58,6 +58,8 @@ _W_LEXICAL = 1.0
 _CHANNEL_DEPTH = 50
 
 _IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b")
+# A number with a unit or a ratio: 13.3333px, 4.5:1, 10.0pt.
+_MEASUREMENT_RE = re.compile(r"[0-9][0-9.:]*\s*(?:px|pt|em|rem|%|s|ms)?", re.IGNORECASE)
 # An exception class, a traceback line, a quoted message -- exactly what a
 # failing assertion or a retry-with-feedback carries, and exactly the terms
 # BM25 dilutes across a corpus that mentions them everywhere.
@@ -166,6 +168,18 @@ def query_identifiers(text: str) -> list[str]:
         for match in pattern.findall(text or ""):
             term = str(match).strip()
             if not term or term.lower() in _STOPWORDS:
+                continue
+            # The quoted-string capture is meant for error MESSAGES
+            # ('connection refused'), and against real detector output it also
+            # matched CSS colours, font sizes and fragments of diff
+            # punctuation -- `#ffffff`, `10.0pt (13.3333px)`, `,\n    +`.
+            # Those are not things any codebase is searchable by, and feeding
+            # them to the structural channel is pure noise.
+            if any(character.isspace() for character in term):
+                continue
+            if not any(character.isalpha() for character in term):
+                continue
+            if term.startswith("#") or _MEASUREMENT_RE.fullmatch(term):
                 continue
             # A bare lowercase word is prose unless it is snake_case or
             # camelCase; those carry a shape the codebase actually uses.

@@ -195,7 +195,8 @@ async def main() -> None:
 
             conn = connect()
             try:
-                item = claim_next(conn)
+                # Only kinds this build knows how to run -- see claim_next.
+                item = claim_next(conn, kinds=list(HANDLERS))
             finally:
                 conn.close()
 

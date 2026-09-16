@@ -60,7 +60,9 @@ async def test_poll_once_creates_issue_for_new_labeled_github_issue():
         assert issue.github_issue_number == NEW_ISSUE_NUMBER
         assert issue.status == IssueStatus.RAISED
 
-        mock_trigger.assert_called_once_with(issue.id)
+        # Queued for the privileged worker rather than run in-process --
+        # see app/work_queue.py for why the poller cannot execute it itself.
+        mock_trigger.assert_called_once_with("fix_council", {"issue_id": str(issue.id)})
     finally:
         await _cleanup_issue(NEW_ISSUE_NUMBER)
 

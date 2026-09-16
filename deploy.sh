@@ -95,7 +95,8 @@ exec > >(tee "$LOG_DIR/deploy.log") 2>&1
 
 echo "=== WhipGuard deploy started $(date -u +%FT%TZ) ==="
 echo "[deploy] building backend + frontend..."
-# `worker` shares the backend image, so building backend covers it.
+# `worker` has no build of its own -- it runs the backend image by tag
+# (docker-compose.yml explains why), so this one build covers both.
 docker compose build backend frontend
 
 echo "[deploy] recreating frontend (safe -- not the container running this script)..."

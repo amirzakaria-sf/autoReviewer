@@ -271,6 +271,26 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str,
         _reopen_issue_for_retry(issue)
         await record_calibration_event(db, fix_id=fix.id, outcome="outcome_check_failed", detail={"mismatch": outcome["mismatch_detail"]})
         await db.commit()
+
+        # A fix that deployed and then failed cross-app verification. The
+        # highest-value trace after a human rejection: every earlier step
+        # reported success, so nothing else in the record explains why this
+        # issue is open again.
+        from app.memory_traces import record_trace
+
+        await asyncio.to_thread(
+            record_trace,
+            repo_id=issue.repo_id if issue else None,
+            issue_id=issue.id if issue else None,
+            fix_id=fix.id,
+            outcome="regressed",
+            stage="outcome",
+            category=issue.category if issue else "",
+            detail=(
+                f"Deployed, then the cross-app outcome check disagreed: "
+                f"{outcome['mismatch_detail']}. Branch {fix.branch_name or '(none)'}."
+            ),
+        )
         _update_slack_status(fix, issue.title, channel_id, f"mismatch: {outcome['mismatch_detail']}")
         notification = await record_condition(db, fix_id=fix.id, issue_id=None, condition_key="outcome-check-failed")
         if should_notify(notification, is_escalation=True):
