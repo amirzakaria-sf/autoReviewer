@@ -6,6 +6,7 @@ Detector has no entry here — it is mechanical (a Playwright run), not a model 
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from openai import AzureOpenAI
@@ -13,6 +14,8 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.council_runs import record_council_run
+
+logger = logging.getLogger("whipguard.azure_client")
 
 
 class ArbiterFactor(BaseModel):
@@ -47,7 +50,18 @@ def _client() -> AzureOpenAI:
     )
 
 
-def _chat(deployment: str, prefix: str, suffix: str, role: str = "unknown") -> str:
+def _chat(deployment: str, prefix: str, suffix: str, role: str = "unknown", cacheable: bool = False) -> str:
+    """`cacheable` is opt-in per call site, never global -- see app/llm_cache.py
+    for why patch generation must not be served from the cache."""
+    from app import llm_cache
+
+    cache_key = llm_cache.cache_key_for(role=role, deployment=deployment, prefix=prefix, suffix=suffix) if cacheable else ""
+    if cache_key:
+        hit = llm_cache.get(cache_key)
+        if hit is not None:
+            logger.info("llm cache hit for role=%s deployment=%s", role, deployment)
+            return hit
+
     client = _client()
     started = time.monotonic()
     response = client.chat.completions.create(
@@ -81,6 +95,9 @@ def _chat(deployment: str, prefix: str, suffix: str, role: str = "unknown") -> s
         except Exception:
             pass  # never let usage bookkeeping break a model call
 
+    if cache_key:
+        llm_cache.put(cache_key, content, role=role, deployment=deployment)
+
     return content
 
 
@@ -91,7 +108,7 @@ _JUROR_SCHEMA_INSTRUCTION = (
 
 
 def _call_juror(deployment: str, prefix: str, suffix: str, role: str) -> JurorOpinion:
-    raw = _chat(deployment, prefix + _JUROR_SCHEMA_INSTRUCTION, suffix, role=role)
+    raw = _chat(deployment, prefix + _JUROR_SCHEMA_INSTRUCTION, suffix, role=role, cacheable=True)
     data = json.loads(raw)
     return JurorOpinion.model_validate(data)
 
@@ -99,7 +116,7 @@ def _call_juror(deployment: str, prefix: str, suffix: str, role: str) -> JurorOp
 def call_skeptic(prefix: str, suffix: str) -> str:
     """Legacy plain-text form, kept for callers that don't need a confidence
     score (e.g. the retry-contract test)."""
-    return _chat(settings.azure_fast_deployment, prefix, suffix, role="skeptic")
+    return _chat(settings.azure_fast_deployment, prefix, suffix, role="skeptic", cacheable=True)
 
 
 def call_skeptic_opinion(prefix: str, suffix: str) -> JurorOpinion:
@@ -113,7 +130,7 @@ def call_corroborator_opinion(prefix: str, suffix: str) -> JurorOpinion:
 
 
 def call_verifier(prefix: str, suffix: str) -> str:
-    return _chat(settings.azure_worker_deployment, prefix, suffix, role="verifier")
+    return _chat(settings.azure_worker_deployment, prefix, suffix, role="verifier", cacheable=True)
 
 
 def call_fix_skeptic_opinion(prefix: str, suffix: str) -> JurorOpinion:
@@ -124,6 +141,9 @@ def call_fix_skeptic_opinion(prefix: str, suffix: str) -> JurorOpinion:
 
 
 def call_patch_worker(prefix: str, suffix: str) -> str:
+    # Deliberately NOT cacheable: an identical input here means the run is
+    # repeating itself, and that repetition is the signal a loop tripwire
+    # needs to see. See app/llm_cache.py.
     return _chat(settings.azure_worker_deployment, prefix, suffix, role="patch_worker")
 
 
@@ -151,6 +171,6 @@ def call_arbiter(prefix: str, suffix: str, role: str = "arbiter") -> ArbiterVerd
         "Forcing a confident number when the missing piece is a human's own undocumented intent "
         "manufactures false confidence; that is worse than asking."
     )
-    raw = _chat(settings.azure_planner_deployment, prefix + schema_instruction, suffix, role=role)
+    raw = _chat(settings.azure_planner_deployment, prefix + schema_instruction, suffix, role=role, cacheable=True)
     data = json.loads(raw)
     return ArbiterVerdict.model_validate(data)

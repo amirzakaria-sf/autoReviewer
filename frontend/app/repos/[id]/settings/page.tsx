@@ -77,10 +77,10 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold">{settings.github_full_name}</h1>
-          <p className="text-sm text-gray-500 mt-1">Category toggles, thresholds, Ask Mode, and the kill switch.</p>
+          <p className="text-sm text-lo mt-1">Category toggles, thresholds, Ask Mode, and the kill switch.</p>
         </div>
         {saving ? (
-          <span className="text-xs text-gray-500">Saving…</span>
+          <span className="text-xs text-lo">Saving…</span>
         ) : saved ? (
           <span className="text-xs text-accent-soft">Saved</span>
         ) : null}
@@ -94,7 +94,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
         <h2 className="font-semibold mb-1 flex items-center gap-2">
           <span className="badge badge-red">Kill switch</span>
         </h2>
-        <p className="text-xs text-gray-500 mb-4">Not decoration — stops a runaway detector or fix-proposer in one click.</p>
+        <p className="text-xs text-lo mb-4">Not decoration — stops a runaway detector or fix-proposer in one click.</p>
         <div className="grid sm:grid-cols-2 gap-3">
           <ToggleRow
             label="Pause all detection"
@@ -115,14 +115,14 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
 
       <section className="card p-5">
         <h2 className="font-semibold mb-1">Notifications</h2>
-        <p className="text-xs text-gray-500 mb-4">Where fix-proposed and escalation messages get posted.</p>
+        <p className="text-xs text-lo mb-4">Where fix-proposed and escalation messages get posted.</p>
         {settings.slack_channel_id ? (
-          <div className="flex items-center justify-between p-3.5 rounded-lg bg-green-950/20 border border-green-900/40">
+          <div className="flex items-center justify-between p-3.5 rounded-lg bg-[rgba(47,212,143,0.06)] border border-[color:var(--verified-dim)]">
             <div className="flex items-center gap-2.5">
               <span className="text-base">💬</span>
               <div>
                 <div className="text-sm font-medium">Connected to Slack</div>
-                <div className="text-xs text-gray-500">{settings.slack_channel_name ? `#${settings.slack_channel_name}` : settings.slack_channel_id}</div>
+                <div className="text-xs text-lo">{settings.slack_channel_name ? `#${settings.slack_channel_name}` : settings.slack_channel_id}</div>
               </div>
             </div>
             <div className="flex gap-2">
@@ -138,7 +138,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
           <div className="flex items-center justify-between p-3.5 rounded-lg bg-white/[0.02] border border-border">
             <div>
               <div className="text-sm font-medium">Not connected</div>
-              <div className="text-xs text-gray-500">Pick a Slack channel — no ID to type, Slack shows you a picker.</div>
+              <div className="text-xs text-lo">Pick a Slack channel — no ID to type, Slack shows you a picker.</div>
             </div>
             <a href={`/api/slack/oauth/start?repo_id=${id}`} className="btn btn-primary px-4 py-2 text-xs">
               Connect Slack
@@ -149,7 +149,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
 
       <section className="card p-5">
         <h2 className="font-semibold mb-1">Ask Mode</h2>
-        <p className="text-xs text-gray-500 mb-4">How eagerly a jury disagreement or a missing-fact escalates to a live question.</p>
+        <p className="text-xs text-lo mb-4">How eagerly a jury disagreement or a missing-fact escalates to a live question.</p>
         <div className="grid sm:grid-cols-3 gap-3">
           {ASK_MODES.map((mode) => (
             <button
@@ -165,7 +165,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
                 {mode.label}
                 {settings.ask_mode === mode.key && <span className="dot bg-accent" />}
               </div>
-              <div className="text-xs text-gray-500 mt-1 leading-relaxed">{mode.detail}</div>
+              <div className="text-xs text-lo mt-1 leading-relaxed">{mode.detail}</div>
             </button>
           ))}
         </div>
@@ -233,11 +233,11 @@ function ThresholdSlider({
 
   return (
     <div>
-      <div className="flex items-center justify-between text-xs text-gray-500 mb-1.5">
+      <div className="flex items-center justify-between text-xs text-lo mb-1.5">
         <span>{label}</span>
-        <span className="font-mono text-gray-300">
+        <span className="font-mono text-mid">
           {local}
-          {local !== defaultValue && <span className="text-gray-600"> (default {defaultValue})</span>}
+          {local !== defaultValue && <span className="text-lo"> (default {defaultValue})</span>}
         </span>
       </div>
       <input
@@ -276,7 +276,7 @@ function ToggleRow({
     >
       <div>
         <div className="text-sm font-medium">{label}</div>
-        <div className="text-xs text-gray-500 mt-0.5">{detail}</div>
+        <div className="text-xs text-lo mt-0.5">{detail}</div>
       </div>
       <Switch checked={checked} />
     </button>
@@ -285,7 +285,7 @@ function ToggleRow({
 
 function MiniToggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <button onClick={() => onChange(!checked)} className="flex items-center gap-1.5 text-gray-400 hover:text-white transition">
+    <button onClick={() => onChange(!checked)} className="flex items-center gap-1.5 text-mid hover:text-hi transition">
       {label}
       <Switch checked={checked} small />
     </button>

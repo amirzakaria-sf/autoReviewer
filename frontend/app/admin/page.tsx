@@ -65,7 +65,7 @@ export default function AdminOverviewPage() {
     <div className="space-y-8 animate-fade-in">
       <div>
         <h1 className="text-xl font-semibold">Admin</h1>
-        <p className="text-sm text-gray-500 mt-1">Users, real usage, and deployment control.</p>
+        <p className="text-sm text-lo mt-1">Users, real usage, and deployment control.</p>
       </div>
 
       {error && <div className="badge badge-red">{error}</div>}
@@ -81,7 +81,7 @@ export default function AdminOverviewPage() {
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="font-semibold">Usage — last {usage?.window_days ?? 30} days</h2>
-            <p className="text-xs text-gray-500 mt-0.5">Every number here traces to a real council-run row. No cost estimate — this app doesn't guess your Azure pricing tier.</p>
+            <p className="text-xs text-lo mt-0.5">Every number here traces to a real council-run row. No cost estimate — this app doesn't guess your Azure pricing tier.</p>
           </div>
         </div>
 
@@ -114,7 +114,7 @@ export default function AdminOverviewPage() {
             <div className="section-label mb-2">By role</div>
             <div className="border border-border rounded-lg overflow-hidden">
               <table className="w-full text-sm">
-                <thead className="bg-white/5 text-gray-500 text-left text-xs">
+                <thead className="bg-white/5 text-lo text-left text-xs">
                   <tr>
                     <th className="px-3 py-2 font-medium">Role</th>
                     <th className="px-3 py-2 font-medium">Calls</th>
@@ -127,10 +127,10 @@ export default function AdminOverviewPage() {
                   {usage.by_role.map((r) => (
                     <tr key={r.role} className="border-t border-border">
                       <td className="px-3 py-2 font-medium">{r.role}</td>
-                      <td className="px-3 py-2 text-gray-400">{r.calls}</td>
-                      <td className="px-3 py-2 text-gray-400">{r.input_tokens.toLocaleString()}</td>
-                      <td className="px-3 py-2 text-gray-400">{r.output_tokens.toLocaleString()}</td>
-                      <td className="px-3 py-2 text-gray-400">{Math.round(r.avg_latency_ms)}ms</td>
+                      <td className="px-3 py-2 text-mid">{r.calls}</td>
+                      <td className="px-3 py-2 text-mid">{r.input_tokens.toLocaleString()}</td>
+                      <td className="px-3 py-2 text-mid">{r.output_tokens.toLocaleString()}</td>
+                      <td className="px-3 py-2 text-mid">{Math.round(r.avg_latency_ms)}ms</td>
                     </tr>
                   ))}
                 </tbody>
@@ -144,7 +144,7 @@ export default function AdminOverviewPage() {
         <div className="flex items-center justify-between">
           <div>
             <h2 className="font-semibold">Redeploy</h2>
-            <p className="text-xs text-gray-500 mt-0.5 max-w-md">
+            <p className="text-xs text-lo mt-0.5 max-w-md">
               Rebuilds backend + frontend from the source on disk. The backend swap runs in a
               disposable sibling container (so it survives the old one being torn down) — this
               page briefly can't reach the API during that swap and resumes on its own once it's back.
@@ -182,9 +182,9 @@ function MiniStat({ label, value, suffix }: { label: string; value?: number; suf
     <div>
       <div className="text-xl font-semibold">
         {value !== undefined ? Math.round(value).toLocaleString() : "—"}
-        {suffix && <span className="text-sm text-gray-500 ml-0.5">{suffix}</span>}
+        {suffix && <span className="text-sm text-lo ml-0.5">{suffix}</span>}
       </div>
-      <div className="text-xs text-gray-500 mt-0.5">{label}</div>
+      <div className="text-xs text-lo mt-0.5">{label}</div>
     </div>
   );
 }

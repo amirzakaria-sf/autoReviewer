@@ -95,12 +95,20 @@ exec > >(tee "$LOG_DIR/deploy.log") 2>&1
 
 echo "=== WhipGuard deploy started $(date -u +%FT%TZ) ==="
 echo "[deploy] building backend + frontend..."
+# `worker` shares the backend image, so building backend covers it.
 docker compose build backend frontend
 
 echo "[deploy] recreating frontend (safe -- not the container running this script)..."
 docker compose up -d --no-deps --force-recreate frontend
 
-echo "[deploy] handing the backend swap to a disposable sibling container..."
+# The privileged worker (plan.md §15) runs the SAME image as the backend, so
+# a deploy that skipped it would leave the half of the system that actually
+# executes repository code running the previous build indefinitely. It is
+# also the container that now runs this script when the redeploy is
+# triggered from the admin UI, so -- exactly like the backend below -- it
+# cannot safely recreate itself and is handed to the sibling container too.
+
+echo "[deploy] handing the backend + worker swap to a disposable sibling container..."
 # This container is NOT the one being replaced, so it is unaffected even if
 # the old backend container is what's running THIS script and gets stopped
 # partway through the command it just issued.
@@ -110,7 +118,7 @@ docker run --rm -d \
   -v "$ROOT:$ROOT:ro" \
   -w "$ROOT" \
   docker:27-cli \
-  sh -c "docker compose up -d --no-deps --force-recreate backend"
+  sh -c "docker compose up -d --no-deps --force-recreate backend worker"
 
 echo "[deploy] waiting for the backend to come back..."
 for _ in $(seq 1 40); do

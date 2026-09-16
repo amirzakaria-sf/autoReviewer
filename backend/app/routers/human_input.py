@@ -73,14 +73,8 @@ async def answer_request(request_id: uuid.UUID, body: dict, db: AsyncSession = D
     # and the ApprovalGraph's bidirectional thread are the same primitive,
     # not yet wired to this endpoint).
     if request.node_name == "bug_council.arbiter":
-        from app.db import async_session
-        from app.graphs.bug_council import resume_with_clarification_answer
+        from app.work_queue import enqueue
 
-        async def _resume():
-            async with async_session() as scoped_db:
-                fresh_request = await scoped_db.get(HumanInputRequest, request_id)
-                await resume_with_clarification_answer(scoped_db, fresh_request, answer_text)
-
-        asyncio.create_task(_resume())
+        await enqueue("resume_human_input", {"request_id": str(request_id), "answer": answer_text})
 
     return {"ok": True, "status": "answered"}

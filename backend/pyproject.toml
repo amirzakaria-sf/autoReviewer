@@ -21,6 +21,7 @@ dependencies = [
   "pgvector>=0.3",
   "bcrypt>=4.2",
   "pyjwt[crypto]>=2.9",
+  "tiktoken>=0.8",
 ]
 
 [project.optional-dependencies]

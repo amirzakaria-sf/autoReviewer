@@ -122,6 +122,10 @@ class FixCouncilState(TypedDict, total=False):
     touched_files: list[str]
     similar_chunks: list[dict]
     dependents: list[dict]
+    # Deterministically assembled context (app/context_broker.py): fused
+    # retrieval + located symbols + blast radius + this repo's own prior
+    # failures, compiled under one token budget.
+    briefing: str
     diff: str
     verifier_result: dict[str, Any]
     score: int
@@ -176,11 +180,31 @@ def retrieval_node(state: FixCouncilState) -> FixCouncilState:
     # itself points at, a similarly-named function elsewhere in the repo).
     similar_chunks: list[dict] = []
     dependents: list[dict] = []
+    briefing = ""
     if state.get("repo_id"):
         from app.graph_index import _extract_symbols, find_dependents
-        from app.retrieval import similar_code_chunks
+        from app.hybrid_retrieval import hybrid_retrieve
 
-        similar_chunks = similar_code_chunks(state["repo_id"], state.get("bug_description", ""), k=3)
+        # Fused retrieval, not dense-only. The lexical and structural
+        # channels are what actually answer a bug report's real query -- an
+        # exact identifier or a literal assertion string -- which cosine
+        # similarity over embeddings only ever matched by accident.
+        fused = hybrid_retrieve(
+            state.get("bug_description", ""),
+            repo_id=state["repo_id"],
+            worktree_path=state["worktree_path"],
+            extra_terms=list(state.get("touched_files") or []),
+        )
+        similar_chunks = [
+            {
+                "file_path": chunk.path,
+                "symbol_name": chunk.symbol,
+                "content": chunk.text,
+                "channels": list(chunk.channels),
+                "score": chunk.score,
+            }
+            for chunk in fused
+        ]
         for chunk in similar_chunks:
             if chunk["file_path"] not in touched:
                 touched.append(chunk["file_path"])
@@ -199,8 +223,25 @@ def retrieval_node(state: FixCouncilState) -> FixCouncilState:
                     if dep["path"] not in touched:
                         touched.append(dep["path"])
 
+        from app.context_broker import build_briefing
+
+        briefing = build_briefing(
+            repo_id=state["repo_id"],
+            repo_name=state.get("repo_full_name", ""),
+            worktree_path=state["worktree_path"],
+            finding_text=state.get("bug_description", ""),
+            target_files=sorted(set(touched)),
+            prior_feedback=state.get("prior_rejection") or "",
+        )
+
     emit_event({"type": "node", "node": "retrieval", "status": "done", "message": f"Touched files: {', '.join(sorted(set(touched)))}"})
-    return {**state, "touched_files": sorted(set(touched)), "similar_chunks": similar_chunks, "dependents": dependents}
+    return {
+        **state,
+        "touched_files": sorted(set(touched)),
+        "similar_chunks": similar_chunks,
+        "dependents": dependents,
+        "briefing": briefing,
+    }
 
 
 def _tool_fingerprint(name: str, args: dict) -> str:
@@ -226,22 +267,29 @@ def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
             category_rules=CATEGORY_REGISTRY[category].rules,
         )
     )
-    similar_chunks_text = "\n\n".join(
-        f"--- {c['symbol_name']} (similarity distance {c['distance']:.3f}) ---\n{c['content']}"
-        for c in state.get("similar_chunks", [])
-    )
     task = f"Bug: {state.get('bug_description', 'see evidence in the workspace map')}. Fix it."
-    if similar_chunks_text:
-        # Handed over directly rather than left for a read_file round-trip --
-        # the same "put the answer in the prefix, don't make the model ask
-        # for it" reasoning plan.md §9.4 applies to the workspace map itself.
-        task += f"\n\nSemantically related code found by vector search (context, not necessarily what to change):\n{similar_chunks_text}"
-    dependents = state.get("dependents", [])
-    if dependents:
-        dep_lines = "\n".join(f"- {d['name']} in {d['path']}:{d['line']} ({d['kind']})" for d in dependents)
-        # The graph query's actual answer (plan.md §5.3): don't break these
-        # callers' expectations of the symbol you're about to change.
-        task += f"\n\nOther code that calls symbols in the file(s) you're touching (blast radius -- be careful not to break these):\n{dep_lines}"
+
+    # Handed over directly rather than left for a read_file round-trip -- the
+    # same "put the answer in the prefix, don't make the model ask for it"
+    # reasoning plan.md §9.4 applies to the workspace map itself. The
+    # briefing already carries the fused retrieval, the located symbols, the
+    # blast radius and this repo's prior failed attempts, all compiled under
+    # ONE token budget rather than three independently-chosen slices that
+    # never compared their costs against each other.
+    briefing = state.get("briefing") or ""
+    if briefing:
+        task += f"\n\n{briefing}"
+    else:
+        # Retrieval unavailable (no repo_id, or every channel failed). Fall
+        # back to the raw dependents list so the blast radius still reaches
+        # the model rather than silently vanishing.
+        dependents = state.get("dependents", [])
+        if dependents:
+            dep_lines = "\n".join(f"- {d['name']} in {d['path']}:{d['line']} ({d['kind']})" for d in dependents)
+            task += (
+                "\n\nOther code that calls symbols in the file(s) you're touching "
+                f"(blast radius -- be careful not to break these):\n{dep_lines}"
+            )
     user_prompt = build_volatile_suffix(task, prior_attempt_rejection=state.get("prior_rejection"))
 
     messages: list[dict] = [
@@ -417,6 +465,27 @@ def verifier_node(state: FixCouncilState) -> FixCouncilState:
         "type": "node", "node": "verifier", "status": "done",
         "message": "Patched branch passes" if not result.failed else "Patched branch still fails",
     })
+
+    if result.failed and state.get("repo_id"):
+        # A negative trace, written where the failure actually happens. This
+        # is the corpus app/context_broker.py reads back on the NEXT attempt
+        # so a later run does not re-propose a patch this one already proved
+        # does not work -- and the reason it is written here rather than
+        # summarised later is that the failing command and its real output
+        # exist at this moment and nowhere else.
+        from app.memory_traces import record_trace
+
+        record_trace(
+            repo_id=state["repo_id"],
+            outcome="failed",
+            stage="verify",
+            category=category,
+            attempt=int(state.get("attempt") or 1),
+            failing_command=f"{category} detector re-run on the patched branch",
+            touched_paths=list(state.get("touched_files") or []),
+            detail=(result.assertion_text or "")[-1500:],
+        )
+
     return {
         **state,
         "verifier_result": {"passes": not result.failed, "output": result.assertion_text},

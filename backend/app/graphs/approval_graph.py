@@ -76,12 +76,16 @@ def _update_slack_status(fix: Fix, issue_title: str, channel_id: str, extra: str
         logger.exception("Slack status update failed for fix %s", fix.id)
 
 
-async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str) -> dict:
+async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str, apply: bool = False) -> dict:
     fix = await db.get(Fix, fix_id)
     if fix is None:
         return {"ok": False, "error": "fix not found"}
 
-    if fix.status != FixStatus.AWAITING_APPROVAL:
+    if fix.status == FixStatus.APPROVED and apply:
+        # The worker picking up what a web caller already decided. Not a
+        # double-approval: the decision is done, this is the execution half.
+        pass
+    elif fix.status != FixStatus.AWAITING_APPROVAL:
         return {
             "ok": False,
             "already_handled": True,
@@ -101,6 +105,25 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
         fix.status = FixStatus.REJECTED
         await record_calibration_event(db, fix_id=fix.id, outcome="rejected_by_human", detail={"surface": surface})
         await db.commit()
+        # The highest-signal negative this system can record: a human looked
+        # at the diff and said no. A later attempt on the same issue reads
+        # this back (app/context_broker.py) instead of re-proposing it.
+        from app.memory_traces import record_trace
+
+        await asyncio.to_thread(
+            record_trace,
+            repo_id=issue.repo_id,
+            issue_id=issue.id,
+            fix_id=fix.id,
+            outcome="rejected",
+            stage="approval",
+            category=issue.category,
+            detail=(
+                f"Rejected by {actor} via {surface}. Branch {fix.branch_name or '(none)'}, "
+                f"resolution score {fix.resolution_score}. "
+                f"Arbiter verdict: {(fix.resolution_rubric or {}).get('verdict', 'n/a')}"
+            ),
+        )
         _update_slack_status(fix, issue.title, channel_id, f"rejected by {actor} via {surface}")
         emit_event({"type": "run", "kind": "approval", "status": "done", "message": f"Rejected by {actor} via {surface}"})
         return {"ok": True, "status": fix.status.value}
@@ -109,6 +132,18 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str)
     await db.commit()
     _update_slack_status(fix, issue.title, channel_id, f"approved by {actor} via {surface}")
     emit_event({"type": "run", "kind": "approval", "status": "started", "message": f"Approved by {actor} via {surface} — applying patch…"})
+
+    # THE SECURITY SEAM (plan.md §15). Everything above is a status decision:
+    # database writes and a Slack message, all safe for the web-facing
+    # process. Everything below applies a patch, pushes a branch and triggers
+    # a deploy -- privileged work against untrusted repository code, which
+    # belongs to the worker. So a web caller stops here and queues the rest;
+    # only the worker, which sets apply=True, runs it.
+    if not apply:
+        from app.work_queue import enqueue
+
+        await enqueue("apply_approval", {"fix_id": str(fix.id), "actor": actor, "surface": surface})
+        return {"ok": True, "status": fix.status.value, "queued": True}
 
     # Same layout worktree.py uses (settings.workspace_root, not a path derived
     # from this file's own depth) -- that depth differs between local-venv and

@@ -2,127 +2,282 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  background: #08090d;
-  color: #e8eaf0;
-  font-feature-settings: "cv11", "ss01";
-}
+/* WhipGuard's visual identity: a forensic instrument, not a generic admin
+   panel. Three decisions carry it.
 
-::selection {
-  background: rgba(91, 124, 250, 0.35);
+   1. The ground is warm graphite, not the blue-grey every dashboard ships
+      with. Hue 30 at very low saturation reads as machined metal rather than
+      as "dark mode applied to a white app".
+   2. Amber is the primary accent because this product's whole job is
+      SCRUTINY -- a finding under examination, a score awaiting a verdict.
+      Green is reserved exclusively for things that were actually verified,
+      so it never appears decoratively; when you see green here, a real check
+      passed.
+   3. Numbers are the content. Every score, hash, line number and duration is
+      tabular monospace, so a column of them aligns and a changing value does
+      not reflow the row it lives in. */
+
+:root {
+  --ink-900: #08090a;
+  --ink-850: #0c0d0f;
+  --ink-800: #111214;
+  --ink-750: #17181b;
+  --ink-700: #1d1f23;
+  --ink-600: #2a2d33;
+  --ink-500: #3a3e46;
+
+  --text-hi: #f2f0ed;
+  --text-mid: #a9a6a1;
+  --text-lo: #6f6d69;
+
+  --amber: #ffb224;
+  --amber-dim: #7a5510;
+  --amber-glow: rgba(255, 178, 36, 0.14);
+
+  --verified: #2fd48f;
+  --verified-dim: #0f4a33;
+  --failed: #ff5f56;
+  --failed-dim: #4a1512;
+  --pending: #a78bfa;
+  --pending-dim: #2f2352;
+
+  --radius: 10px;
 }
 
 * {
-  scrollbar-color: #2c3140 transparent;
+  scrollbar-color: var(--ink-600) transparent;
+  scrollbar-width: thin;
 }
 
+body {
+  background:
+    radial-gradient(1100px 600px at 18% -12%, rgba(255, 178, 36, 0.045), transparent 62%),
+    var(--ink-900);
+  color: var(--text-hi);
+  font-feature-settings: "cv11", "ss01", "tnum";
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: rgba(255, 178, 36, 0.28);
+  color: var(--text-hi);
+}
+
+/* Every figure in the UI. Tabular so columns align and a live-updating value
+   never reflows its neighbours. */
+.num {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  letter-spacing: -0.01em;
+}
+
+/* --- surfaces ------------------------------------------------------------ */
+
+/* Real elevation: a lit top edge, a dark outer edge, and a shadow that grows
+   with the surface. A flat 1px border on a flat fill is what made the old UI
+   read as a wireframe. */
 .card {
-  background: #111319;
-  border: 1px solid #232734;
-  border-radius: 0.75rem;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.03);
-  transition: border-color 0.15s ease;
+  background: linear-gradient(180deg, var(--ink-800) 0%, var(--ink-850) 100%);
+  border: 1px solid var(--ink-700);
+  border-radius: var(--radius);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.035),
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 8px 24px -12px rgba(0, 0, 0, 0.7);
 }
 
-.card-hover:hover {
-  border-color: #2c3140;
+.card-hover {
+  transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
 }
+.card-hover:hover {
+  border-color: var(--ink-600);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 2px 4px rgba(0, 0, 0, 0.5),
+    0 14px 32px -14px rgba(0, 0, 0, 0.8);
+}
+
+.panel {
+  background: var(--ink-850);
+  border: 1px solid var(--ink-700);
+  border-radius: var(--radius);
+}
+
+.hairline {
+  border-top: 1px solid var(--ink-700);
+}
+
+/* --- buttons ------------------------------------------------------------- */
 
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.4rem;
-  font-weight: 500;
-  border-radius: 0.5rem;
-  transition: all 0.15s ease;
+  gap: 0.45rem;
+  font-weight: 550;
+  font-size: 0.8125rem;
+  border-radius: 8px;
   white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease, box-shadow 0.15s ease;
+  border: 1px solid transparent;
+}
+.btn:active:not(:disabled) {
+  transform: translateY(0.5px) scale(0.995);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ink-900), 0 0 0 4px var(--amber);
 }
 
 .btn-primary {
-  background: #5b7cfa;
-  color: white;
+  background: linear-gradient(180deg, #ffc24d 0%, var(--amber) 100%);
+  color: #2a1c02;
+  border-color: #c98a13;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 1px 3px rgba(0, 0, 0, 0.4);
 }
-.btn-primary:hover {
-  background: #6d8bff;
-}
-.btn-primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.btn-primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffcd68 0%, #ffbb3a 100%);
 }
 
 .btn-ghost {
-  background: rgba(255, 255, 255, 0.06);
-  color: #e8eaf0;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text-hi);
+  border-color: var(--ink-700);
 }
-.btn-ghost:hover {
-  background: rgba(255, 255, 255, 0.1);
+.btn-ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--ink-600);
+}
+
+.btn-approve {
+  background: linear-gradient(180deg, #34e39b 0%, #17b877 100%);
+  color: #04291b;
+  border-color: #0f8a59;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 2px 10px -2px rgba(47, 212, 143, 0.4);
+}
+.btn-approve:hover:not(:disabled) {
+  background: linear-gradient(180deg, #4cebaa 0%, #1cc984 100%);
+}
+
+.btn-reject {
+  background: linear-gradient(180deg, #2a1a19 0%, #221413 100%);
+  color: #ff8b84;
+  border-color: #6b2320;
+}
+.btn-reject:hover:not(:disabled) {
+  background: linear-gradient(180deg, #3a2220 0%, #2c1816 100%);
+  border-color: #8e2e2a;
+  color: #ffa39d;
 }
 
 .btn-danger {
-  background: rgba(255, 90, 90, 0.12);
-  color: #ff8a8a;
-  border: 1px solid rgba(255, 90, 90, 0.25);
+  background: rgba(255, 95, 86, 0.1);
+  color: #ff8b84;
+  border-color: rgba(255, 95, 86, 0.28);
 }
-.btn-danger:hover {
-  background: rgba(255, 90, 90, 0.2);
+.btn-danger:hover:not(:disabled) {
+  background: rgba(255, 95, 86, 0.18);
 }
 
+/* --- inputs -------------------------------------------------------------- */
+
 .input {
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid #232734;
-  border-radius: 0.5rem;
-  color: #e8eaf0;
-  transition: border-color 0.15s ease;
+  background: var(--ink-900);
+  border: 1px solid var(--ink-700);
+  border-radius: 8px;
+  color: var(--text-hi);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.input::placeholder {
+  color: var(--text-lo);
 }
 .input:focus {
   outline: none;
-  border-color: #5b7cfa;
-  box-shadow: 0 0 0 3px rgba(91, 124, 250, 0.15);
+  border-color: var(--amber-dim);
+  box-shadow: 0 0 0 3px var(--amber-glow);
 }
+
+/* --- badges -------------------------------------------------------------- */
 
 .badge {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.15rem 0.6rem;
-  border-radius: 999px;
-  font-size: 0.72rem;
+  padding: 0.16rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.6875rem;
   font-weight: 600;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.02em;
   border: 1px solid transparent;
+  white-space: nowrap;
 }
 
-.badge-gray { background: #1c2029; color: #9aa3b2; border-color: #2a3040; }
-.badge-blue { background: #10233f; color: #7db4ff; border-color: #1c3a63; }
-.badge-yellow { background: #3a2d0d; color: #f3c95c; border-color: #5c4813; }
-.badge-green { background: #0d3a1f; color: #6fe3a0; border-color: #145c33; }
-.badge-red { background: #3a0d10; color: #ff8a8a; border-color: #5c1418; }
-.badge-accent { background: #1c2340; color: #8ea2ff; border-color: #2c3568; }
+.badge-gray { background: var(--ink-750); color: var(--text-mid); border-color: var(--ink-600); }
+.badge-amber { background: rgba(255, 178, 36, 0.1); color: var(--amber); border-color: var(--amber-dim); }
+.badge-green { background: rgba(47, 212, 143, 0.1); color: var(--verified); border-color: var(--verified-dim); }
+.badge-red { background: rgba(255, 95, 86, 0.1); color: #ff8b84; border-color: var(--failed-dim); }
+.badge-violet { background: rgba(167, 139, 250, 0.1); color: var(--pending); border-color: var(--pending-dim); }
+/* Kept as aliases so existing StatusBadge colour keys keep working. */
+.badge-blue { background: rgba(167, 139, 250, 0.1); color: var(--pending); border-color: var(--pending-dim); }
+.badge-yellow { background: rgba(255, 178, 36, 0.1); color: var(--amber); border-color: var(--amber-dim); }
+.badge-accent { background: rgba(255, 178, 36, 0.1); color: var(--amber); border-color: var(--amber-dim); }
 
 .dot {
   width: 6px;
   height: 6px;
   border-radius: 999px;
   display: inline-block;
+  flex: none;
 }
 
 .section-label {
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: #6b7280;
+  color: var(--text-lo);
 }
+
+/* --- motion -------------------------------------------------------------- */
 
 .skeleton {
-  background: linear-gradient(90deg, #14161f 0%, #1a1d28 50%, #14161f 100%);
+  background: linear-gradient(90deg, var(--ink-800) 0%, var(--ink-700) 50%, var(--ink-800) 100%);
   background-size: 200% 100%;
-  animation: skeleton-sweep 1.4s ease-in-out infinite;
-  border-radius: 0.5rem;
+  animation: skeleton-sweep 1.5s ease-in-out infinite;
+  border-radius: 6px;
 }
-
 @keyframes skeleton-sweep {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.28s ease both;
+}
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 1.8s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* Anything that animates position or opacity is decoration; a reader who has
+   asked the OS to stop it gets the end state immediately. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

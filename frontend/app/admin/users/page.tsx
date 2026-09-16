@@ -77,7 +77,7 @@ export default function AdminUsersPage() {
     <div className="space-y-8 animate-fade-in">
       <div>
         <h1 className="text-xl font-semibold">Users</h1>
-        <p className="text-sm text-gray-500 mt-1">Review access requests and manage existing accounts.</p>
+        <p className="text-sm text-lo mt-1">Review access requests and manage existing accounts.</p>
       </div>
 
       {error && <div className="badge badge-red">{error}</div>}
@@ -87,20 +87,20 @@ export default function AdminUsersPage() {
           <span className="badge badge-yellow">Pending requests</span>
           {pending.length}
         </h2>
-        {pending.length === 0 && <p className="text-sm text-gray-500">Nothing waiting on review.</p>}
+        {pending.length === 0 && <p className="text-sm text-lo">Nothing waiting on review.</p>}
         <div className="space-y-3">
           {pending.map((r) => (
             <div key={r.id} className="p-3.5 rounded-lg bg-white/[0.03] space-y-2.5">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-medium">{r.name}</div>
-                  <div className="text-xs text-gray-500">{r.email}</div>
+                  <div className="text-xs text-lo">{r.email}</div>
                 </div>
-                <div className="text-xs text-gray-600 shrink-0">
+                <div className="text-xs text-lo shrink-0">
                   {r.created_at ? new Date(r.created_at).toLocaleString() : ""}
                 </div>
               </div>
-              <p className="text-sm text-gray-400 leading-relaxed">{r.reason}</p>
+              <p className="text-sm text-mid leading-relaxed">{r.reason}</p>
 
               {rejecting === r.id ? (
                 <div className="flex gap-2 pt-1">
@@ -145,7 +145,7 @@ export default function AdminUsersPage() {
           <h2 className="section-label mb-3">Past requests</h2>
           <div className="border border-border rounded-lg overflow-hidden">
             <table className="w-full text-sm">
-              <thead className="bg-white/5 text-gray-500 text-left text-xs">
+              <thead className="bg-white/5 text-lo text-left text-xs">
                 <tr>
                   <th className="px-3 py-2 font-medium">Name</th>
                   <th className="px-3 py-2 font-medium">Email</th>
@@ -157,12 +157,12 @@ export default function AdminUsersPage() {
                 {decided.map((r) => (
                   <tr key={r.id} className="border-t border-border">
                     <td className="px-3 py-2">{r.name}</td>
-                    <td className="px-3 py-2 text-gray-400">{r.email}</td>
+                    <td className="px-3 py-2 text-mid">{r.email}</td>
                     <td className="px-3 py-2">
                       <span className={`badge ${r.status === "approved" ? "badge-green" : "badge-red"}`}>{r.status}</span>
-                      {r.decision_reason && <span className="text-xs text-gray-500 ml-2">{r.decision_reason}</span>}
+                      {r.decision_reason && <span className="text-xs text-lo ml-2">{r.decision_reason}</span>}
                     </td>
-                    <td className="px-3 py-2 text-gray-500 text-xs">{r.decided_at ? new Date(r.decided_at).toLocaleString() : ""}</td>
+                    <td className="px-3 py-2 text-lo text-xs">{r.decided_at ? new Date(r.decided_at).toLocaleString() : ""}</td>
                   </tr>
                 ))}
               </tbody>
@@ -175,7 +175,7 @@ export default function AdminUsersPage() {
         <h2 className="section-label mb-3">Accounts</h2>
         <div className="border border-border rounded-lg overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="bg-white/5 text-gray-500 text-left text-xs">
+            <thead className="bg-white/5 text-lo text-left text-xs">
               <tr>
                 <th className="px-3 py-2 font-medium">Email</th>
                 <th className="px-3 py-2 font-medium">Role</th>
@@ -194,7 +194,7 @@ export default function AdminUsersPage() {
                   <td className="px-3 py-2">
                     <span className={`badge ${u.status === "active" ? "badge-green" : "badge-gray"}`}>{u.status}</span>
                   </td>
-                  <td className="px-3 py-2 text-gray-500 text-xs">
+                  <td className="px-3 py-2 text-lo text-xs">
                     {u.last_login_at ? new Date(u.last_login_at).toLocaleString() : "never"}
                   </td>
                   <td className="px-3 py-2 text-right space-x-2">
@@ -217,7 +217,7 @@ export default function AdminUsersPage() {
               ))}
               {users.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-3 py-6 text-center text-gray-500">
+                  <td colSpan={5} className="px-3 py-6 text-center text-lo">
                     No accounts yet.
                   </td>
                 </tr>

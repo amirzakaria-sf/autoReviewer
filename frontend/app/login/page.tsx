@@ -45,7 +45,7 @@ export default function LoginPage() {
         <div className="flex items-center gap-2.5 text-lg font-semibold">
           <span className="text-xl">🛡️</span> WhipGuard
         </div>
-        <p className="text-sm text-gray-500 -mt-3">Sign in to your bug council dashboard.</p>
+        <p className="text-sm text-lo -mt-3">Sign in to your bug council dashboard.</p>
 
         {notice && (
           <div className="text-sm bg-accent-dim border border-accent/30 text-accent-soft rounded-lg px-3 py-2.5">
@@ -85,7 +85,7 @@ export default function LoginPage() {
           {loading ? "Signing in…" : "Sign in"}
         </button>
 
-        <p className="text-center text-sm text-gray-500">
+        <p className="text-center text-sm text-lo">
           No account? <a href="/signup" className="text-accent-soft hover:underline">Request access</a>
         </p>
       </form>

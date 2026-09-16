@@ -89,12 +89,12 @@ export default function ProfilePage() {
     <div className="space-y-8 animate-fade-in max-w-2xl">
       <div>
         <h1 className="text-xl font-semibold">Profile</h1>
-        <p className="text-sm text-gray-500 mt-1">Your account details and connected apps.</p>
+        <p className="text-sm text-lo mt-1">Your account details and connected apps.</p>
       </div>
 
       <section className="card p-5">
         <div className="flex items-center gap-3 mb-5">
-          <div className="w-12 h-12 rounded-full bg-accent/20 border border-accent/40 text-accent-soft text-lg font-semibold flex items-center justify-center">
+          <div className="w-12 h-12 rounded-full bg-[rgba(255,178,36,0.14)] border border-[color:var(--amber-dim)] text-accent text-lg font-semibold flex items-center justify-center">
             {profile.email[0]?.toUpperCase()}
           </div>
           <div>
@@ -131,7 +131,7 @@ export default function ProfilePage() {
         <h2 className="font-semibold mb-4">Connected apps</h2>
         <div className="space-y-3">
           {github?.connected ? (
-            <div className="flex items-center justify-between p-3.5 rounded-lg bg-green-950/20 border border-green-900/40">
+            <div className="flex items-center justify-between p-3.5 rounded-lg bg-[rgba(47,212,143,0.06)] border border-[color:var(--verified-dim)]">
               <div className="flex items-center gap-2.5">
                 {github.avatar_url && (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -139,7 +139,7 @@ export default function ProfilePage() {
                 )}
                 <div>
                   <div className="text-sm font-medium">GitHub</div>
-                  <div className="text-xs text-gray-500">@{github.login}</div>
+                  <div className="text-xs text-lo">@{github.login}</div>
                 </div>
               </div>
               <button onClick={disconnectGithub} disabled={disconnectingGithub} className="btn btn-danger px-3 py-1.5 text-xs">
@@ -150,7 +150,7 @@ export default function ProfilePage() {
             <div className="flex items-center justify-between p-3.5 rounded-lg bg-white/[0.02] border border-border">
               <div>
                 <div className="text-sm font-medium">GitHub</div>
-                <div className="text-xs text-gray-500">Not connected</div>
+                <div className="text-xs text-lo">Not connected</div>
               </div>
               <a href="/api/github/oauth/start" className="btn btn-primary px-4 py-2 text-xs">
                 Connect GitHub
@@ -158,15 +158,29 @@ export default function ProfilePage() {
             </div>
           )}
 
-          <div className="flex items-center justify-between p-3.5 rounded-lg bg-white/[0.02] border border-border">
-            <div>
-              <div className="text-sm font-medium">Slack</div>
-              <div className="text-xs text-gray-500">Connected per repo — manage from a repo&apos;s settings page</div>
+          {profile?.slack_workspace_connected ? (
+            <div className="flex items-center justify-between p-3.5 rounded-lg bg-[rgba(47,212,143,0.06)] border border-[color:var(--verified-dim)]">
+              <div>
+                <div className="text-sm font-medium">Slack</div>
+                <div className="text-xs text-lo">
+                  Workspace connected — pick which channel each repo posts to from that repo&apos;s settings page
+                </div>
+              </div>
+              <a href="/repos" className="btn btn-ghost px-3 py-1.5 text-xs">
+                Manage channels
+              </a>
             </div>
-            <a href="/connect" className="btn btn-ghost px-3 py-1.5 text-xs">
-              Manage repos
-            </a>
-          </div>
+          ) : (
+            <div className="flex items-center justify-between p-3.5 rounded-lg bg-white/[0.02] border border-border">
+              <div>
+                <div className="text-sm font-medium">Slack</div>
+                <div className="text-xs text-lo">Not connected</div>
+              </div>
+              <a href="/connect" className="btn btn-primary px-4 py-2 text-xs">
+                Connect Slack
+              </a>
+            </div>
+          )}
         </div>
       </section>
 

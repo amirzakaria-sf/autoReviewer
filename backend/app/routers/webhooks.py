@@ -66,33 +66,20 @@ async def _handle_push(db: AsyncSession, payload: dict) -> None:
         return
 
     from app.categories import enabled_categories_for
-    from app.db import async_session
-    from app.graphs.bug_council import run_and_persist
+    from app.work_queue import enqueue
 
-    async def _reindex():
-        from app.config import settings
-        from app.graph_index import index_repo_symbols
-        from app.retrieval import index_repo_files
-        from app.sandbox.worktree import create_worktree, ensure_mirror, remove_worktree
+    # Both of these execute repository code (a git fetch into the workspace,
+    # then a sandboxed detector run), so they are queued for the privileged
+    # worker rather than run in this web-facing process.
+    #
+    # `repo.github_full_name`, not settings.fixture_repo: this reindexed the
+    # FIXTURE repo on every push to any connected repository, so a second
+    # repo's push silently re-embedded the wrong codebase.
+    await enqueue("reindex_repo", {"repo_id": str(repo.id), "repo_full_name": repo.github_full_name})
 
-        mirror = ensure_mirror(settings.fixture_repo)
-        worktree = create_worktree(mirror, issue_number=0, slug="reindex")
-        try:
-            await asyncio.to_thread(index_repo_files, repo.id, str(worktree))
-            await asyncio.to_thread(index_repo_symbols, repo.id, str(worktree))
-        finally:
-            remove_worktree(mirror, worktree)
-
-    async def _scan(cat: str):
-        async with async_session() as scoped_db:
-            fresh_repo = await scoped_db.get(Repo, repo.id)
-            await run_and_persist(scoped_db, fresh_repo, category=cat)
-
-    asyncio.create_task(_reindex())
     if repo.detection_paused:
         return
-    for cat in enabled_categories_for(repo):
-        asyncio.create_task(_scan(cat))
+    await enqueue("scan_repo", {"repo_id": str(repo.id), "categories": list(enabled_categories_for(repo))})
 
 
 async def _handle_pull_request(db: AsyncSession, payload: dict) -> None:

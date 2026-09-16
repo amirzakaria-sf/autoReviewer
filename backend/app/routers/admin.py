@@ -19,11 +19,11 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.db import get_db
+from app.db import async_session, get_db
 from app.deps import require_admin
 from app.enums import AccessRequestStatus, UserRole, UserStatus
 from app.integrations import email_client
-from app.models import AccessRequest, AuditLog, Fix, Issue, Repo, User
+from app.models import AccessRequest, AuditLog, Fix, Issue, MemoryTrace, Repo, User
 from app.security import sign_invite_token
 
 logger = logging.getLogger("whipguard.admin")
@@ -152,6 +152,12 @@ async def reject_access_request(request_id: uuid.UUID, body: dict, admin: User =
     return {"ok": True, "request": _access_request_dict(access_request)}
 
 
+def _llm_cache_stats() -> dict:
+    from app import llm_cache
+
+    return llm_cache.stats()
+
+
 @router.get("/overview")
 async def admin_overview(db: AsyncSession = Depends(get_db)):
     user_counts = dict(
@@ -177,6 +183,12 @@ async def admin_overview(db: AsyncSession = Depends(get_db)):
         "repos": repo_count,
         "issues": issue_count,
         "fixes": fix_count,
+        # A saving that leaves no trace cannot be told apart from a feature
+        # nobody reached, so the retrieval/cache layer reports its own use.
+        "llm_cache": await asyncio.to_thread(_llm_cache_stats),
+        "memory_traces": (
+            await db.execute(select(func.count()).select_from(MemoryTrace))
+        ).scalar_one(),
     }
 
 
@@ -260,13 +272,6 @@ async def trigger_redeploy(admin: User = Depends(require_admin), db: AsyncSessio
     the backend recreating itself out from under the request that triggered
     it). Launched detached so it outlives this request regardless of what
     happens to this process next."""
-    if not settings.repo_root:
-        raise HTTPException(400, "REPO_ROOT is not configured on this container")
-
-    script = Path(settings.repo_root) / "deploy.sh"
-    if not script.exists():
-        raise HTTPException(400, f"deploy.sh not found at {script}")
-
     db.add(
         AuditLog(
             actor_user_id=str(admin.id),
@@ -279,18 +284,16 @@ async def trigger_redeploy(admin: User = Depends(require_admin), db: AsyncSessio
     )
     await db.commit()
 
-    try:
-        subprocess.Popen(
-            ["bash", str(script)],
-            cwd=settings.repo_root,
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        logger.exception("failed to launch deploy.sh")
-        raise HTTPException(500, "could not start the redeploy script")
+    # Queued for the privileged worker rather than spawned here. Running
+    # `docker compose` needs the host Docker socket, and the whole point of
+    # the security split (plan.md §15) is that this web-facing process does
+    # not have one -- if it did, an RCE through rendered repo content would
+    # reach the host daemon directly. The worker writes the same
+    # DEPLOY_LOG_PATH into the shared workspace volume, so /redeploy/status
+    # below still reads real progress.
+    from app.work_queue import enqueue
+
+    await enqueue("redeploy", {"by": admin.email})
 
     return {
         "ok": True,
@@ -322,8 +325,6 @@ async def redeploy_status():
     return {"running": not dispatched, "succeeded": dispatched, "log": log_text}
 
 
-_LATEST_EVAL_REPORT: dict | None = None
-_EVAL_RUNNING = False
 
 
 @router.post("/eval/run")
@@ -333,29 +334,41 @@ async def trigger_eval(admin: User = Depends(require_admin)):
     calls, so no cost -- see app/eval_harness.py's own docstring for why a
     blended score is refused. Runs as a background task since the sandboxed
     categories (ui/backend/accessibility) each do a real npm install."""
-    global _EVAL_RUNNING
-    if _EVAL_RUNNING:
+    # Queued for the worker: the sandboxed categories each run a real
+    # dependency install and a real browser, which is exactly the execution
+    # this process no longer does (plan.md §15). The report comes back on the
+    # work item itself -- the module-level globals this used to keep it in
+    # cannot cross a process boundary.
+    from app.work_queue import enqueue
+
+    async with async_session() as db:
+        running = (
+            await db.execute(
+                text("SELECT count(*) FROM work_items WHERE kind = 'run_eval' AND status IN ('queued','running')")
+            )
+        ).scalar_one()
+    if running:
         raise HTTPException(409, "an eval run is already in progress")
 
-    from app.config import settings
-    from app.eval_harness import run_detection_eval
-
-    async def _run():
-        global _LATEST_EVAL_REPORT, _EVAL_RUNNING
-        _EVAL_RUNNING = True
-        try:
-            report = await asyncio.to_thread(run_detection_eval, settings.fixture_repo)
-            _LATEST_EVAL_REPORT = report.to_dict()
-        except Exception:
-            logger.exception("eval run failed")
-            _LATEST_EVAL_REPORT = {"error": "eval run raised -- see backend logs"}
-        finally:
-            _EVAL_RUNNING = False
-
-    asyncio.create_task(_run())
-    return {"ok": True, "message": "Eval run started -- poll GET /api/admin/eval/latest."}
+    await enqueue("run_eval", {"repo": settings.fixture_repo})
+    return {"ok": True, "message": "Eval run queued -- poll GET /api/admin/eval/latest."}
 
 
 @router.get("/eval/latest")
 async def latest_eval():
-    return {"running": _EVAL_RUNNING, "report": _LATEST_EVAL_REPORT}
+    async with async_session() as db:
+        row = (
+            await db.execute(
+                text(
+                    "SELECT status, result, error FROM work_items WHERE kind = 'run_eval' "
+                    "ORDER BY created_at DESC LIMIT 1"
+                )
+            )
+        ).first()
+    if row is None:
+        return {"running": False, "report": None}
+    status, result, error = row
+    return {
+        "running": status in ("queued", "running"),
+        "report": result if not error else {"error": error},
+    }

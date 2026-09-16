@@ -35,7 +35,7 @@ export default function RequestAccessPage() {
         <div className="w-full max-w-sm card p-7 text-center space-y-3 animate-fade-in">
           <div className="text-3xl">✋</div>
           <h1 className="font-semibold">Request sent</h1>
-          <p className="text-sm text-gray-400">
+          <p className="text-sm text-mid">
             An admin will review your request. If it's approved, you'll get an email at <b>{email}</b> with a link to set up your account.
           </p>
           <a href="/login" className="btn btn-ghost w-full py-2.5 text-sm mt-2">Back to sign in</a>
@@ -50,7 +50,7 @@ export default function RequestAccessPage() {
         <div className="flex items-center gap-2.5 text-lg font-semibold">
           <span className="text-xl">🛡️</span> WhipGuard
         </div>
-        <p className="text-sm text-gray-500 -mt-3">
+        <p className="text-sm text-lo -mt-3">
           Request access. An admin reviews every request — no account is created until it's approved.
         </p>
 
@@ -101,7 +101,7 @@ export default function RequestAccessPage() {
           {loading ? "Sending…" : "Request access"}
         </button>
 
-        <p className="text-center text-sm text-gray-500">
+        <p className="text-center text-sm text-lo">
           Already have an account? <a href="/login" className="text-accent-soft hover:underline">Sign in</a>
         </p>
       </form>

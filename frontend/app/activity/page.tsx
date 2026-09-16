@@ -30,7 +30,7 @@ export default function ActivityPage() {
           {connected ? "connected" : "disconnected"}
         </span>
       </div>
-      <p className="text-sm text-gray-500">
+      <p className="text-sm text-lo">
         Streams council node transitions as they happen: detection, jury verdicts, score computed,
         deploy in progress, oracle re-check, outcome-check result.
       </p>
@@ -38,11 +38,11 @@ export default function ActivityPage() {
         {events.map((e, i) => (
           <div key={i} className="px-3 py-2 text-sm flex items-center justify-between">
             <span>{e.message}</span>
-            <span className="text-gray-500 text-xs">{e.at}</span>
+            <span className="text-lo text-xs">{e.at}</span>
           </div>
         ))}
         {events.length === 0 && (
-          <div className="px-3 py-6 text-center text-gray-500 text-sm">
+          <div className="px-3 py-6 text-center text-lo text-sm">
             No events yet — trigger a run to see it stream here live.
           </div>
         )}

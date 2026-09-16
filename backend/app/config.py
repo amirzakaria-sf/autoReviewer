@@ -110,5 +110,26 @@ class Settings(BaseSettings):
     admin_password: str = "whipguard-demo"
     session_secret: str = "change-me-in-real-deployments"
 
+    # Context assembly (app/prompt_compiler.py). One budget for the whole
+    # prompt rather than a per-injection-point character cap; the encoding
+    # is a property of the DEPLOYMENT, so it is configurable rather than
+    # hardcoded to whatever the current model family happens to use.
+    prompt_budget_tokens: int = 32000
+    prompt_tokenizer_encoding: str = "o200k_base"
+
+    # Retrieval (app/hybrid_retrieval.py). Disabling falls the councils back
+    # to the dense-only path they used before fusion existed.
+    hybrid_retrieval_enabled: bool = True
+    hybrid_retrieval_max_chunks: int = 6
+    hybrid_retrieval_max_chars: int = 24000
+    hybrid_retrieval_timeout_seconds: float = 8.0
+
+    # Negative-trace memory (app/memory_traces.py).
+    memory_traces_enabled: bool = True
+
+    # Exact-match LLM response cache (plan.md §13.2, app/llm_cache.py).
+    llm_cache_enabled: bool = True
+    llm_cache_ttl_seconds: int = 24 * 3600
+
 
 settings = Settings()

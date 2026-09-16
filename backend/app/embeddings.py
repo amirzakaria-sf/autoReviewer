@@ -50,10 +50,17 @@ _JS_BOUNDARY = re.compile(
 
 def chunk_file(relative_path: str, content: str) -> list[dict]:
     """Splits at top-level function/const-arrow/class boundaries. A file with
-    no such boundary (or a non-JS file) is returned as one whole-file chunk."""
+    no such boundary (or a non-JS file) is returned as one whole-file chunk.
+
+    Every chunk carries its line span: fusion (app/hybrid_retrieval.py)
+    identifies the same code found by different channels by span overlap, and
+    a chunk with no span can only ever be merged by exact string equality of
+    a symbol name the other channels don't spell the same way.
+    """
+    total_lines = content.count("\n") + 1
     boundaries = [m.start() for m in _JS_BOUNDARY.finditer(content)]
     if not boundaries:
-        return [{"symbol_name": relative_path, "content": content}]
+        return [{"symbol_name": relative_path, "content": content, "start_line": 1, "end_line": total_lines}]
 
     chunks = []
     for i, start in enumerate(boundaries):
@@ -62,5 +69,12 @@ def chunk_file(relative_path: str, content: str) -> list[dict]:
         if not chunk_text:
             continue
         first_line = chunk_text.splitlines()[0][:80]
-        chunks.append({"symbol_name": f"{relative_path}:{first_line}", "content": chunk_text})
-    return chunks or [{"symbol_name": relative_path, "content": content}]
+        chunks.append(
+            {
+                "symbol_name": f"{relative_path}:{first_line}",
+                "content": chunk_text,
+                "start_line": content[:start].count("\n") + 1,
+                "end_line": content[:end].count("\n") + 1,
+            },
+        )
+    return chunks or [{"symbol_name": relative_path, "content": content, "start_line": 1, "end_line": total_lines}]

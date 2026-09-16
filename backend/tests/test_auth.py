@@ -201,7 +201,7 @@ async def _signup_and_activate(email: str) -> None:
     await complete_invite(_FakeRequest({"token": token, "password": "correct horse battery"}), Response())
 
 
-async def test_refresh_rotates_and_reuse_of_old_token_revokes_session():
+async def test_refresh_rotates_the_token():
     email = "auth-test-rotation@example.com"
     await _cleanup(email)
     try:
@@ -216,9 +216,74 @@ async def test_refresh_rotates_and_reuse_of_old_token_revokes_session():
         await refresh(_FakeRequest(cookies={"refresh_token": old_cookies["refresh_token"]}), first_refresh_resp)
         new_cookies = _cookies_from_response(first_refresh_resp)
         assert new_cookies["refresh_token"] != old_cookies["refresh_token"]
+    finally:
+        await _cleanup(email)
+
+
+async def test_concurrent_reuse_inside_the_grace_window_keeps_the_session_alive():
+    """The bug this window exists for: a page load fires several requests at
+    once, they all carry the same refresh cookie, the first rotates it, and
+    the rest arrive holding a token the server just revoked. Treating that as
+    theft logged real users out on every redeploy."""
+    email = "auth-test-refresh-race@example.com"
+    await _cleanup(email)
+    try:
+        await _signup_and_activate(email)
+
+        login_resp = Response()
+        await login(_FakeRequest({"email": email, "password": "correct horse battery"}), login_resp)
+        original = _cookies_from_response(login_resp)["refresh_token"]
+
+        winner_resp = Response()
+        await refresh(_FakeRequest(cookies={"refresh_token": original}), winner_resp)
+        successor = _cookies_from_response(winner_resp)["refresh_token"]
+
+        # The loser of the race, still holding the pre-rotation cookie.
+        loser_resp = Response()
+        result = await refresh(_FakeRequest(cookies={"refresh_token": original}), loser_resp)
+        assert result == {"ok": True}
+
+        loser_cookies = _cookies_from_response(loser_resp)
+        assert "access_token" in loser_cookies, "the loser still needs a usable access token"
+        assert "refresh_token" not in loser_cookies, "must not overwrite the live successor cookie"
+
+        # The successor the winner set is untouched and still works.
+        third_resp = Response()
+        await refresh(_FakeRequest(cookies={"refresh_token": successor}), third_resp)
+        assert "refresh_token" in _cookies_from_response(third_resp)
+    finally:
+        await _cleanup(email)
+
+
+async def test_reuse_after_the_grace_window_still_revokes_the_whole_session():
+    """Real theft detection is kept: the grace window narrows it to seconds,
+    it does not remove it."""
+    email = "auth-test-theft@example.com"
+    await _cleanup(email)
+    try:
+        await _signup_and_activate(email)
+
+        login_resp = Response()
+        await login(_FakeRequest({"email": email, "password": "correct horse battery"}), login_resp)
+        stolen = _cookies_from_response(login_resp)["refresh_token"]
+
+        await refresh(_FakeRequest(cookies={"refresh_token": stolen}), Response())
+
+        # Age the rotation well past the grace window.
+        from datetime import datetime, timedelta, timezone
+
+        from app.routers.auth import REFRESH_REUSE_GRACE_SECONDS
+        from app.security import hash_refresh_secret
+
+        async with async_session() as db:
+            row = (
+                await db.execute(select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_secret(stolen)))
+            ).scalars().first()
+            row.revoked_at = datetime.now(timezone.utc) - timedelta(seconds=REFRESH_REUSE_GRACE_SECONDS + 5)
+            await db.commit()
 
         try:
-            await refresh(_FakeRequest(cookies={"refresh_token": old_cookies["refresh_token"]}), Response())
+            await refresh(_FakeRequest(cookies={"refresh_token": stolen}), Response())
             assert False, "expected HTTPException"
         except Exception as exc:
             assert getattr(exc, "status_code", None) == 401
@@ -227,7 +292,38 @@ async def test_refresh_rotates_and_reuse_of_old_token_revokes_session():
             user = (await db.execute(select(User).where(User.email == email))).scalars().first()
             tokens = (await db.execute(select(RefreshToken).where(RefreshToken.user_id == user.id))).scalars().all()
         assert len(tokens) >= 2
-        assert all(t.revoked_at is not None for t in tokens)
+        assert all(t.revoked_at is not None for t in tokens), "the whole family must die, not just the reused token"
+    finally:
+        await _cleanup(email)
+
+
+async def test_session_survives_an_expired_access_token():
+    """A 15-minute access token aging out must not read as 'logged out' while
+    a 14-day refresh token is still valid -- this endpoint answers 200 either
+    way, so nothing else in the client would ever have recovered it."""
+    from app.routers.auth import session_status
+
+    email = "auth-test-session-recovery@example.com"
+    await _cleanup(email)
+    try:
+        await _signup_and_activate(email)
+
+        login_resp = Response()
+        await login(_FakeRequest({"email": email, "password": "correct horse battery"}), login_resp)
+        cookies = _cookies_from_response(login_resp)
+
+        response = Response()
+        payload = await session_status(
+            _FakeRequest(cookies={"access_token": "expired.deadbeef", "refresh_token": cookies["refresh_token"]}),
+            response,
+        )
+        assert payload["authenticated"] is True
+        assert payload["email"] == email
+        assert "access_token" in _cookies_from_response(response), "a fresh access token should be handed back"
+
+        # No refresh cookie at all is still a real 'not logged in'.
+        anon = await session_status(_FakeRequest(cookies={"access_token": "expired.deadbeef"}), Response())
+        assert anon == {"authenticated": False}
     finally:
         await _cleanup(email)
 

@@ -50,7 +50,7 @@ export default function AcceptInvitePage() {
         <div className="w-full max-w-sm card p-7 text-center space-y-3 animate-fade-in">
           <div className="text-3xl">⚠️</div>
           <h1 className="font-semibold">Link not usable</h1>
-          <p className="text-sm text-gray-400">{checkError}</p>
+          <p className="text-sm text-mid">{checkError}</p>
           <a href="/login" className="btn btn-ghost w-full py-2.5 text-sm mt-2">Back to sign in</a>
         </div>
       </div>
@@ -64,8 +64,8 @@ export default function AcceptInvitePage() {
           <span className="text-xl">🛡️</span> WhipGuard
         </div>
         {invitee ? (
-          <p className="text-sm text-gray-500 -mt-3">
-            Welcome, <b className="text-gray-300">{invitee.name}</b>. Set a password for <b className="text-gray-300">{invitee.email}</b>.
+          <p className="text-sm text-lo -mt-3">
+            Welcome, <b className="text-mid">{invitee.name}</b>. Set a password for <b className="text-mid">{invitee.email}</b>.
           </p>
         ) : (
           <div className="space-y-2 -mt-1">

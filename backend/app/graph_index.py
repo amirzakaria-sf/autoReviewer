@@ -107,6 +107,62 @@ def index_repo_symbols(repo_id, worktree_path: str) -> int:
     return symbol_count
 
 
+def find_symbols(repo_id, term: str, limit: int = 5) -> list[dict]:
+    """Locate a named symbol. Exact matches first, then prefix -- an exact
+    identifier is the highest-signal thing a query can contain, so a partial
+    match must never outrank one."""
+    with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT name, path, kind, line_start
+            FROM symbols
+            WHERE repo_id = %s AND (name = %s OR name ILIKE %s)
+            ORDER BY (name = %s) DESC, length(name)
+            LIMIT %s
+            """,
+            (str(repo_id), term, f"{term}%", term, limit),
+        )
+        rows = cur.fetchall()
+    return [{"name": r[0], "path": r[1], "kind": r[2], "line": r[3]} for r in rows]
+
+
+def symbol_blast_radius(repo_id, symbol_name: str, max_depth: int = 2) -> list[dict]:
+    """Everything that transitively reaches `symbol_name`, with hop distance.
+
+    `find_dependents` answers one hop, which is what the Fix Council asks.
+    Retrieval wants the wider question -- "which FILES are implicated if this
+    symbol changes" -- and a caller of a caller is still implicated. A
+    recursive CTE answers it in one round trip instead of N queries per hop,
+    and `cycle` handling is mandatory here rather than defensive: real call
+    graphs have cycles, and without it this never terminates.
+    """
+    with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH RECURSIVE seed AS (
+                SELECT id FROM symbols WHERE repo_id = %s AND name = %s
+            ),
+            reached(symbol_id, depth) AS (
+                SELECT e.from_symbol_id, 1
+                FROM edges e JOIN seed ON e.to_symbol_id = seed.id
+                UNION
+                SELECT e.from_symbol_id, r.depth + 1
+                FROM edges e JOIN reached r ON e.to_symbol_id = r.symbol_id
+                WHERE r.depth < %s
+            )
+            SELECT DISTINCT ON (s.id) s.name, s.path, s.line_start, MIN(r.depth) OVER (PARTITION BY s.id)
+            FROM reached r JOIN symbols s ON s.id = r.symbol_id
+            WHERE s.repo_id = %s AND s.name <> %s
+            """,
+            # The seed is excluded: real call graphs have cycles, so a symbol
+            # routinely "reaches itself" through one, and "changing deleteItem
+            # is reachable from deleteItem" is noise in a blast radius.
+            (str(repo_id), symbol_name, max_depth, str(repo_id), symbol_name),
+        )
+        rows = cur.fetchall()
+    return [{"name": r[0], "path": r[1], "line": r[2], "depth": int(r[3])} for r in rows]
+
+
 def find_dependents(repo_id, symbol_name: str) -> list[dict]:
     """"What depends on this symbol, so I know what I might break?" -- the
     one query this graph exists to answer (plan.md §5.3)."""

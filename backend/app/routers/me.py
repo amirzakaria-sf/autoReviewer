@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db import get_db
 from app.deps import current_user
 from app.models import User
@@ -28,6 +29,10 @@ def _profile_dict(user: User) -> dict:
         "role": user.role.value,
         "onboarding_completed": user.onboarding_completed_at is not None,
         "created_at": user.created_at.isoformat() if user.created_at else None,
+        # The bot token is a single workspace-level credential (never
+        # per-repo -- see routers/slack_connect.py) so "connected" is an
+        # account-wide fact, not something to check per repo.
+        "slack_workspace_connected": bool(settings.slack_bot_token),
     }
 
 

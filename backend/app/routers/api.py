@@ -106,6 +106,7 @@ async def list_repos(db: AsyncSession = Depends(get_db)):
             "default_branch": r.default_branch,
             "detection_paused": r.detection_paused,
             "proposals_paused": r.proposals_paused,
+            "slack_channel_name": r.slack_channel_name,
         }
         for r in repos
     ]
@@ -242,7 +243,28 @@ async def get_issue(issue_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         d = _fix_dict(f)
         d["outcome_check"] = await _outcome_check_dict(db, f.id)
         fix_dicts.append(d)
-    return {**_issue_dict(issue), "fixes": fix_dicts}
+    # The repo this issue belongs to, so the UI can build GitHub links from
+    # real data. The detail page previously hardcoded the fixture repo's slug
+    # into every issue/PR URL, which silently pointed at the wrong repository
+    # for every repo but that one -- the same class of bug already fixed
+    # three times on the backend.
+    repo = await db.get(Repo, issue.repo_id)
+
+    # The thresholds this issue was actually judged against, so the UI can
+    # show where the bar sits rather than printing a bare number the reader
+    # has to compare by hand. Per-repo overrides win over the registry's
+    # defaults, exactly as the councils resolve them.
+    from app.categories import CATEGORY_REGISTRY
+
+    config = CATEGORY_REGISTRY.get(issue.category)
+    overrides = ((repo.thresholds if repo else None) or {}).get(issue.category, {})
+    return {
+        **_issue_dict(issue),
+        "repo_full_name": repo.github_full_name if repo else None,
+        "assurance_threshold": overrides.get("assurance", config.assurance_threshold if config else None),
+        "resolution_threshold": overrides.get("resolution", config.resolution_threshold if config else None),
+        "fixes": fix_dicts,
+    }
 
 
 @router.get("/fixes")
@@ -291,16 +313,13 @@ async def scan_repo(repo_id: uuid.UUID, category: str | None = None, db: AsyncSe
 
     categories = [category] if category else enabled_categories_for(repo)
 
-    async def _run(cat: str):
-        from app.db import async_session
+    # Enqueued, not executed here. A detector runs arbitrary repository code
+    # in a sandbox, so it belongs to the privileged worker (app/worker.py);
+    # this process only records that somebody asked.
+    from app.work_queue import enqueue
 
-        async with async_session() as scoped_db:
-            fresh_repo = await scoped_db.get(Repo, repo_id)
-            await run_and_persist(scoped_db, fresh_repo, category=cat)
-
-    for cat in categories:
-        asyncio.create_task(_run(cat))
-    return {"ok": True, "message": f"scan started for categories: {', '.join(categories)}"}
+    await enqueue("scan_repo", {"repo_id": str(repo_id), "categories": categories})
+    return {"ok": True, "message": f"scan queued for categories: {', '.join(categories)}"}
 
 
 @router.post("/issues/{issue_id}/trigger-fix")
@@ -312,5 +331,7 @@ async def trigger_fix(issue_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     if not issue:
         raise HTTPException(404, "issue not found")
 
-    asyncio.create_task(trigger_fix_council(issue_id))
-    return {"ok": True, "message": "fix council started"}
+    from app.work_queue import enqueue
+
+    await enqueue("fix_council", {"issue_id": str(issue_id)})
+    return {"ok": True, "message": "fix council queued"}

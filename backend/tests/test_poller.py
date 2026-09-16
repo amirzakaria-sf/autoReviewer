@@ -1,6 +1,6 @@
 import asyncio
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import delete, select
 
@@ -41,7 +41,7 @@ async def test_poll_once_creates_issue_for_new_labeled_github_issue():
     try:
         with (
             patch("app.poller.github_client.list_issues_with_label") as mock_list,
-            patch("app.poller.trigger_fix_council") as mock_trigger,
+            patch("app.poller.enqueue", new_callable=AsyncMock) as mock_trigger,
         ):
             mock_list.return_value = [
                 {"number": NEW_ISSUE_NUMBER, "title": "Delete removes wrong item"}
@@ -87,7 +87,7 @@ async def test_poll_once_does_not_duplicate_or_retrigger_an_already_tracked_issu
     try:
         with (
             patch("app.poller.github_client.list_issues_with_label") as mock_list,
-            patch("app.poller.trigger_fix_council") as mock_trigger,
+            patch("app.poller.enqueue", new_callable=AsyncMock) as mock_trigger,
         ):
             mock_list.return_value = [
                 {"number": ALREADY_TRACKED_ISSUE_NUMBER, "title": "Already tracked issue"}

@@ -36,7 +36,11 @@ async def trigger_fix_council(issue_id: uuid.UUID) -> None:
 
         category = issue.category
         threshold = resolution_threshold_for(repo, category) if repo else settings.resolution_threshold
-        repo_full_name = settings.fixture_repo
+        # repo.github_full_name, NOT settings.fixture_repo. This clones and
+        # patches whichever repo the ISSUE belongs to; hardcoding the fixture
+        # here meant a fix for any other connected repo was generated against
+        # the fixture repo's source and pushed to the fixture repo's branch.
+        repo_full_name = repo.github_full_name if repo else settings.fixture_repo
         slug = f"issue-{issue.github_issue_number}"
 
         evidence_text = (issue.evidence or {}).get("assertion_text", "")

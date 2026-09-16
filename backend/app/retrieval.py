@@ -72,12 +72,18 @@ def index_repo_files(repo_id, worktree_path: str) -> int:
 
                 cur.execute(
                     """
-                    INSERT INTO code_chunks (id, repo_id, file_path, symbol_name, content, embedding, updated_at)
-                    VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, now())
+                    INSERT INTO code_chunks
+                        (id, repo_id, file_path, symbol_name, content, start_line, end_line, embedding, updated_at)
+                    VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, %s, %s, now())
                     ON CONFLICT ON CONSTRAINT uq_code_chunk_identity
-                    DO UPDATE SET content = EXCLUDED.content, embedding = EXCLUDED.embedding, updated_at = now()
+                    DO UPDATE SET content = EXCLUDED.content, embedding = EXCLUDED.embedding,
+                                  start_line = EXCLUDED.start_line, end_line = EXCLUDED.end_line,
+                                  updated_at = now()
                     """,
-                    (str(repo_id), relative, chunk["symbol_name"], chunk["content"], embedding),
+                    (
+                        str(repo_id), relative, chunk["symbol_name"], chunk["content"],
+                        chunk.get("start_line", 1), chunk.get("end_line", 1), embedding,
+                    ),
                 )
                 count += 1
         conn.commit()
@@ -101,7 +107,8 @@ def similar_code_chunks(repo_id, query_text: str, k: int = 5) -> list[dict]:
         with _connect() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT file_path, symbol_name, content, embedding <=> %s::vector AS distance
+                SELECT file_path, symbol_name, content, start_line, end_line,
+                       embedding <=> %s::vector AS distance
                 FROM code_chunks
                 WHERE repo_id = %s
                 ORDER BY distance
@@ -111,7 +118,11 @@ def similar_code_chunks(repo_id, query_text: str, k: int = 5) -> list[dict]:
             )
             rows = cur.fetchall()
         return [
-            {"file_path": r[0], "symbol_name": r[1], "content": r[2], "distance": float(r[3])} for r in rows
+            {
+                "file_path": r[0], "symbol_name": r[1], "content": r[2],
+                "start_line": int(r[3] or 1), "end_line": int(r[4] or 1), "distance": float(r[5]),
+            }
+            for r in rows
         ]
     except Exception:
         logger.exception("similarity search failed; retrieval falls back to the static scan alone")

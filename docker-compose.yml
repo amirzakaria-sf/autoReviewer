@@ -44,18 +44,46 @@ services:
       postgres:
         condition: service_healthy
     volumes:
+      # NO docker.sock here, deliberately (plan.md §15). This process renders
+      # model output and untrusted repository text, so it must not hold a
+      # handle to the host daemon -- an RCE here would otherwise reach the
+      # host directly. Everything privileged is queued for the `worker`
+      # service below, which does have the socket and no inbound port.
+      #
+      # The workspace stays mounted READ-ONLY: retrieval and the dashboard
+      # read worktrees, but nothing on this side writes to them.
+      - ./workspace:/srv/workspace:ro
+
+  # The privileged half (plan.md §15). Same image, different entrypoint: it
+  # polls work_items and executes what it finds. No `ports:` on purpose --
+  # nothing can reach it, and the arrow between the two halves points one
+  # way, through the database.
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://whipguard:whipguard@postgres:5432/whipguard
+      WORKSPACE_ROOT: /srv/workspace
+      WORKSPACE_HOST_PATH: ${PWD}/workspace
+      SANDBOX_UID: "${UID:-1000}"
+      SANDBOX_GID: "${GID:-1000}"
+      REPO_ROOT: ${PWD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./workspace:/srv/workspace
       # Mounted at its OWN real host path (not translated) on purpose: the
-      # UI-triggered redeploy (routers/admin.py's /redeploy) runs `docker
-      # compose build/up` from INSIDE this container against the host's
-      # dockerd (via the socket above). docker compose resolves each
-      # service's relative volume paths against --project-directory and
-      # hands the daemon the resulting string as-is -- if that string were
-      # this container's OWN view of the path, the host daemon (which has no
-      # such directory) would fail to bind-mount. Mounting source==target
-      # makes the same path string valid on both sides, the same
-      # Docker-outside-of-Docker idiom docker.sock itself already relies on.
+      # redeploy runs `docker compose build/up` from INSIDE this container
+      # against the host's dockerd. docker compose hands the daemon each
+      # service's resolved volume path as-is -- if that string were this
+      # container's own view of the path, the host daemon (which has no such
+      # directory) would fail to bind-mount. source==target makes the same
+      # string valid on both sides, the Docker-outside-of-Docker idiom
+      # docker.sock itself already relies on.
       - ${PWD}:${PWD}:ro
 
   frontend:

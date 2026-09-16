@@ -78,7 +78,7 @@ export default function LandingPage() {
               <span className={`dot ${health === "up" ? "bg-green-400 animate-pulse-dot" : health === "down" ? "bg-red-400" : "bg-gray-400"}`} />
               {health === "checking" ? "checking…" : health === "up" ? "council running" : "unreachable"}
             </span>
-            <a href="/signup" className="text-gray-400 hover:text-white transition hidden sm:inline">Request access</a>
+            <a href="/signup" className="text-mid hover:text-hi transition hidden sm:inline">Request access</a>
             <a href="/login" className="btn btn-ghost px-4 py-1.5 font-medium">Sign in</a>
           </div>
         </div>
@@ -95,7 +95,7 @@ export default function LandingPage() {
             watches your repo
           </span>
         </h1>
-        <p className="mt-6 text-lg text-gray-400 max-w-2xl mx-auto leading-relaxed">
+        <p className="mt-6 text-lg text-mid max-w-2xl mx-auto leading-relaxed">
           WhipGuard detects real bugs, argues both sides of whether they matter, proposes a
           verified fix, deploys it to a live preview, and waits for a human yes before anything
           touches <code className="text-sm bg-white/5 px-1.5 py-0.5 rounded border border-border">main</code>.
@@ -125,10 +125,10 @@ export default function LandingPage() {
                   <div className="w-9 h-9 rounded-lg bg-white/5 border border-border flex items-center justify-center text-base shrink-0">
                     {p.icon}
                   </div>
-                  <div className="text-xs text-gray-600 font-mono">{String(i + 1).padStart(2, "0")}</div>
+                  <div className="text-xs text-lo font-mono">{String(i + 1).padStart(2, "0")}</div>
                   <div className="font-semibold">{p.title}</div>
                 </div>
-                <p className="text-sm text-gray-400 leading-relaxed">{p.body}</p>
+                <p className="text-sm text-mid leading-relaxed">{p.body}</p>
               </div>
             ))}
           </div>
@@ -139,7 +139,7 @@ export default function LandingPage() {
         <div className="text-center mb-10">
           <div className="section-label">Coverage</div>
           <h2 className="text-2xl font-semibold mt-2">Six categories, one detector each</h2>
-          <p className="text-sm text-gray-500 mt-2 max-w-xl mx-auto">
+          <p className="text-sm text-lo mt-2 max-w-xl mx-auto">
             A new category is a config row plus a detector module — never new pipeline code.
           </p>
         </div>
@@ -151,7 +151,7 @@ export default function LandingPage() {
                 <span className="font-semibold text-sm">{c.label}</span>
                 <span className={`dot ${c.dot} ml-auto`} />
               </div>
-              <p className="text-xs text-gray-400 leading-relaxed">{c.detail}</p>
+              <p className="text-xs text-mid leading-relaxed">{c.detail}</p>
             </div>
           ))}
         </div>
@@ -166,7 +166,7 @@ export default function LandingPage() {
           <div className="card p-5">
             <div className="text-2xl mb-3">🧭</div>
             <div className="font-semibold text-white mb-1.5">Retrieval, not guesswork</div>
-            <p className="text-sm text-gray-400 leading-relaxed">
+            <p className="text-sm text-mid leading-relaxed">
               A pgvector similarity search over code chunks and past issues, plus a real
               dependency graph, ground every proposed fix in the actual codebase instead of an
               LLM's best guess.
@@ -175,7 +175,7 @@ export default function LandingPage() {
           <div className="card p-5">
             <div className="text-2xl mb-3">✅</div>
             <div className="font-semibold text-white mb-1.5">Verified, not assumed</div>
-            <p className="text-sm text-gray-400 leading-relaxed">
+            <p className="text-sm text-mid leading-relaxed">
               Every fix is re-run against the same check it was raised with — once in a sandbox,
               once against the live deployed preview — before a human is even asked to approve it.
             </p>
@@ -183,7 +183,7 @@ export default function LandingPage() {
           <div className="card p-5">
             <div className="text-2xl mb-3">🛑</div>
             <div className="font-semibold text-white mb-1.5">A kill switch that means it</div>
-            <p className="text-sm text-gray-400 leading-relaxed">
+            <p className="text-sm text-mid leading-relaxed">
               Pause detection or fix proposals per repo in one click. A runaway detector has to
               be stoppable, not just theoretically configurable.
             </p>
@@ -191,7 +191,7 @@ export default function LandingPage() {
           <div className="card p-5">
             <div className="text-2xl mb-3">📊</div>
             <div className="font-semibold text-white mb-1.5">Every score, traceable</div>
-            <p className="text-sm text-gray-400 leading-relaxed">
+            <p className="text-sm text-mid leading-relaxed">
               Real token counts, latency, and cost tracked per model call — never a number on
               the dashboard nobody can trace back to a reason.
             </p>
@@ -202,7 +202,7 @@ export default function LandingPage() {
       <section className="max-w-3xl mx-auto px-4 py-16 text-center">
         <div className="card p-10 bg-gradient-to-b from-accent-dim/40 to-transparent">
           <h2 className="text-2xl font-semibold mb-3">Ready to watch your repo?</h2>
-          <p className="text-sm text-gray-400 mb-7 max-w-md mx-auto">
+          <p className="text-sm text-mid mb-7 max-w-md mx-auto">
             Requests are reviewed by an admin — nothing is created until it's approved.
           </p>
           <div className="flex items-center justify-center gap-3 flex-wrap">
@@ -212,7 +212,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      <footer className="max-w-5xl mx-auto px-4 py-10 text-center text-xs text-gray-600 border-t border-border">
+      <footer className="max-w-5xl mx-auto px-4 py-10 text-center text-xs text-lo border-t border-border">
         WhipGuard — a bug council for repos that means it, not a hosted product.
       </footer>
     </div>

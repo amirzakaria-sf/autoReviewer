@@ -43,9 +43,32 @@ logger = logging.getLogger("whipguard.auth")
 _ACCESS_COOKIE = "access_token"
 _REFRESH_COOKIE = "refresh_token"
 
+# How long an ALREADY-ROTATED refresh token stays acceptable, and only to
+# prove "you are the legitimate holder, here is a fresh access token".
+#
+# Rotation-on-every-use plus "a second use is theft" is the textbook shape,
+# and taken literally it logs real users out constantly: the dashboard fires
+# several requests at once, they all read the same cookie before any
+# Set-Cookie lands, the first rotates it, and every sibling then presents a
+# token the server has just marked revoked. That is a race, not a thief, and
+# treating it as theft revoked the whole family -- the actual mechanism
+# behind "every redeploy logs my users out" (a redeploy is simply the moment
+# a page reloads and fires its whole request burst at once).
+#
+# Inside this window a reused token is honoured WITHOUT rotating again and
+# WITHOUT reissuing a refresh cookie: the browser already holds the
+# successor that the winning request set, so the loser just needs an access
+# token. Outside the window -- or if the successor is itself already dead --
+# it is still treated as theft and still kills the family.
+REFRESH_REUSE_GRACE_SECONDS = 60
+
+
+def _cookies_secure() -> bool:
+    return not settings.session_secret.startswith("change-me")  # true in any real deployment
+
 
 def _set_auth_cookies(response: Response, access_token: str, refresh_secret: str) -> None:
-    secure = not settings.session_secret.startswith("change-me")  # true in any real deployment
+    secure = _cookies_secure()
     response.set_cookie(
         _ACCESS_COOKIE, access_token, max_age=ACCESS_TOKEN_TTL_SECONDS,
         httponly=True, samesite="lax", secure=secure, path="/",
@@ -232,62 +255,113 @@ async def login(request: Request, response: Response):
         return {"ok": True, "role": user.role.value}
 
 
+class RefreshRejected(Exception):
+    """The presented refresh token cannot be honoured. `clear_cookies` is
+    False only for a transient rejection, where wiping the browser's cookies
+    would turn a recoverable moment into a forced re-login."""
+
+    def __init__(self, detail: str, *, clear_cookies: bool = True) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.clear_cookies = clear_cookies
+
+
+async def _consume_refresh(db, raw: str, *, user_agent: str, rotate: bool) -> tuple[User, str | None]:
+    """Validate a refresh secret and return (user, new_raw_secret_or_None).
+
+    `rotate=False` is for read-only callers (/session): they need to know who
+    the holder is and hand back a fresh access token, and rotating there
+    would make an ordinary page load race with every other in-flight request
+    for no security gain -- rotation is what POST /refresh is for.
+
+    Raises RefreshRejected; never returns a partially-valid result.
+    """
+    now = datetime.now(timezone.utc)
+    existing = (
+        await db.execute(select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_secret(raw)))
+    ).scalars().first()
+
+    if existing is None:
+        raise RefreshRejected("invalid refresh token")
+
+    if existing.revoked_at is not None:
+        successor = await db.get(RefreshToken, existing.replaced_by_id) if existing.replaced_by_id else None
+        within_grace = (now - existing.revoked_at.replace(tzinfo=timezone.utc)).total_seconds() <= REFRESH_REUSE_GRACE_SECONDS
+        successor_alive = (
+            successor is not None
+            and successor.revoked_at is None
+            and successor.expires_at.replace(tzinfo=timezone.utc) > now
+        )
+        if within_grace and successor_alive:
+            user = await db.get(User, existing.user_id)
+            if not user or user.status != UserStatus.ACTIVE:
+                raise RefreshRejected("account no longer active")
+            logger.info("refresh race absorbed for user %s -- successor still live, not rotating", user.id)
+            return user, None
+
+        await db.execute(
+            RefreshToken.__table__.update()
+            .where(RefreshToken.user_id == existing.user_id, RefreshToken.revoked_at.is_(None))
+            .values(revoked_at=now)
+        )
+        await db.commit()
+        logger.warning("refresh token reuse detected for user %s -- full session revoked", existing.user_id)
+        raise RefreshRejected("session revoked -- please log in again")
+
+    if existing.expires_at.replace(tzinfo=timezone.utc) < now:
+        raise RefreshRejected("refresh token expired -- please log in again")
+
+    user = await db.get(User, existing.user_id)
+    if not user or user.status != UserStatus.ACTIVE:
+        raise RefreshRejected("account no longer active")
+
+    if not rotate:
+        return user, None
+
+    new_raw = new_refresh_secret()
+    new_token = RefreshToken(
+        user_id=user.id,
+        token_hash=hash_refresh_secret(new_raw),
+        expires_at=now + timedelta(seconds=REFRESH_TOKEN_TTL_SECONDS),
+        user_agent=user_agent[:255],
+    )
+    db.add(new_token)
+    await db.flush()
+    existing.revoked_at = now
+    existing.replaced_by_id = new_token.id
+    await db.commit()
+    return user, new_raw
+
+
 @router.post("/refresh")
 async def refresh(request: Request, response: Response):
-    """Rotates the refresh token on every use. A presented token that is
-    already revoked (i.e. was already rotated once before) means the SAME
-    secret was used twice -- proof of a copied/stolen cookie, not a race --
-    so that whole session is killed: every refresh token for this user is
-    revoked, forcing a real re-login everywhere."""
+    """Rotates the refresh token, subject to REFRESH_REUSE_GRACE_SECONDS."""
     raw = request.cookies.get(_REFRESH_COOKIE)
     if not raw:
         raise HTTPException(401, "no refresh token")
 
-    token_hash = hash_refresh_secret(raw)
-
     async with async_session() as db:
-        existing = (await db.execute(select(RefreshToken).where(RefreshToken.token_hash == token_hash))).scalars().first()
-
-        if existing is None:
-            _clear_auth_cookies(response)
-            raise HTTPException(401, "invalid refresh token")
-
-        if existing.revoked_at is not None:
-            await db.execute(
-                RefreshToken.__table__.update()
-                .where(RefreshToken.user_id == existing.user_id, RefreshToken.revoked_at.is_(None))
-                .values(revoked_at=datetime.now(timezone.utc))
+        try:
+            user, new_raw = await _consume_refresh(
+                db, raw, user_agent=request.headers.get("user-agent") or "", rotate=True
             )
-            await db.commit()
-            _clear_auth_cookies(response)
-            logger.warning("refresh token reuse detected for user %s -- full session revoked", existing.user_id)
-            raise HTTPException(401, "session revoked -- please log in again")
+        except RefreshRejected as rejected:
+            if rejected.clear_cookies:
+                _clear_auth_cookies(response)
+            raise HTTPException(401, rejected.detail) from None
 
-        if existing.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
-            _clear_auth_cookies(response)
-            raise HTTPException(401, "refresh token expired -- please log in again")
-
-        user = await db.get(User, existing.user_id)
-        if not user or user.status != UserStatus.ACTIVE:
-            _clear_auth_cookies(response)
-            raise HTTPException(401, "account no longer active")
-
-        new_raw = new_refresh_secret()
-        new_token = RefreshToken(
-            user_id=user.id,
-            token_hash=hash_refresh_secret(new_raw),
-            expires_at=datetime.now(timezone.utc) + timedelta(seconds=REFRESH_TOKEN_TTL_SECONDS),
-            user_agent=(request.headers.get("user-agent") or "")[:255],
-        )
-        db.add(new_token)
-        await db.flush()
-        existing.revoked_at = datetime.now(timezone.utc)
-        existing.replaced_by_id = new_token.id
-        await db.commit()
-
-        access = issue_access_token(user.id, user.role.value)
+    access = issue_access_token(user.id, user.role.value)
+    if new_raw:
         _set_auth_cookies(response, access, new_raw)
-        return {"ok": True}
+    else:
+        # Grace path: the browser already holds a live successor cookie that
+        # the winning request set. Touching the refresh cookie here would
+        # overwrite a good value with a stale one.
+        response.set_cookie(
+            _ACCESS_COOKIE, access, max_age=ACCESS_TOKEN_TTL_SECONDS,
+            httponly=True, samesite="lax", secure=_cookies_secure(), path="/",
+        )
+    return {"ok": True}
 
 
 @router.post("/logout")
@@ -304,20 +378,55 @@ async def logout(request: Request, response: Response):
     return {"ok": True}
 
 
+def _session_payload(user: User) -> dict:
+    return {
+        "authenticated": True,
+        "email": user.email,
+        "role": user.role.value,
+        "onboarding_completed": user.onboarding_completed_at is not None,
+    }
+
+
 @router.get("/session")
-async def session_status(request: Request):
+async def session_status(request: Request, response: Response):
+    """Who the caller is -- falling back to the refresh cookie when the
+    access token has merely expired.
+
+    Without that fallback this endpoint reported `authenticated: false` for a
+    user whose 14-day refresh token was perfectly valid, purely because their
+    15-minute access token had aged out. It answers 200 either way, so the
+    client's own 401-triggered refresh never fired for it, and the gate that
+    asks this question first concluded the user was logged out. Net effect:
+    a forced re-login every 15 idle minutes. The refresh token is the source
+    of truth for "is this session alive"; the access token is just the fast
+    path.
+    """
     access = request.cookies.get(_ACCESS_COOKIE)
     decoded = decode_access_token(access) if access else None
-    if not decoded:
-        return {"authenticated": False}
 
     async with async_session() as db:
-        user = await db.get(User, uuid.UUID(decoded["sub"]))
-        if not user or user.status != UserStatus.ACTIVE:
+        if decoded:
+            user = await db.get(User, uuid.UUID(decoded["sub"]))
+            if user and user.status == UserStatus.ACTIVE:
+                return _session_payload(user)
+
+        raw = request.cookies.get(_REFRESH_COOKIE)
+        if not raw:
             return {"authenticated": False}
-        return {
-            "authenticated": True,
-            "email": user.email,
-            "role": user.role.value,
-            "onboarding_completed": user.onboarding_completed_at is not None,
-        }
+
+        try:
+            # rotate=False: an ordinary page load must not consume the
+            # rotation slot that POST /refresh owns, or every concurrent
+            # request on that page would be racing it.
+            user, _ = await _consume_refresh(
+                db, raw, user_agent=request.headers.get("user-agent") or "", rotate=False
+            )
+        except RefreshRejected:
+            _clear_auth_cookies(response)
+            return {"authenticated": False}
+
+    response.set_cookie(
+        _ACCESS_COOKIE, issue_access_token(user.id, user.role.value), max_age=ACCESS_TOKEN_TTL_SECONDS,
+        httponly=True, samesite="lax", secure=_cookies_secure(), path="/",
+    )
+    return _session_payload(user)

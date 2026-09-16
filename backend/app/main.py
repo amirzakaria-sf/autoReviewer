@@ -8,15 +8,12 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app import models  # noqa: F401  (registers tables on Base.metadata)
-from app.calibration import run_calibration_loop
 from app.config import settings
 from app.db import Base, async_session, engine
 from app.enums import UserRole, UserStatus
 from app.models import User
-from app.poller import poll_for_externally_filed_bugs
 from app.routers import admin, api, auth, email_actions, github, human_input, me, slack_connect, webhooks, ws
 from app.security import decode_access_token, hash_password
-from app.stuck_run_sweeper import sweep_stuck_runs
 
 logger = logging.getLogger("whipguard.main")
 
@@ -25,7 +22,10 @@ logger = logging.getLogger("whipguard.main")
 # magic-link clicked straight from an inbox (its own signed/expiring token
 # IS the credential -- see email_client.verify_action_token), and the
 # healthcheck.
-_PUBLIC_PATHS = ("/api/auth/", "/api/webhooks/", "/api/slack/interactions", "/api/email/action", "/healthz")
+_PUBLIC_PATHS = (
+    "/api/auth/", "/api/webhooks/", "/api/slack/interactions", "/api/email/action",
+    "/healthz", "/api/healthz",
+)
 
 
 async def _seed_bootstrap_admin() -> None:
@@ -59,13 +59,14 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     await _seed_bootstrap_admin()
     ws.set_main_loop(asyncio.get_running_loop())
-    poll_task = asyncio.create_task(poll_for_externally_filed_bugs())
-    sweep_task = asyncio.create_task(sweep_stuck_runs())
-    calibration_task = asyncio.create_task(run_calibration_loop())
+    # The poller, sweeper and calibration loop moved to the privileged worker
+    # (app/worker.py): each of them TRIGGERS work that clones and executes
+    # repository code, so leaving them here would mean the web-facing process
+    # still decided when that happens. All this process runs now is the
+    # relay that carries the worker's activity events onto open websockets.
+    events_task = asyncio.create_task(ws.listen_for_events())
     yield
-    poll_task.cancel()
-    sweep_task.cancel()
-    calibration_task.cancel()
+    events_task.cancel()
 
 
 app = FastAPI(title="WhipGuard", lifespan=lifespan)
@@ -111,5 +112,10 @@ app.include_router(ws.router)
 
 
 @app.get("/healthz")
+@app.get("/api/healthz")
 async def healthz():
+    """Exposed under BOTH paths on purpose. nginx only proxies /api/ and /ws/
+    to this service, so a browser asking the public origin for /healthz gets
+    the Next.js app's 404 instead -- which made the dashboard's connectivity
+    indicator read "reconnecting" forever while everything was fine."""
     return {"status": "ok"}

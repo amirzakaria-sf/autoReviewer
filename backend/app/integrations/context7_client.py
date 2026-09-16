@@ -41,6 +41,18 @@ def lookup(query: str, topic: str = "", tokens: int = 2000) -> str:
     docs. Returns a human-readable "not found" string rather than raising, so
     a ReAct loop's tool-result handling stays uniform (a string back to the
     model either way, never an exception it has to special-case)."""
+    # Library documentation for a fixed (library, topic) is the same bytes
+    # every time, and this sits inside a ReAct loop that can ask for the same
+    # docs on several consecutive ticks of the same run. Reusing the response
+    # cache costs one indexed lookup and saves two network round-trips to a
+    # third-party service that is not on our own availability budget.
+    from app import llm_cache
+
+    cache_key = llm_cache.cache_key_for(role="context7", deployment="rest", prefix=query, suffix=f"{topic}:{tokens}")
+    cached = llm_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     results = search_library(query)
     if not results:
         return f"No Context7 library found matching {query!r}."
@@ -51,4 +63,6 @@ def lookup(query: str, topic: str = "", tokens: int = 2000) -> str:
     # actually running a real query and reading the (wrong) result.
     best = results[0]
     docs = get_docs(best["id"], topic=topic, tokens=tokens)
-    return f"# {best.get('title', best['id'])} ({best['id']})\n\n{docs}"
+    rendered = f"# {best.get('title', best['id'])} ({best['id']})\n\n{docs}"
+    llm_cache.put(cache_key, rendered, role="context7", deployment="rest")
+    return rendered

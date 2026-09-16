@@ -1,140 +1,181 @@
 "use client";
 
-import { useEffect, useState, use } from "react";
+import { useCallback, useEffect, useState, use } from "react";
 import Link from "next/link";
-import { api, type IssueSummary, type FixSummary } from "@/lib/api";
+import { api, type IssueDetail } from "@/lib/api";
 import { StatusBadge } from "@/components/StatusBadge";
+import { ScoreRing } from "@/components/ScoreRing";
+import { RowSkeleton } from "@/components/EmptyState";
+import { useToast } from "@/components/Toast";
+
+function githubUrl(repo: string | null | undefined, kind: "issues" | "pull", number: number) {
+  return repo ? `https://github.com/${repo}/${kind}/${number}` : undefined;
+}
 
 export default function IssueDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const [issue, setIssue] = useState<(IssueSummary & { fixes: FixSummary[] }) | null>(null);
+  const [issue, setIssue] = useState<IssueDetail | null>(null);
   const [acting, setActing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
-  async function refresh() {
-    setIssue(await api.issue(id));
-  }
+  const refresh = useCallback(async () => {
+    try {
+      setIssue(await api.issue(id));
+      setError(null);
+    } catch {
+      setError("Could not load this issue.");
+    }
+  }, [id]);
 
   useEffect(() => {
     refresh();
     const interval = setInterval(refresh, 4000);
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [refresh]);
 
-  if (!issue) return <div className="text-gray-500">Loading…</div>;
+  if (error && !issue) return <p className="text-sm text-failed">{error}</p>;
+  if (!issue) return <RowSkeleton rows={3} />;
 
   const fix = issue.fixes[0];
 
   async function act(action: "approve" | "reject") {
     if (!fix) return;
     setActing(true);
-    await (action === "approve" ? api.approveFix(fix.id) : api.rejectFix(fix.id));
-    await refresh();
-    setActing(false);
+    try {
+      await (action === "approve" ? api.approveFix(fix.id) : api.rejectFix(fix.id));
+      toast(action === "approve" ? "success" : "info", action === "approve" ? "Fix approved — applying patch…" : "Fix rejected.");
+      await refresh();
+    } catch {
+      toast("error", `Could not ${action} this fix. Nothing was changed.`);
+    } finally {
+      setActing(false);
+    }
   }
 
-  return (
-    <div className="space-y-6">
-      <Link href="/dashboard" className="text-sm text-gray-400 hover:text-white">← back to overview</Link>
+  const evidenceText =
+    issue.evidence &&
+    String(
+      (issue.evidence as Record<string, unknown>).assertion_text ?? JSON.stringify(issue.evidence, null, 2),
+    );
 
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-xl font-semibold">{issue.title}</h1>
-          <div className="mt-2 flex items-center gap-2 text-sm text-gray-400">
+  return (
+    <div className="space-y-6 animate-fade-in">
+      <Link href="/dashboard" className="text-xs text-lo hover:text-hi transition">
+        ← Overview
+      </Link>
+
+      <header className="flex items-start gap-5">
+        <ScoreRing score={issue.assurance_score} threshold={issue.assurance_threshold ?? undefined} label="assurance" />
+        <div className="min-w-0 flex-1">
+          <h1 className="text-lg font-semibold leading-snug">{issue.title}</h1>
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
             <StatusBadge label={issue.badge} color={issue.color} />
-            <span className={`badge ${issue.origin === "detected" ? "badge-blue" : "badge-gray"}`}>
-              {issue.origin === "detected" ? "🤖 AI-detected" : "👤 filed externally"}
+            <span className={`badge ${issue.origin === "detected" ? "badge-violet" : "badge-gray"}`}>
+              {issue.origin === "detected" ? "AI-detected" : "Filed externally"}
             </span>
-            {issue.github_issue_number && (
+            <span className="badge badge-gray">{issue.category}</span>
+            {issue.github_issue_number && issue.repo_full_name && (
               <a
-                className="underline hover:text-white"
+                className="badge badge-gray hover:text-hi transition"
                 target="_blank"
-                href={`https://github.com/amirzakaria-sf/whipguard-demo-ui/issues/${issue.github_issue_number}`}
+                rel="noreferrer"
+                href={githubUrl(issue.repo_full_name, "issues", issue.github_issue_number)}
               >
                 GitHub #{issue.github_issue_number}
               </a>
             )}
           </div>
+          {issue.repo_full_name && <p className="mt-2 text-xs text-lo num">{issue.repo_full_name}</p>}
         </div>
-      </div>
+      </header>
 
-      <section className="border border-border bg-panel rounded-lg p-4">
-        <h2 className="font-semibold mb-2">Assurance rubric — score {issue.assurance_score ?? "—"}/100</h2>
-        <p className="text-sm text-gray-400 mb-3">{issue.assurance_rubric?.verdict}</p>
-        <div className="space-y-2">
-          {issue.assurance_rubric?.factors?.map((f, i) => (
-            <div key={i} className="flex items-start justify-between text-sm border-t border-border pt-2">
-              <div>
-                <div className="font-medium">{f.factor}</div>
-                <div className="text-gray-500">{f.note}</div>
+      <section className="card p-5">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="section-label">Assurance rubric</h2>
+          {issue.assurance_threshold !== null && issue.assurance_threshold !== undefined && (
+            <span className="text-[11px] text-lo">
+              threshold <span className="num text-mid">{issue.assurance_threshold}</span>
+            </span>
+          )}
+        </div>
+        <p className="text-sm text-mid mb-4 leading-relaxed">{issue.assurance_rubric?.verdict ?? "No verdict recorded."}</p>
+        <div>
+          {issue.assurance_rubric?.factors?.map((factor, index) => (
+            <div key={index} className="flex items-start justify-between gap-4 py-2.5 hairline first:border-t-0">
+              <div className="min-w-0">
+                <div className="text-sm font-medium">{factor.factor}</div>
+                <div className="text-xs text-lo mt-0.5 leading-relaxed">{factor.note}</div>
               </div>
-              <div className="text-gray-300 font-mono">{f.weight}</div>
+              <div className="num text-sm text-mid shrink-0">{factor.weight}</div>
             </div>
           ))}
+          {!issue.assurance_rubric?.factors?.length && (
+            <p className="text-xs text-lo">No factors recorded — this finding did not reach a jury.</p>
+          )}
         </div>
       </section>
 
-      {issue.evidence && (
-        <section className="border border-border bg-panel rounded-lg p-4">
-          <h2 className="font-semibold mb-2">Mechanical evidence</h2>
-          <pre className="text-xs bg-black/40 rounded p-3 overflow-x-auto whitespace-pre-wrap">
-            {String((issue.evidence as any).assertion_text ?? JSON.stringify(issue.evidence, null, 2))}
+      {evidenceText && (
+        <section className="card p-5">
+          <h2 className="section-label mb-3">Mechanical evidence</h2>
+          <pre
+            className="text-[11px] leading-relaxed rounded-lg p-3.5 overflow-x-auto whitespace-pre-wrap num"
+            style={{ background: "var(--ink-900)", border: "1px solid var(--ink-700)", maxHeight: 340 }}
+          >
+            {evidenceText}
           </pre>
         </section>
       )}
 
       {fix && (
-        <section className="border border-border bg-panel rounded-lg p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold">Proposed fix</h2>
-            <StatusBadge label={fix.badge} color={fix.color} />
-          </div>
-
-          <p className="text-sm text-gray-400">
-            Resolution score: {fix.resolution_score ?? "—"}/100 — {fix.resolution_rubric?.verdict}
-          </p>
-
-          <div className="flex flex-wrap gap-3 text-sm">
-            {fix.pr_number && (
-              <a
-                className="underline hover:text-white"
-                target="_blank"
-                href={`https://github.com/amirzakaria-sf/whipguard-demo-ui/pull/${fix.pr_number}`}
-              >
-                PR #{fix.pr_number}
-              </a>
-            )}
-            {fix.preview_url && (
-              <a className="underline hover:text-white" target="_blank" href={fix.preview_url}>
-                Live preview
-              </a>
-            )}
+        <section className="card p-5 space-y-4">
+          <div className="flex items-start gap-5">
+            <ScoreRing
+              score={fix.resolution_score}
+              threshold={issue.resolution_threshold ?? undefined}
+              size={60}
+              label="resolution"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="font-semibold text-sm">Proposed fix</h2>
+                <StatusBadge label={fix.badge} color={fix.color} />
+              </div>
+              <p className="text-sm text-mid mt-2 leading-relaxed">
+                {fix.resolution_rubric?.verdict ?? "No verdict recorded."}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {fix.pr_number && issue.repo_full_name && (
+                  <a className="badge badge-gray hover:text-hi transition" target="_blank" rel="noreferrer"
+                     href={githubUrl(issue.repo_full_name, "pull", fix.pr_number)}>
+                    PR #{fix.pr_number}
+                  </a>
+                )}
+                {fix.preview_url && (
+                  <a className="badge badge-amber hover:opacity-80 transition" target="_blank" rel="noreferrer" href={fix.preview_url}>
+                    Live preview ↗
+                  </a>
+                )}
+                {fix.branch_name && <span className="badge badge-gray num">{fix.branch_name}</span>}
+              </div>
+            </div>
           </div>
 
           {fix.status === "awaiting-approval" && (
-            <div className="flex gap-3 pt-3">
-              <button
-                disabled={acting}
-                onClick={() => act("approve")}
-                className="group flex-1 flex items-center justify-center gap-2 px-5 py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-b from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 shadow-[0_1px_0_rgba(255,255,255,0.15)_inset,0_4px_14px_rgba(16,185,129,0.35)] hover:shadow-[0_1px_0_rgba(255,255,255,0.2)_inset,0_6px_20px_rgba(16,185,129,0.5)] transition-all disabled:opacity-50 disabled:pointer-events-none active:scale-[0.98]"
-              >
-                <span className="text-base group-disabled:hidden">✓</span>
-                {acting ? "Working…" : "Approve"}
+            <div className="flex gap-3 pt-1">
+              <button disabled={acting} onClick={() => act("approve")} className="btn btn-approve flex-1 px-5 py-2.5">
+                {acting ? "Working…" : "Approve & deploy"}
               </button>
-              <button
-                disabled={acting}
-                onClick={() => act("reject")}
-                className="group flex-1 flex items-center justify-center gap-2 px-5 py-3 rounded-xl text-sm font-semibold text-red-100 bg-gradient-to-b from-red-500/90 to-red-600/90 hover:from-red-500 hover:to-red-600 shadow-[0_1px_0_rgba(255,255,255,0.1)_inset,0_4px_14px_rgba(239,68,68,0.25)] hover:shadow-[0_1px_0_rgba(255,255,255,0.15)_inset,0_6px_20px_rgba(239,68,68,0.4)] transition-all disabled:opacity-50 disabled:pointer-events-none active:scale-[0.98]"
-              >
-                <span className="text-base group-disabled:hidden">✕</span>
+              <button disabled={acting} onClick={() => act("reject")} className="btn btn-reject flex-1 px-5 py-2.5">
                 {acting ? "Working…" : "Reject"}
               </button>
             </div>
           )}
 
           {fix.approved_by && (
-            <p className="text-xs text-gray-500">
-              Handled by {fix.approved_by} via {fix.approved_via}
+            <p className="text-xs text-lo">
+              Handled by <span className="text-mid">{fix.approved_by}</span> via {fix.approved_via}
             </p>
           )}
         </section>
@@ -142,38 +183,39 @@ export default function IssueDetailPage({ params }: { params: Promise<{ id: stri
 
       {fix?.outcome_check && (
         <section
-          className={`border rounded-lg p-4 space-y-3 ${
-            fix.outcome_check.agreed ? "border-emerald-800 bg-emerald-950/30" : "border-red-800 bg-red-950/30"
-          }`}
+          className="card p-5 space-y-3"
+          style={{ borderColor: fix.outcome_check.agreed ? "var(--verified-dim)" : "var(--failed-dim)" }}
         >
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold">Cross-app outcome check</h2>
+            <h2 className="section-label">Cross-app outcome check</h2>
             <StatusBadge
               label={fix.outcome_check.agreed ? "All systems agree" : "Outcome check failed"}
               color={fix.outcome_check.agreed ? "green" : "red"}
             />
           </div>
-          <p className="text-xs text-gray-500">
-            Independently reads GitHub, Cloudflare, Slack, and this dashboard back after the run and
-            reduces them to one status. Any disagreement fails the whole run closed, even if every
-            step above reported success.
+          <p className="text-xs text-lo leading-relaxed">
+            Independently reads GitHub, Cloudflare, Slack and this dashboard back after the run and reduces
+            them to one status. Any disagreement fails the whole run closed, even if every step above
+            reported success.
           </p>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {(["github_state", "cloudflare_state", "slack_state"] as const).map((key) => (
-              <div key={key} className="bg-black/30 rounded p-2">
-                <div className="text-gray-500 mb-1">{key.replace("_state", "")}</div>
-                <pre className="whitespace-pre-wrap break-words">{JSON.stringify(fix.outcome_check![key], null, 1)}</pre>
+              <div key={key} className="rounded-lg p-2.5" style={{ background: "var(--ink-900)", border: "1px solid var(--ink-700)" }}>
+                <div className="section-label mb-1.5">{key.replace("_state", "")}</div>
+                <pre className="text-[10px] whitespace-pre-wrap break-words num text-mid">
+                  {JSON.stringify(fix.outcome_check![key], null, 1)}
+                </pre>
               </div>
             ))}
-            <div className="bg-black/30 rounded p-2">
-              <div className="text-gray-500 mb-1">dashboard</div>
-              <pre>{fix.outcome_check.dashboard_state}</pre>
+            <div className="rounded-lg p-2.5" style={{ background: "var(--ink-900)", border: "1px solid var(--ink-700)" }}>
+              <div className="section-label mb-1.5">dashboard</div>
+              <pre className="text-[10px] num text-mid">{fix.outcome_check.dashboard_state}</pre>
             </div>
           </div>
           {fix.outcome_check.mismatch_detail && (
-            <div className="text-xs text-red-300">
+            <p className="text-xs" style={{ color: "#ff8b84" }}>
               Mismatch: {JSON.stringify(fix.outcome_check.mismatch_detail)}
-            </div>
+            </p>
           )}
         </section>
       )}

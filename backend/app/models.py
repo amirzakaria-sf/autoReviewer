@@ -258,6 +258,14 @@ class CodeChunk(Base):
     file_path: Mapped[str] = mapped_column(sa.String)
     symbol_name: Mapped[str] = mapped_column(sa.String)
     content: Mapped[str] = mapped_column(sa.Text)
+    # Line span, so a dense hit can be recognised as the SAME piece of code
+    # as a lexical or structural hit covering the same lines. Fusion
+    # (app/hybrid_retrieval.py) merges candidates on span overlap; without
+    # spans the dense channel could only be merged by exact symbol-name
+    # equality, and the two indexes chunk at slightly different boundaries,
+    # so the same function would reach the model twice.
+    start_line: Mapped[int] = mapped_column(sa.Integer, server_default="1")
+    end_line: Mapped[int] = mapped_column(sa.Integer, server_default="1")
     embedding: Mapped[list] = mapped_column(Vector(EMBEDDING_DIMENSIONS))
     updated_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now())
 
@@ -344,3 +352,104 @@ class Edge(Base):
     from_symbol_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("symbols.id"))
     to_symbol_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("symbols.id"))
     kind: Mapped[str] = mapped_column(sa.String)  # calls | imports | extends | references
+
+
+class MemoryTrace(Base):
+    """What was already tried here, and how it failed.
+
+    Everything this system persisted before was a success artifact or a
+    status. The question a later run most wants answered -- *what did we
+    already attempt on this bug, and why didn't it work* -- was recoverable
+    only by reading prose in the activity feed, which no council node does
+    and no cheap model should be asked to.
+
+    Every field here is already computed somewhere today and then thrown
+    away: the detector has the failing command and its exit code, the
+    Arbiter has the verdict, the outcome check has the mismatch. This records
+    them as queryable rows instead of as log lines.
+    """
+
+    __tablename__ = "memory_traces"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    repo_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("repos.id"), index=True)
+    issue_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("issues.id"), nullable=True)
+    fix_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("fixes.id"), nullable=True)
+    # The run that wrote this. Search EXCLUDES the calling run's own traces:
+    # otherwise a stuck run retrieves its own echo -- the trace it wrote
+    # thirty seconds ago comes back as "what we tried before", and the loop
+    # it is stuck in becomes the evidence for staying in it.
+    council_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    category: Mapped[str] = mapped_column(sa.String, default="")
+    stage: Mapped[str] = mapped_column(sa.String, default="")  # detect | patch | verify | deploy | outcome
+    outcome: Mapped[str] = mapped_column(sa.String)            # failed | rejected | regressed | abandoned
+    attempt: Mapped[int] = mapped_column(sa.Integer, default=1)
+    failing_command: Mapped[str] = mapped_column(sa.Text, default="")
+    exit_code: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
+    touched_paths: Mapped[list] = mapped_column(JSONB, default=list)
+    detail: Mapped[str] = mapped_column(sa.Text, default="")
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+
+
+class LlmResponseCache(Base):
+    """Exact-input response cache for the deterministic council calls
+    (plan.md §13.2 -- referenced by the plan since the beginning, never
+    actually built until now).
+
+    Azure's own prompt cache is the wrong tool for a call whose ENTIRE input
+    repeats: it discounts the input tokens and still bills the output and
+    still makes the caller wait for it. This returns the previous answer
+    immediately, for free.
+
+    Opt-in at the call site, never blanket. A patch-generation call must
+    never be served from here -- if the same rejected diff comes back a
+    second time, the identical input is itself the signal that something is
+    looping, and a cache hit would erase it.
+    """
+
+    __tablename__ = "llm_response_cache"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    cache_key: Mapped[str] = mapped_column(sa.String, nullable=False, unique=True)
+    node: Mapped[str] = mapped_column(sa.String, default="")
+    deployment: Mapped[str] = mapped_column(sa.String, default="")
+    response_text: Mapped[str] = mapped_column(sa.Text)
+    hit_count: Mapped[int] = mapped_column(sa.Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+    expires_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
+
+
+class WorkItem(Base):
+    """The one-way arrow between the web process and the privileged worker
+    (plan.md §15).
+
+    The dashboard renders model-authored content and untrusted repository
+    text by definition -- that is its job -- and a process that does that
+    while ALSO holding the Docker socket, the deploy credentials and a
+    checkout of arbitrary third-party code is one RCE away from compromising
+    everything this system touches. So the two are separate processes, and
+    the dashboard's entire power over the privileged side is to insert a row
+    here saying what was asked for. Nothing listens on the worker's side; it
+    polls, and it decides for itself what to do with what it finds.
+
+    `claimed_by` plus SKIP LOCKED claiming means several workers can run
+    against one queue without ever handing the same item to two of them.
+    """
+
+    __tablename__ = "work_items"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    kind: Mapped[str] = mapped_column(sa.String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(sa.String, default="queued", index=True)  # queued|running|done|failed
+    attempts: Mapped[int] = mapped_column(sa.Integer, default=0)
+    claimed_by: Mapped[str | None] = mapped_column(sa.String, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    # Whatever the handler returned. The worker is a different PROCESS, so a
+    # module-level global (which is how the eval report used to be kept)
+    # cannot carry a result back to the web side at all -- it has to land
+    # somewhere both halves can read.
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())

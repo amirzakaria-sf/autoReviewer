@@ -57,21 +57,49 @@ export type FixSummary = {
   outcome_check: OutcomeCheck | null;
 };
 
+/** One issue plus everything the detail page needs: the repo it belongs to
+ *  (so GitHub links are built from real data rather than a hardcoded slug),
+ *  the thresholds it was judged against, and its fixes. */
+export type IssueDetail = IssueSummary & {
+  repo_full_name: string | null;
+  assurance_threshold: number | null;
+  resolution_threshold: number | null;
+  fixes: FixSummary[];
+};
+
+/** The server actually rejected this session. Only this means "log out". */
 export class UnauthorizedError extends Error {}
+
+/** The backend could not be reached. The session is untouched -- this is a
+ *  redeploy, a dropped connection, or a gateway blip, and treating it as a
+ *  logout is what used to throw users back to /login on every deploy. */
+export class OfflineError extends Error {
+  constructor(message = "Backend unreachable") {
+    super(message);
+  }
+}
+
+// nginx answers with these while the backend container is restarting.
+const TRANSIENT_STATUSES = new Set([502, 503, 504]);
+const RETRY_BACKOFF_MS = [250, 600, 1400];
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+type RefreshOutcome = "refreshed" | "rejected" | "unreachable";
 
 // A single in-flight refresh at a time -- several components can each hit a
 // 401 at nearly the same moment (overview + issues + repos all poll every
 // 4s); without this they'd each fire their own /refresh, and the refresh
 // token rotates on every use (app/routers/auth.py), so only the FIRST of a
 // concurrent burst would still hold a valid cookie by the time the others
-// tried theirs -- the others would wrongly log the user out.
-let refreshInFlight: Promise<boolean> | null = null;
+// tried theirs.
+let refreshInFlight: Promise<RefreshOutcome> | null = null;
 
-async function tryRefresh(): Promise<boolean> {
+async function tryRefresh(): Promise<RefreshOutcome> {
   if (!refreshInFlight) {
     refreshInFlight = fetch(`${API_BASE}/api/auth/refresh`, { method: "POST", credentials: "include" })
-      .then((r) => r.ok)
-      .catch(() => false)
+      .then((r): RefreshOutcome => (r.ok ? "refreshed" : r.status === 401 ? "rejected" : "unreachable"))
+      .catch((): RefreshOutcome => "unreachable")
       .finally(() => {
         refreshInFlight = null;
       });
@@ -79,25 +107,83 @@ async function tryRefresh(): Promise<boolean> {
   return refreshInFlight;
 }
 
+const PUBLIC_ROUTES = new Set(["/", "/login", "/signup", "/accept-invite"]);
+
 function forceLogout() {
   if (typeof window === "undefined") return;
-  if (window.location.pathname === "/login" || window.location.pathname === "/") return;
+  if (PUBLIC_ROUTES.has(window.location.pathname)) return;
   window.location.href = "/login?expired=1";
 }
 
-async function authedFetch(path: string, init: RequestInit): Promise<Response> {
-  let res = await fetch(`${API_BASE}${path}`, { ...init, credentials: "include" });
-  if (res.status === 401) {
-    const refreshed = await tryRefresh();
-    if (refreshed) {
-      res = await fetch(`${API_BASE}${path}`, { ...init, credentials: "include" });
-    }
-    if (res.status === 401) {
-      forceLogout();
-      throw new UnauthorizedError();
+/** Retries only what is safe to retry. A GET can be replayed freely; a POST
+ *  that got a 502 may or may not have already applied server-side, and
+ *  silently replaying an approve/reject is worse than surfacing the error. */
+async function fetchOnce(path: string, init: RequestInit): Promise<Response> {
+  const idempotent = !init.method || init.method.toUpperCase() === "GET";
+  const attempts = idempotent ? RETRY_BACKOFF_MS.length + 1 : 1;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) await sleep(RETRY_BACKOFF_MS[attempt - 1]);
+    try {
+      const res = await fetch(`${API_BASE}${path}`, { ...init, credentials: "include" });
+      if (TRANSIENT_STATUSES.has(res.status) && attempt < attempts - 1) continue;
+      if (TRANSIENT_STATUSES.has(res.status)) throw new OfflineError();
+      return res;
+    } catch (error) {
+      if (error instanceof OfflineError) throw error;
+      if (attempt >= attempts - 1) throw new OfflineError();
     }
   }
-  return res;
+  throw new OfflineError();
+}
+
+// Access tokens live 15 minutes (app/security.py). Rolling them on a
+// 10-minute cadence means an open tab never reaches the expiry path at all,
+// and waking a sleeping laptop rolls one immediately rather than showing a
+// flash of "signed out" while the first request 401s.
+const KEEPALIVE_INTERVAL_MS = 10 * 60 * 1000;
+const KEEPALIVE_MIN_GAP_MS = 60 * 1000;
+let lastKeepaliveAt = 0;
+
+export function startSessionKeepalive(): () => void {
+  if (typeof window === "undefined") return () => {};
+
+  const roll = () => {
+    const now = Date.now();
+    if (now - lastKeepaliveAt < KEEPALIVE_MIN_GAP_MS) return;
+    lastKeepaliveAt = now;
+    void tryRefresh();
+  };
+
+  const timer = window.setInterval(roll, KEEPALIVE_INTERVAL_MS);
+  const onVisible = () => {
+    if (document.visibilityState === "visible") roll();
+  };
+  document.addEventListener("visibilitychange", onVisible);
+  window.addEventListener("online", roll);
+
+  return () => {
+    window.clearInterval(timer);
+    document.removeEventListener("visibilitychange", onVisible);
+    window.removeEventListener("online", roll);
+  };
+}
+
+async function authedFetch(path: string, init: RequestInit): Promise<Response> {
+  let res = await fetchOnce(path, init);
+  if (res.status !== 401) return res;
+
+  const outcome = await tryRefresh();
+  // An unreachable backend says nothing about whether the session is valid,
+  // so it must never end in forceLogout().
+  if (outcome === "unreachable") throw new OfflineError();
+  if (outcome === "refreshed") {
+    res = await fetchOnce(path, init);
+    if (res.status !== 401) return res;
+  }
+
+  forceLogout();
+  throw new UnauthorizedError();
 }
 
 async function getJSON<T>(path: string): Promise<T> {
@@ -178,6 +264,7 @@ export type MyProfile = {
   role: "admin" | "member";
   onboarding_completed: boolean;
   created_at: string | null;
+  slack_workspace_connected: boolean;
 };
 
 export type AdminUser = {
@@ -244,13 +331,22 @@ export const api = {
     postJSON<{ ok: boolean }>(`/api/human-input/${id}/answer`, { answer }),
   overview: () => getJSON<Overview>("/api/overview"),
   issues: (status?: string) => getJSON<IssueSummary[]>(`/api/issues${status ? `?status=${status}` : ""}`),
-  issue: (id: string) => getJSON<IssueSummary & { fixes: FixSummary[] }>(`/api/issues/${id}`),
+  issue: (id: string) => getJSON<IssueDetail>(`/api/issues/${id}`),
   approveFix: (id: string) => postJSON(`/api/fixes/${id}/approve`),
   rejectFix: (id: string) => postJSON(`/api/fixes/${id}/reject`),
   scanRepo: (repoId: string) => postJSON(`/api/repos/${repoId}/scan`),
   triggerFix: (issueId: string) => postJSON(`/api/issues/${issueId}/trigger-fix`),
   repos: () =>
-    getJSON<{ id: string; github_full_name: string; default_branch: string; detection_paused: boolean; proposals_paused: boolean }[]>(
+    getJSON<
+      {
+        id: string;
+        github_full_name: string;
+        default_branch: string;
+        detection_paused: boolean;
+        proposals_paused: boolean;
+        slack_channel_name: string | null;
+      }[]
+    >(
       "/api/repos"
     ),
   repoSettings: (repoId: string) => getJSON<RepoSettings>(`/api/repos/${repoId}/settings`),

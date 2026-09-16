@@ -7,6 +7,7 @@ import { useSession } from "./AuthGate";
 
 const NAV_LINKS = [
   { href: "/dashboard", label: "Overview" },
+  { href: "/repos", label: "Repos" },
   { href: "/activity", label: "Live activity" },
   { href: "/connect", label: "Connect" },
 ];
@@ -19,10 +20,30 @@ export function HeaderBar() {
   const session = useSession();
   const [profile, setProfile] = useState<GithubProfile | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [online, setOnline] = useState(true);
 
   useEffect(() => {
     if (HIDDEN_ON.includes(pathname)) return;
     api.githubProfile().then(setProfile).catch(() => {});
+  }, [pathname]);
+
+  useEffect(() => {
+    if (HIDDEN_ON.includes(pathname)) return;
+    let cancelled = false;
+    const ping = async () => {
+      try {
+        const res = await fetch("/api/healthz", { cache: "no-store" });
+        if (!cancelled) setOnline(res.ok);
+      } catch {
+        if (!cancelled) setOnline(false);
+      }
+    };
+    ping();
+    const timer = setInterval(ping, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, [pathname]);
 
   if (HIDDEN_ON.includes(pathname)) return null;
@@ -45,7 +66,7 @@ export function HeaderBar() {
                 key={link.href}
                 href={link.href}
                 className={`px-2.5 py-1.5 rounded-md transition ${
-                  pathname === link.href ? "text-white bg-white/8" : "text-gray-400 hover:text-white hover:bg-white/5"
+                  pathname === link.href ? "text-white bg-white/8" : "text-mid hover:text-hi hover:bg-white/5"
                 }`}
               >
                 {link.label}
@@ -55,7 +76,7 @@ export function HeaderBar() {
               <a
                 href="/admin"
                 className={`px-2.5 py-1.5 rounded-md transition ${
-                  pathname.startsWith("/admin") ? "text-white bg-white/8" : "text-gray-400 hover:text-white hover:bg-white/5"
+                  pathname.startsWith("/admin") ? "text-hi bg-white/[0.07]" : "text-lo hover:text-hi hover:bg-white/5"
                 }`}
               >
                 Admin
@@ -64,16 +85,23 @@ export function HeaderBar() {
           </nav>
         </div>
 
-        <div className="flex items-center gap-3 text-sm text-gray-400">
-          <span className="badge badge-green hidden sm:inline-flex">
-            <span className="dot bg-green-400" /> council running
+        <div className="flex items-center gap-3 text-sm text-mid">
+          {/* Was a hardcoded "council running" pill that said the same thing
+              whether or not anything was reachable. A status indicator that
+              cannot be wrong is decoration; this one actually polls. */}
+          <span className={`badge hidden sm:inline-flex ${online ? "badge-green" : "badge-red"}`}>
+            <span
+              className={`dot ${online ? "" : "animate-pulse-dot"}`}
+              style={{ background: online ? "var(--verified)" : "var(--failed)" }}
+            />
+            {online ? "connected" : "reconnecting"}
           </span>
           {profile?.connected && (
             <a
               href={profile.html_url}
               target="_blank"
               rel="noreferrer"
-              className="hidden sm:flex items-center gap-1.5 hover:text-white"
+              className="hidden sm:flex items-center gap-1.5 hover:text-hi"
               title={`Connected to GitHub as ${profile.login}`}
             >
               {profile.avatar_url && (
@@ -86,7 +114,9 @@ export function HeaderBar() {
           <div className="relative">
             <button
               onClick={() => setMenuOpen((v) => !v)}
-              className="w-7 h-7 rounded-full bg-accent/20 border border-accent/40 text-accent-soft text-xs font-semibold flex items-center justify-center hover:bg-accent/30 transition"
+              className="w-7 h-7 rounded-full text-xs font-semibold flex items-center justify-center transition num"
+              style={{ background: "rgba(255,178,36,0.14)", border: "1px solid var(--amber-dim)", color: "var(--amber)" }}
+              aria-label="Account menu"
             >
               {session.email?.[0]?.toUpperCase() ?? "?"}
             </button>
@@ -94,19 +124,19 @@ export function HeaderBar() {
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
                 <div className="absolute right-0 top-9 z-20 w-56 card p-1.5 animate-fade-in">
-                  <div className="px-2.5 py-2 text-xs text-gray-500 truncate border-b border-border mb-1">
+                  <div className="px-2.5 py-2 text-xs text-lo truncate border-b mb-1" style={{ borderColor: "var(--ink-700)" }}>
                     {session.email}
                     {session.role === "admin" && <span className="badge badge-accent ml-1.5">admin</span>}
                   </div>
                   <a
                     href="/profile"
-                    className="block w-full text-left px-2.5 py-1.5 rounded-md text-sm text-gray-300 hover:bg-white/5 hover:text-white transition"
+                    className="block w-full text-left px-2.5 py-1.5 rounded-md text-sm text-mid hover:bg-white/5 hover:text-hi transition"
                   >
                     Profile
                   </a>
                   <button
                     onClick={logout}
-                    className="w-full text-left px-2.5 py-1.5 rounded-md text-sm text-gray-300 hover:bg-white/5 hover:text-white transition"
+                    className="w-full text-left px-2.5 py-1.5 rounded-md text-sm text-mid hover:bg-white/5 hover:text-hi transition"
                   >
                     Sign out
                   </button>

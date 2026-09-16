@@ -21,7 +21,7 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
         <div>
           <div className="text-3xl mb-2">👋</div>
           <h2 className="text-lg font-semibold">Welcome to WhipGuard</h2>
-          <p className="text-sm text-gray-400 mt-1.5">
+          <p className="text-sm text-mid mt-1.5">
             Connect GitHub to watch a repo, and Slack to get fix-proposed and escalation alerts. You can always do
             this later from your profile.
           </p>
@@ -44,7 +44,7 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
           </a>
         </div>
 
-        <button onClick={dismiss} disabled={dismissing} className="w-full text-center text-xs text-gray-500 hover:text-gray-300 transition">
+        <button onClick={dismiss} disabled={dismissing} className="w-full text-center text-xs text-lo hover:text-mid transition">
           Skip for now
         </button>
       </div>

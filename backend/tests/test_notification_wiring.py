@@ -200,7 +200,10 @@ async def test_verification_failed_notifies_immediately_on_first_occurrence():
     with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as mock_post_message, patch.object(
         settings, "slack_bot_token", "xoxb-test-token"
     ):
-        result = await resolve_approval(db, fix.id, approved=True, actor="tester", surface="dashboard")
+        # apply=True: the worker's entry point. The web-facing call now stops at
+        # the security seam and queues this half (app/graphs/approval_graph.py),
+        # so a test of the EXECUTION path has to enter where the worker does.
+        result = await resolve_approval(db, fix.id, approved=True, actor="tester", surface="dashboard", apply=True)
 
     assert result["status"] == FixStatus.VERIFICATION_FAILED.value
     mock_post_message.assert_called_once()
@@ -219,7 +222,10 @@ async def test_empty_slack_bot_token_does_not_crash_the_flow():
     with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as mock_post_message, patch.object(
         settings, "slack_bot_token", ""
     ):
-        result = await resolve_approval(db, fix.id, approved=True, actor="tester", surface="dashboard")
+        # apply=True: the worker's entry point. The web-facing call now stops at
+        # the security seam and queues this half (app/graphs/approval_graph.py),
+        # so a test of the EXECUTION path has to enter where the worker does.
+        result = await resolve_approval(db, fix.id, approved=True, actor="tester", surface="dashboard", apply=True)
 
     assert result["ok"] is True
     assert result["status"] == FixStatus.VERIFICATION_FAILED.value
