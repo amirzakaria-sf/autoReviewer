@@ -17,7 +17,7 @@ from typing import TypedDict
 class OutcomeInputs(TypedDict):
     github_state: dict  # {"issue_exists": bool, "labels": list[str], "pr_open": bool, "pr_merged": bool, "closes_reference": bool}
     cloudflare_state: dict  # {"reachable": bool, "assertion_passes": bool}
-    slack_state: dict  # {"status_text": str | None}
+    slack_state: dict  # {"status_text": str | None, "configured": bool}
     dashboard_state: str  # the Fix.status value the dashboard row currently shows
 
 
@@ -46,14 +46,32 @@ def check_outcome(inputs: OutcomeInputs) -> dict:
     elif not cloudflare.get("assertion_passes"):
         mismatches["cloudflare"] = "live re-check of the gating assertion failed."
 
-    # Slack: the thread's current text must reflect the current dashboard status,
-    # not a stale message left over from an earlier state.
-    slack_text = (slack.get("status_text") or "").lower()
-    if dashboard_status.lower() not in slack_text:
-        mismatches["slack"] = (
-            f"thread text does not mention current status {dashboard_status!r} "
-            f"(saw: {slack.get('status_text')!r})."
-        )
+    # Slack: the thread's current text must reflect the current dashboard
+    # status, not a stale message left over from an earlier state.
+    #
+    # A surface that is not CONFIGURED is not a surface that disagrees. With
+    # Slack disconnected there is no thread to read, `status_text` comes back
+    # None, and the old check read that as a contradiction -- so every
+    # otherwise-perfect run failed closed on the absence of an integration
+    # nobody had set up. Found on a real approval where GitHub, Cloudflare
+    # and the dashboard all agreed and this was the only objection.
+    #
+    # `configured` is set by the caller, which knows whether a bot token and
+    # channel exist. Absent (an older payload), fall back to treating a
+    # missing thread as not-configured rather than as a mismatch: silence is
+    # ambiguous, and failing a verified deploy on an ambiguity is the more
+    # expensive mistake.
+    slack_configured = slack.get("configured")
+    if slack_configured is None:
+        slack_configured = slack.get("status_text") is not None
+
+    if slack_configured:
+        slack_text = (slack.get("status_text") or "").lower()
+        if dashboard_status.lower() not in slack_text:
+            mismatches["slack"] = (
+                f"thread text does not mention current status {dashboard_status!r} "
+                f"(saw: {slack.get('status_text')!r})."
+            )
 
     agreed = not mismatches
     resolved_status = dashboard_status if agreed else "outcome-check-failed"

@@ -14,6 +14,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.calibration import record_calibration_event
+from app import app_settings
 from app.config import settings
 from app.enums import FIX_STATUS_RENDER, FixStatus, IssueStatus
 from app.graphs.outcome_checker import check_outcome
@@ -21,8 +22,8 @@ from app.integrations import cloudflare_client, email_client, github_client, sla
 from app.models import Fix, Issue, Repo
 from app.notifications import mark_notified, record_condition, should_notify
 from app.routers.ws import emit_event
-from app.sandbox.docker_runner import run_in_sandbox
-from app.sandbox.worktree import repo_slug
+from app.detectors import get_detector
+from app.sandbox.worktree import repo_root
 
 logger = logging.getLogger("whipguard.approval_graph")
 
@@ -66,7 +67,7 @@ def _update_slack_status(fix: Fix, issue_title: str, channel_id: str, extra: str
     """Best-effort: keep the Slack thread's text in sync with the current
     status, since the outcome checker (§11) reads this back and a stale
     message is exactly the disagreement it's designed to catch."""
-    if not (settings.slack_bot_token and fix.slack_message_ts and channel_id):
+    if not (app_settings.slack_bot_token() and fix.slack_message_ts and channel_id):
         return
     try:
         label = FIX_STATUS_RENDER[fix.status]["dashboard_badge"]
@@ -76,7 +77,43 @@ def _update_slack_status(fix: Fix, issue_title: str, channel_id: str, extra: str
         logger.exception("Slack status update failed for fix %s", fix.id)
 
 
-async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str, apply: bool = False) -> dict:
+async def _close_review(db, issue, *, actor: str, surface: str, decision: str, note: str) -> None:
+    """Record the decision on the issue's review thread, if it has one.
+
+    Best-effort by design: a thread that cannot be found or written must not
+    stop a decision the human already made from taking effect.
+    """
+    try:
+        from sqlalchemy import select
+
+        from app.fix_review import record_decision
+        from app.models import FixReview
+
+        if issue is None:
+            return
+        review = (
+            await db.execute(select(FixReview).where(FixReview.issue_id == issue.id))
+        ).scalars().first()
+        if review is not None:
+            await record_decision(db, review, actor=actor, surface=surface, decision=decision, note=note)
+    except Exception:  # noqa: BLE001 - the decision matters more than its transcript
+        logger.exception("could not record the decision on the review thread for issue %s", getattr(issue, "id", None))
+
+
+async def resolve_approval(
+    db, fix_id, approved: bool, actor: str, surface: str, apply: bool = False, note: str = ""
+) -> dict:
+    """Approve or reject one proposed fix.
+
+    `note` is the reviewer's own words. On a rejection it is the highest-value
+    thing the system records; a bare boolean throws away the only judgment a
+    human brings that the council cannot.
+
+    To ask for a DIFFERENT approach rather than say no, callers use
+    app/fix_review.py's request_revision instead -- deliberately a separate
+    verb, so "this is wrong" and "this is wrong, do it this way" do not
+    collapse into the same irreversible outcome.
+    """
     fix = await db.get(Fix, fix_id)
     if fix is None:
         return {"ok": False, "error": "fix not found"}
@@ -96,13 +133,21 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str,
     fix.approved_via = surface
     issue = await db.get(Issue, fix.issue_id)
     repo = await db.get(Repo, issue.repo_id) if issue else None
-    # Falls back to the single global env var when a repo hasn't gone
-    # through the Slack Connect flow (routers/slack_connect.py) yet -- never
-    # silently drops a channel that used to work while repos migrate over.
-    channel_id = (repo.slack_channel_id if repo else None) or settings.slack_channel_id
+    # ONE channel for the whole account (app/app_settings.py). Every repo's
+    # approvals land in the same place, which is what a team watching a
+    # channel actually wants.
+    # Per-org: resolved through the repo that owns this issue, falling
+    # back to the single-workspace config for an unmigrated deployment.
+    channel_id = app_settings.slack_for_repo(issue.repo_id if issue else None)[1]
 
     if not approved:
         fix.status = FixStatus.REJECTED
+        fix.decision_note = (note or "").strip() or None
+        # Nothing was ever pushed for this attempt, so there is no branch to
+        # delete and no PR to close -- rejection is now purely a database
+        # write, which is the whole point of deferring the push to approval.
+        await _close_review(db, issue, actor=actor, surface=surface, decision="rejected", note=note)
+        _reopen_issue_for_retry(issue)
         await record_calibration_event(db, fix_id=fix.id, outcome="rejected_by_human", detail={"surface": surface})
         await db.commit()
         # The highest-signal negative this system can record: a human looked
@@ -120,8 +165,9 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str,
             category=issue.category,
             detail=(
                 f"Rejected by {actor} via {surface}. Branch {fix.branch_name or '(none)'}, "
-                f"resolution score {fix.resolution_score}. "
-                f"Arbiter verdict: {(fix.resolution_rubric or {}).get('verdict', 'n/a')}"
+                f"resolution confidence {fix.resolution_score}. "
+                f"Arbiter verdict: {(fix.resolution_rubric or {}).get('verdict', 'n/a')}. "
+                f"Reason given: {(note or '').strip() or 'none'}"
             ),
         )
         _update_slack_status(fix, issue.title, channel_id, f"rejected by {actor} via {surface}")
@@ -129,6 +175,12 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str,
         return {"ok": True, "status": fix.status.value}
 
     fix.status = FixStatus.APPROVED
+    fix.decision_note = (note or "").strip() or fix.decision_note
+    if not apply:
+        # Recorded on the web half, where the human actually decided -- the
+        # worker re-enters this function with apply=True and must not append
+        # the same decision to the thread a second time.
+        await _close_review(db, issue, actor=actor, surface=surface, decision="approved", note=note)
     await db.commit()
     _update_slack_status(fix, issue.title, channel_id, f"approved by {actor} via {surface}")
     emit_event({"type": "run", "kind": "approval", "status": "started", "message": f"Approved by {actor} via {surface} — applying patch…"})
@@ -142,7 +194,10 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str,
     if not apply:
         from app.work_queue import enqueue
 
-        await enqueue("apply_approval", {"fix_id": str(fix.id), "actor": actor, "surface": surface})
+        await enqueue(
+            "apply_approval",
+            {"fix_id": str(fix.id), "actor": actor, "surface": surface, "approved": True, "note": note},
+        )
         return {"ok": True, "status": fix.status.value, "queued": True}
 
     # Same layout worktree.py uses (settings.workspace_root, not a path derived
@@ -150,7 +205,7 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str,
     # containerized layouts (backend/ is nested locally, but IS the container
     # root at /srv), so deriving it here separately drifted from worktree.py's
     # own fix for the identical problem.
-    worktree_path = Path(settings.workspace_root) / repo_slug(repo.github_full_name) / "fixes" / fix.branch_name.split("/")[-1]
+    worktree_path = repo_root(repo.github_full_name) / "fixes" / fix.branch_name.split("/")[-1]
 
     # Freshness check: has the base branch moved since the patch was generated?
     # If so, re-verify before applying rather than force-applying a stale diff.
@@ -161,34 +216,60 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str,
     # a network stall, leaving the Fix stuck at IN_PROGRESS with no exception
     # ever raised to unstick it; the stuck-run sweeper (app/stuck_run_sweeper.py)
     # assumes every step in this flow has a hard ceiling, so this has to hold.
+    base_branch = repo.default_branch if repo else "main"
     await asyncio.to_thread(
         subprocess.run,
-        ["git", "fetch", "origin", "main"],
+        ["git", "fetch", "origin", f"+refs/heads/{base_branch}:refs/heads/{base_branch}"],
         cwd=str(worktree_path),
         capture_output=True,
         text=True,
         timeout=GIT_TIMEOUT_SECONDS,
     )
+    # The base branch is `main`, NOT `origin/main`. These worktrees hang off a
+    # --mirror clone, which maps every ref into refs/heads rather than
+    # refs/remotes/origin -- so `origin/main` does not resolve at all and git
+    # exits 128 ("Not a valid object name"). Exactly the same mistake was
+    # already found and fixed once elsewhere in this codebase.
     rebase_check = await asyncio.to_thread(
         subprocess.run,
-        ["git", "merge-base", "--is-ancestor", "origin/main", "HEAD"],
+        ["git", "merge-base", "--is-ancestor", base_branch, "HEAD"],
         cwd=str(worktree_path),
         capture_output=True,
+        text=True,
         timeout=GIT_TIMEOUT_SECONDS,
     )
-    base_moved = rebase_check.returncode != 0
+    # 0 = the base is an ancestor (nothing moved), 1 = it is not (rebase
+    # needed), anything else = the check itself failed. Treating every
+    # non-zero code as "the base moved" conflated the last two, and because
+    # the ref name above was wrong it took the 128 path EVERY time: every
+    # approval re-ran the repo's whole test suite, which fails on the other
+    # still-unfixed seeded bugs, and aborted before pushing anything. That is
+    # why no fix ever reached a preview URL.
+    if rebase_check.returncode == 0:
+        base_moved = False
+    elif rebase_check.returncode == 1:
+        base_moved = True
+    else:
+        logger.error(
+            "freshness check failed for fix %s (exit %s): %s -- proceeding without it",
+            fix.id, rebase_check.returncode, (rebase_check.stderr or "").strip()[:200],
+        )
+        # Proceed rather than abort: the patch was verified in a sandbox
+        # minutes ago, and two independent gates still stand between here and
+        # a merge -- the post-deploy oracle against the live URL, and the
+        # cross-app outcome check.
+        base_moved = False
 
     if base_moved:
-        # pnpm + shared store, not `npm install --silent` -- same fix as
-        # every other install site in this codebase (app/detectors/ui.py
-        # explains both the store and the --silent-swallows-real-errors bug
-        # in full).
-        exit_code, _, _ = await asyncio.to_thread(
-            run_in_sandbox,
-            str(worktree_path),
-            ["npx --yes pnpm@9 install --store-dir=/pnpm-store --reporter=append-only && npx playwright test"],
-        )
-        if exit_code != 0:
+        # THIS category's detector, not a hardcoded Playwright run. The system
+        # claims to re-run "the same check that caught the bug", and until now
+        # it did not: every approval ran the repo's UI suite regardless of
+        # category, so a documentation or secret-scan fix was judged by tests
+        # that have nothing to do with it -- and on a repo with any other
+        # unfixed bug, that suite fails and the approval aborts.
+        category = issue.category if issue else "ui"
+        recheck = await asyncio.to_thread(get_detector(category).run, str(worktree_path))
+        if recheck.failed:
             fix.status = FixStatus.VERIFICATION_FAILED
             _reopen_issue_for_retry(issue)
             await record_calibration_event(db, fix_id=fix.id, outcome="verification_failed", detail={"stage": "base_moved_reverify"})
@@ -196,8 +277,44 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str,
             emit_event({"type": "run", "kind": "approval", "status": "done", "message": "Base branch moved; re-verify failed"})
             return {"ok": False, "status": fix.status.value, "reason": "base branch moved; re-verify failed"}
 
+    # This is where the fix becomes real on GitHub. Until a human said yes,
+    # nothing had been pushed and no PR existed -- a proposal that was
+    # rejected or reworked left the repository untouched.
     emit_event({"type": "node", "node": "push_and_pr", "status": "started", "message": "Pushing branch, opening PR…"})
     await asyncio.to_thread(github_client.push_branch, str(worktree_path), fix.branch_name)
+
+    if fix.pr_number is None:
+        repo_full_name = repo.github_full_name if repo else settings.fixture_repo
+        issue_number = issue.github_issue_number if issue else None
+        body_lines = [
+            f"Closes #{issue_number}" if issue_number else "",
+            "",
+            f"Approved by {actor} via {surface}. Resolution confidence: {fix.resolution_score}/100.",
+        ]
+        if fix.attempt and fix.attempt > 1:
+            body_lines.append(f"Attempt {fix.attempt} — earlier attempts were reworked at the reviewer's request.")
+        if fix.diff:
+            body_lines += ["", "```diff", fix.diff, "```"]
+        try:
+            fix.pr_number = await asyncio.to_thread(
+                github_client.create_draft_pr,
+                repo_full_name,
+                fix.branch_name,
+                repo.default_branch if repo else "main",
+                f"Fix for #{issue_number}" if issue_number else f"WhipGuard fix {fix.id}",
+                "\n".join(body_lines),
+                [
+                    "whipguard:approved",
+                    f"whipguard:category/{issue.category}" if issue else "whipguard:category/unknown",
+                ],
+            )
+        except Exception:
+            # The branch is pushed and the deploy below can still prove the
+            # fix works, so a PR API failure must not abort the run -- but it
+            # cannot pass silently either, because the outcome checker reads
+            # the PR back and will fail this run closed without it.
+            logger.exception("could not open a PR for fix %s; branch is pushed", fix.id)
+
     fix.status = FixStatus.IN_PROGRESS
     await db.commit()
 
@@ -212,9 +329,15 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str,
 
     # Post-deploy oracle: the SAME check, re-run against the LIVE subdomain.
     emit_event({"type": "node", "node": "post_deploy_oracle", "status": "started", "message": "Re-running the same check against the LIVE URL…"})
-    exit_code, _, _ = await asyncio.to_thread(
-        run_in_sandbox, str(worktree_path), [f"PLAYWRIGHT_BASE_URL={preview_url} npx playwright test"]
+    # Same detector again, this time pointed at the LIVE url. Browser-driven
+    # categories visit the deployed preview; the static scanners ignore
+    # `base_url` and read the source they just proved, which is the honest
+    # answer for a check that has no url to visit.
+    oracle_category = issue.category if issue else "ui"
+    oracle = await asyncio.to_thread(
+        get_detector(oracle_category).run, str(worktree_path), "", preview_url
     )
+    exit_code = 1 if oracle.failed else 0
     fix.status = FixStatus.VERIFIED if exit_code == 0 else FixStatus.VERIFICATION_FAILED
     if fix.status == FixStatus.VERIFICATION_FAILED:
         _reopen_issue_for_retry(issue)
@@ -232,7 +355,7 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str,
             text = f"WhipGuard: fix verification FAILED for fix {fix.id} (preview: {preview_url})"
             notified_anything = False
             try:
-                if not (settings.slack_bot_token and channel_id):
+                if not (app_settings.slack_bot_token() and channel_id):
                     raise RuntimeError("no Slack channel configured for this repo")
                 slack_client.post_message(channel_id, blocks=[], text=text)
                 notified_anything = True
@@ -295,7 +418,7 @@ async def resolve_approval(db, fix_id, approved: bool, actor: str, surface: str,
         notification = await record_condition(db, fix_id=fix.id, issue_id=None, condition_key="outcome-check-failed")
         if should_notify(notification, is_escalation=True):
             notified_anything = False
-            if settings.slack_bot_token and channel_id:
+            if app_settings.slack_bot_token() and channel_id:
                 try:
                     slack_client.post_message(
                         channel_id, blocks=[],
@@ -352,12 +475,20 @@ async def _run_outcome_check(
 
     cloudflare_state = {"reachable": True, "assertion_passes": assertion_passes}
 
-    slack_state: dict = {"status_text": None}
-    if fix.slack_message_ts and settings.slack_bot_token and channel_id:
+    # `configured` is stated rather than inferred from whether a thread could
+    # be read. Slack being disconnected is not Slack disagreeing, and the
+    # checker fails a run closed on any disagreement -- so inferring it meant
+    # every deploy failed for anyone who had not connected Slack.
+    slack_connected = bool(fix.slack_message_ts and app_settings.slack_bot_token() and channel_id)
+    slack_state: dict = {"status_text": None, "configured": slack_connected}
+    if slack_connected:
         try:
-            slack_state = {"status_text": slack_client.get_message_text(channel_id, fix.slack_message_ts)}
+            slack_state["status_text"] = slack_client.get_message_text(channel_id, fix.slack_message_ts)
         except Exception:
             logger.exception("outcome check: could not read Slack state for fix %s", fix.id)
+            # Reading failed, so this surface has nothing to say -- which is
+            # different from it contradicting the others.
+            slack_state["configured"] = False
 
     outcome = check_outcome(
         {

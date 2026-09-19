@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, type AccessRequest, type AdminUser } from "@/lib/api";
+import { api, type AccessRequest, type AdminUser, type OrgSummary } from "@/lib/api";
 import { useSession } from "@/components/AuthGate";
 
 export default function AdminUsersPage() {
@@ -11,11 +11,20 @@ export default function AdminUsersPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [orgs, setOrgs] = useState<OrgSummary[]>([]);
+  const [orgChoice, setOrgChoice] = useState<Record<string, string>>({});
   const session = useSession();
 
   async function refresh() {
     try {
-      const [reqs, us] = await Promise.all([api.accessRequests(), api.adminUsers()]);
+      const [reqs, us, orgList] = await Promise.all([
+        api.accessRequests(),
+        api.adminUsers(),
+        // Tolerated separately: the org list is an enhancement to approval,
+        // not a precondition for reviewing requests at all.
+        api.adminOrgs().catch(() => [] as OrgSummary[]),
+      ]);
+      setOrgs(orgList);
       setRequests(reqs);
       setUsers(us);
       setError(null);
@@ -29,9 +38,13 @@ export default function AdminUsersPage() {
   }, []);
 
   async function approve(id: string) {
+    // Which organization they land in. Approving without one produces an
+    // active account that belongs to nowhere -- it sees no repositories, no
+    // issues, and a page saying so.
+    const orgId = orgChoice[id] ?? orgs[0]?.id ?? "";
     setBusy(id);
     try {
-      await api.approveAccessRequest(id);
+      await api.approveAccessRequest(id, orgId);
       await refresh();
     } finally {
       setBusy(null);
@@ -82,12 +95,14 @@ export default function AdminUsersPage() {
 
       {error && <div className="badge badge-red">{error}</div>}
 
-      <section className="card p-5 border-yellow-800/40">
+      <section className="card p-5" style={{ borderColor: "var(--amber-dim)" }}>
         <h2 className="font-semibold mb-3 flex items-center gap-2">
           <span className="badge badge-yellow">Pending requests</span>
           {pending.length}
         </h2>
-        {pending.length === 0 && <p className="text-sm text-lo">Nothing waiting on review.</p>}
+        {pending.length === 0 && (
+          <p className="text-sm text-lo">Nothing waiting on review — new access requests land here.</p>
+        )}
         <div className="space-y-3">
           {pending.map((r) => (
             <div key={r.id} className="p-3.5 rounded-lg bg-white/[0.03] space-y-2.5">
@@ -119,7 +134,26 @@ export default function AdminUsersPage() {
                   </button>
                 </div>
               ) : (
-                <div className="flex gap-2 pt-1">
+                <div className="flex gap-2 pt-1 items-center flex-wrap">
+                  {orgs.length > 0 && (
+                    <label className="flex items-center gap-1.5 text-xs text-lo">
+                      Add to
+                      <select
+                        id={`org-for-${r.id}`}
+                        value={orgChoice[r.id] ?? orgs[0].id}
+                        onChange={(event) =>
+                          setOrgChoice((current) => ({ ...current, [r.id]: event.target.value }))
+                        }
+                        className="input px-2 py-1 text-xs"
+                      >
+                        {orgs.map((org) => (
+                          <option key={org.id} value={org.id}>
+                            {org.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                   <button onClick={() => approve(r.id)} disabled={busy === r.id} className="btn btn-primary px-3 py-1.5 text-xs">
                     Approve
                   </button>

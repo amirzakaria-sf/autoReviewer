@@ -11,7 +11,7 @@ import uuid
 
 from app.db import async_session
 from app.enums import FIX_STATUS_RENDER, FixStatus, IssueStatus
-from app.integrations import email_client, github_client, slack_client
+from app.integrations import email_client, slack_client
 from app.models import Fix, Issue, Repo
 from app.routers.ws import emit_event
 from app.sandbox.worktree import create_worktree, ensure_mirror
@@ -19,9 +19,29 @@ from app.sandbox.worktree import create_worktree, ensure_mirror
 logger = logging.getLogger("whipguard.runner")
 
 
-async def trigger_fix_council(issue_id: uuid.UUID) -> None:
+async def trigger_fix_council(
+    issue_id: uuid.UUID,
+    *,
+    feedback: str = "",
+    attempt: int = 1,
+    supersedes: uuid.UUID | None = None,
+) -> None:
+    """Propose a fix for `issue_id`, or re-propose one a human sent back.
+
+    `feedback` is every instruction the reviewer has given on this issue so
+    far (app/fix_review.py compiles it), threaded into the council as
+    `prior_rejection` -- the field the patch prompt already reads and which,
+    until the review thread existed, nothing ever populated.
+
+    NOTHING here touches GitHub. An attempt is generated, verified in the
+    sandbox and scored locally; the branch is pushed and the PR opened only
+    once a human approves (app/graphs/approval_graph.py). A proposal nobody
+    accepts should leave no trace on the repository.
+    """
+    from app import app_settings
     from app.categories import resolution_threshold_for
     from app.config import settings
+    from app.fix_review import open_review, proposal_summary
     from app.graphs.fix_council import build_fix_council_graph
 
     async with async_session() as db:
@@ -65,8 +85,8 @@ async def trigger_fix_council(issue_id: uuid.UUID) -> None:
                     "repo_id": repo.id if repo else None,
                     "bug_description": bug_description,
                     "resolution_threshold": threshold,
-                    "attempt": 1,
-                    "prior_rejection": None,
+                    "attempt": attempt,
+                    "prior_rejection": feedback or None,
                 },
             )
 
@@ -82,31 +102,36 @@ async def trigger_fix_council(issue_id: uuid.UUID) -> None:
                 resolution_score=result.get("score"),
                 resolution_rubric={"factors": result.get("rubric", []), "verdict": result.get("verdict")},
                 branch_name=branch_name,
+                # Persisted, not left in the worktree: with no PR to read the
+                # diff from until approval, this column IS the review surface.
+                diff=result.get("diff") or "",
+                attempt=attempt,
                 status=FixStatus.AWAITING_APPROVAL if proposed else FixStatus.REJECTED,
             )
             db.add(fix)
+            await db.flush()
+
+            if supersedes is not None:
+                superseded = await db.get(Fix, supersedes)
+                if superseded is not None:
+                    superseded.status = FixStatus.SUPERSEDED
+                    superseded.superseded_by_id = fix.id
 
             if proposed:
-                github_client.push_branch(str(worktree), branch_name)
-                pr_number = github_client.create_draft_pr(
-                    repo_full_name,
-                    branch_name,
-                    "main",
-                    f"Fix for #{issue.github_issue_number}",
-                    f"Closes #{issue.github_issue_number}\n\nAutomated fix. Resolution score: {result.get('score')}/100.\n\n```diff\n{result.get('diff', '')}\n```",
-                    ["whipguard:fix-proposed", "whipguard:awaiting-approval", f"whipguard:category/{category}"],
-                )
-                fix.pr_number = pr_number
                 issue.status = IssueStatus.FIX_PROPOSED
-                await db.flush()
+                review = await open_review(
+                    db,
+                    issue.id,
+                    fix,
+                    summary=proposal_summary(fix, result.get("verdict") or "", result.get("rubric")),
+                )
+                review_url = f"{settings.public_base_url}/issues/{issue.id}"
+                channel_id = app_settings.slack_for_repo(issue.repo_id)[1]
 
-                pr_url = f"https://github.com/{repo_full_name}/pull/{pr_number}"
-                channel_id = (repo.slack_channel_id if repo else None) or settings.slack_channel_id
-
-                if settings.slack_bot_token and channel_id:
+                if app_settings.slack_bot_token() and channel_id:
                     try:
                         blocks = slack_client.build_fix_proposed_blocks(
-                            fix.id, issue.title, result.get("score", 0), pr_url,
+                            fix.id, issue.title, result.get("score", 0), review_url,
                             FIX_STATUS_RENDER[FixStatus.AWAITING_APPROVAL]["dashboard_badge"],
                         )
                         ts = slack_client.post_message(channel_id, blocks, text=f"WhipGuard fix proposed: {issue.title}")
@@ -117,7 +142,7 @@ async def trigger_fix_council(issue_id: uuid.UUID) -> None:
                 if email_client.smtp_configured() and settings.notify_email:
                     try:
                         subject, html, text = email_client.build_fix_proposed_email(
-                            issue.title, category, result.get("score", 0), pr_url, str(fix.id)
+                            issue.title, category, result.get("score", 0), review_url, str(fix.id)
                         )
                         await asyncio.to_thread(email_client.send_email, settings.notify_email, subject, html, text)
                     except Exception:

@@ -156,6 +156,51 @@ def decode_invite_token(token: str) -> uuid.UUID | None:
         return None
 
 
+def sign_org_invite_token(invite_id: uuid.UUID) -> str:
+    """Mailed to an invitee's own address. Carries only the invite id, so
+    redemption reads the current row -- an invitation revoked after the mail
+    went out is refused, rather than honoured from a snapshot.
+
+    A SEPARATE payload key from the access-request token above, deliberately.
+    Both are signed with the same secret, so a shared key would let a
+    platform access-request link be redeemed as an organization invitation
+    and vice versa -- different decisions, made by different people, and
+    neither should be interchangeable with the other.
+    """
+    payload = {"org_invite_id": str(invite_id), "exp": int(time.time()) + INVITE_TOKEN_TTL_SECONDS}
+    payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    payload_b64 = base64.urlsafe_b64encode(payload_bytes).rstrip(b"=").decode("ascii")
+    signature = hmac.new(_signing_key(), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{signature}"
+
+
+def _decode_signed(token: str, key: str) -> uuid.UUID | None:
+    try:
+        payload_b64, signature = token.split(".", 1)
+    except ValueError:
+        return None
+    expected = hmac.new(_signing_key(), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:  # noqa: BLE001 - any malformed token is simply invalid
+        return None
+    if not isinstance(payload, dict) or key not in payload:
+        return None
+    if int(payload.get("exp", 0)) < int(time.time()):
+        return None
+    try:
+        return uuid.UUID(payload[key])
+    except (ValueError, TypeError):
+        return None
+
+
+def decode_org_invite_token(token: str) -> uuid.UUID | None:
+    return _decode_signed(token, "org_invite_id")
+
+
 def new_refresh_secret() -> str:
     """The RAW secret that goes in the cookie -- never stored anywhere.
     Only its hash (below) is persisted, the same reason passwords are

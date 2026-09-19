@@ -17,8 +17,9 @@ import { api, type IssueSummary } from "@/lib/api";
 type Command = { id: string; label: string; hint?: string; run: () => void };
 
 const ROUTES: { label: string; href: string; hint: string }[] = [
-  { label: "Overview", href: "/dashboard", hint: "Issues, scores, pending approvals" },
+  { label: "Overview", href: "/dashboard", hint: "Issues, confidence, pending approvals" },
   { label: "Repositories", href: "/repos", hint: "Watched repos, Slack routing, settings" },
+  { label: "Team", href: "/org", hint: "Members, areas, levels and routing" },
   { label: "Live activity", href: "/activity", hint: "Streaming council events" },
   { label: "Connect", href: "/connect", hint: "Repos, GitHub and Slack channels" },
   { label: "Profile", href: "/profile", hint: "Your details and connected apps" },

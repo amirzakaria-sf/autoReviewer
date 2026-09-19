@@ -22,12 +22,14 @@ category-specific code branch inside this file.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
 from app import azure_client
 from app.categories import CATEGORY_REGISTRY
+from app import app_settings
 from app.config import settings
 from app.detectors import get_detector
 from app.prompts import build_prefix, build_volatile_suffix, pad_to_cache_floor
@@ -530,6 +532,26 @@ async def run_and_persist(db, repo, category: str = "ui") -> "Issue":
         evidence=result.get("evidence"),
         status=IssueStatus.RAISED if raised else IssueStatus.DETECTED_BELOW_THRESHOLD,
     )
+    # Route it BEFORE persisting, so the record carries its owner and the
+    # reasoning from the moment it exists. Assigning afterwards leaves a
+    # window where a notification can fire for an unowned issue.
+    if raised:
+        from app.categories import CATEGORY_REGISTRY as _REGISTRY
+        from app.orgs import assign_for_issue
+
+        routing = await asyncio.to_thread(
+            assign_for_issue,
+            repo_id=repo.id,
+            repo_full_name=repo.github_full_name,
+            category=category,
+            severity=issue.severity,
+            paths=list(_REGISTRY[category].entry_files),
+        )
+        if routing.get("assignee"):
+            issue.assignee_user_id = uuid.UUID(routing["assignee"]["user_id"])
+        issue.assignment_reasoning = routing.get("reasoning") or []
+        issue.watcher_user_ids = [watcher["user_id"] for watcher in routing.get("watchers") or []]
+
     db.add(issue)
     await db.flush()
 
@@ -560,7 +582,7 @@ async def run_and_persist(db, repo, category: str = "ui") -> "Issue":
         )
         body = (
             f"Detected by WhipGuard's Bug Council ({category}).\n\n"
-            f"**Assurance score:** {result['score']}/100\n\n"
+            f"**Assurance confidence:** {result['score']}/100\n\n"
             f"**Arbiter verdict:** {result.get('verdict', '')}\n\n"
             f"**Evidence:**\n```\n{result['evidence']['assertion_text']}\n```"
             f"{similar_note}"
@@ -579,9 +601,9 @@ async def run_and_persist(db, repo, category: str = "ui") -> "Issue":
             issue_url = f"https://github.com/{repo.github_full_name}/issues/{issue_number}"
             text = f"WhipGuard raised a bug: category={category} score={result['score']}/100 issue={issue_url}"
             notified_anything = False
-            channel_id = (repo.slack_channel_id or settings.slack_channel_id)
+            channel_id = app_settings.slack_channel_id()
             try:
-                if not (settings.slack_bot_token and channel_id):
+                if not (app_settings.slack_bot_token() and channel_id):
                     raise RuntimeError("no Slack channel configured for this repo")
                 slack_client.post_message(channel_id, blocks=[], text=text)
                 notified_anything = True
@@ -669,7 +691,7 @@ async def resume_with_clarification_answer(db, request, answer_text: str) -> "Is
             f"Detected by WhipGuard's Bug Council ({category}), resolved after a human "
             f"clarifying answer.\n\n"
             f"**Clarifying question:** {request.question}\n\n**Answer:** {answer_text}\n\n"
-            f"**Assurance score:** {verdict.score}/100\n\n**Arbiter verdict:** {verdict.verdict}\n\n"
+            f"**Assurance confidence:** {verdict.score}/100\n\n**Arbiter verdict:** {verdict.verdict}\n\n"
             f"**Evidence:**\n```\n{ctx['evidence']['assertion_text']}\n```"
         )
         issue_number = github_client.create_issue(repo_full_name, issue.title, body, labels)
@@ -680,9 +702,9 @@ async def resume_with_clarification_answer(db, request, answer_text: str) -> "Is
         if should_notify(notification, is_escalation=True):
             issue_url = f"https://github.com/{repo_full_name}/issues/{issue_number}"
             text = f"WhipGuard raised a bug: category={category} score={verdict.score}/100 issue={issue_url}"
-            channel_id = (repo.slack_channel_id if repo else None) or settings.slack_channel_id
+            channel_id = app_settings.slack_channel_id()
             try:
-                if not (settings.slack_bot_token and channel_id):
+                if not (app_settings.slack_bot_token() and channel_id):
                     raise RuntimeError("no Slack channel configured for this repo")
                 slack_client.post_message(channel_id, blocks=[], text=text)
             except Exception:

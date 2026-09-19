@@ -63,9 +63,15 @@ export default function AdminOverviewPage() {
 
   return (
     <div className="space-y-8 animate-fade-in">
-      <div>
-        <h1 className="text-xl font-semibold">Admin</h1>
-        <p className="text-sm text-lo mt-1">Users, real usage, and deployment control.</p>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-xl font-semibold">Admin</h1>
+          <p className="text-sm text-lo mt-1">Organizations, users, real usage, and deployment control.</p>
+        </div>
+        <div className="flex gap-2">
+          <a href="/admin/orgs" className="btn btn-ghost px-4 py-2 text-sm">Organizations</a>
+          <a href="/admin/users" className="btn btn-ghost px-4 py-2 text-sm">Users</a>
+        </div>
       </div>
 
       {error && <div className="badge badge-red">{error}</div>}
@@ -75,6 +81,15 @@ export default function AdminOverviewPage() {
         <StatCard label="Pending requests" value={overview?.access_requests.pending} color="yellow" href="/admin/users" />
         <StatCard label="Repos connected" value={overview?.repos} color="blue" />
         <StatCard label="Issues tracked" value={overview?.issues} color="gray" />
+      </section>
+
+      {/* Surfaced because a saving that leaves no trace is indistinguishable
+          from a feature nobody reached — both were already computed by the
+          API and displayed nowhere. */}
+      <section className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <StatCard label="Cached model answers" value={overview?.llm_cache?.entries} color="blue" />
+        <StatCard label="Cache hits" value={overview?.llm_cache?.hits} color="green" />
+        <StatCard label="Remembered failures" value={overview?.memory_traces} color="yellow" />
       </section>
 
       <section className="card p-5">
@@ -93,18 +108,39 @@ export default function AdminOverviewPage() {
         </div>
 
         {usage && usage.by_day.length > 0 && (
-          <div>
-            <div className="section-label mb-2">Daily token volume</div>
-            <div className="flex items-end gap-1 h-24">
-              {usage.by_day.map((d) => (
-                <div key={d.day} className="flex-1 flex flex-col items-center gap-1 group relative">
-                  <div
-                    className="w-full bg-accent/60 hover:bg-accent rounded-t transition-all"
-                    style={{ height: `${Math.max(4, (d.total_tokens / maxDayTokens) * 96)}px` }}
-                    title={`${d.day}: ${d.total_tokens} tokens, ${d.calls} calls`}
-                  />
-                </div>
+          <div className="mb-6">
+            <div className="flex items-baseline justify-between mb-2">
+              <span className="section-label">Daily token volume</span>
+              {/* A bar chart with no scale is decoration. This names the
+                  value the tallest bar actually reaches. */}
+              <span className="text-[11px] text-lo num">peak {maxDayTokens.toLocaleString()} tok</span>
+            </div>
+            <div
+              className="flex items-end gap-1 h-24"
+              style={{ borderBottom: "1px solid var(--ink-700)" }}
+            >
+              {usage.by_day.map((day) => (
+                <div
+                  key={day.day}
+                  className="rounded-t transition-all"
+                  style={{
+                    // Capped rather than flex-1: with a single day of data a
+                    // full-width bar reads as a solid block, not a chart.
+                    flex: "1 1 0",
+                    maxWidth: usage.by_day.length < 4 ? 56 : undefined,
+                    height: `${Math.max(3, (day.total_tokens / maxDayTokens) * 96)}px`,
+                    background: "var(--amber)",
+                    opacity: 0.75,
+                  }}
+                  title={`${day.day}: ${day.total_tokens.toLocaleString()} tokens across ${day.calls} call(s)`}
+                />
               ))}
+              {/* Keeps a short series left-aligned instead of stretched. */}
+              {usage.by_day.length < 4 && <div className="flex-[6]" aria-hidden />}
+            </div>
+            <div className="flex justify-between mt-1.5 text-[11px] text-lo num">
+              <span>{usage.by_day[0]?.day}</span>
+              {usage.by_day.length > 1 && <span>{usage.by_day[usage.by_day.length - 1]?.day}</span>}
             </div>
           </div>
         )}
@@ -167,11 +203,23 @@ export default function AdminOverviewPage() {
   );
 }
 
+const TONE_BAR: Record<string, string> = {
+  green: "var(--verified)",
+  yellow: "var(--amber)",
+  blue: "var(--pending)",
+  gray: "var(--ink-600)",
+};
+
 function StatCard({ label, value, color, href }: { label: string; value?: number; color: string; href?: string }) {
   const content = (
-    <div className="card card-hover p-4">
-      <div className="text-2xl font-semibold">{value ?? "—"}</div>
-      <div className={`mt-1.5 text-xs badge badge-${color}`}>{label}</div>
+    <div className="card card-hover p-4 relative overflow-hidden">
+      {/* Same edge-bar language as the overview: the number is the content,
+          the tone belongs to the card rather than to a second label. */}
+      <span className="absolute left-0 top-0 bottom-0 w-[2px]" style={{ background: TONE_BAR[color] }} aria-hidden />
+      <div className="num text-2xl font-semibold tracking-tight">
+        {value ?? <span className="skeleton inline-block h-6 w-8 align-middle" />}
+      </div>
+      <div className="mt-1.5 text-xs text-mid">{label}</div>
     </div>
   );
   return href ? <a href={href}>{content}</a> : content;

@@ -8,7 +8,16 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
 from app.embeddings import EMBEDDING_DIMENSIONS
-from app.enums import AccessRequestStatus, FixStatus, IssueStatus, UserRole, UserStatus
+from app.enums import (
+    AccessRequestStatus,
+    FixReviewStatus,
+    FixStatus,
+    IssueStatus,
+    OrgRole,
+    Seniority,
+    UserRole,
+    UserStatus,
+)
 
 
 def _uuid_pk() -> Mapped[uuid.UUID]:
@@ -59,6 +68,15 @@ class AccessRequest(Base):
     decided_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     decision_reason: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    # Which organization the approving admin put them in. Nullable for the
+    # very first account on a deployment, where no organization exists yet.
+    #
+    # Without this the approval path dead-ended: it produced an active account
+    # belonging to no organization, which sees no repositories, no issues and
+    # a page saying so. Half the onboarding flow led there.
+    org_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("organizations.id"), nullable=True
+    )
     # Single-use guard for the invite link -- checked/set atomically inside
     # the same transaction that creates the User row, not just relied on
     # implicitly (an approved request being reused after the account already
@@ -98,25 +116,37 @@ class Repo(Base):
     github_full_name: Mapped[str] = mapped_column(sa.String, nullable=False, unique=True)
     default_branch: Mapped[str] = mapped_column(sa.String, default="main")
     owner_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True)
+    # The tenant boundary, and the ONLY column in the schema that carries it
+    # (see Organization's docstring). Declared here rather than added to
+    # production by hand, which is how it existed until a fresh database
+    # exposed the difference: `column "org_id" of relation "repos" does not
+    # exist`.
+    org_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("organizations.id"), nullable=True, index=True
+    )
     # {category_key: {"issues": bool, "fixes": bool}} -- the toggle matrix
     # (plan.md §8) rendered straight from CATEGORY_REGISTRY keys; absent here
     # means "on" (see enabled_categories_for in app/categories.py).
-    enabled_categories: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # server_default as well as the Python-side default: these are NOT NULL,
+    # and several callers insert a repo with raw SQL that names only the
+    # columns it cares about. Without a database-side default that insert
+    # fails outright rather than getting an empty object.
+    enabled_categories: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=sa.text("'{}'::jsonb")
+    )
     # {category_key: {"assurance": int, "resolution": int}} overriding the
     # registry's own defaults, per-repo (plan.md §7.1's threshold sliders).
-    thresholds: Mapped[dict] = mapped_column(JSONB, default=dict)
+    thresholds: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=sa.text("'{}'::jsonb"))
     # Autonomous | balanced | verbose (plan.md §10.5) -- see app/ask_mode.py.
-    ask_mode: Mapped[str] = mapped_column(sa.String, default="balanced")
+    ask_mode: Mapped[str] = mapped_column(sa.String, default="balanced", server_default="balanced")
     # The visible kill switch (plan.md §7.1) -- not decoration: a runaway
     # detector has to be stoppable in one click, per-repo.
-    detection_paused: Mapped[bool] = mapped_column(sa.Boolean, default=False)
-    proposals_paused: Mapped[bool] = mapped_column(sa.Boolean, default=False)
-    # Picked via Slack's own OAuth channel-picker consent screen
-    # (routers/slack_connect.py), never hand-typed -- slack_channel_name is
-    # display-only (shown in the UI), slack_channel_id is what every
-    # slack_client.post_message call actually uses.
-    slack_channel_id: Mapped[str | None] = mapped_column(sa.String, nullable=True)
-    slack_channel_name: Mapped[str | None] = mapped_column(sa.String, nullable=True)
+    detection_paused: Mapped[bool] = mapped_column(sa.Boolean, default=False, server_default=sa.false())
+    proposals_paused: Mapped[bool] = mapped_column(sa.Boolean, default=False, server_default=sa.false())
+    # No Slack fields here on purpose: Slack is connected ONCE for the
+    # account and every repo notifies the same channel (app/app_settings.py).
+    # A per-repo channel made the user repeat an OAuth round-trip for every
+    # repository and bought nothing.
     connected_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
 
 
@@ -132,6 +162,15 @@ class Issue(Base):
     github_issue_number: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     title: Mapped[str] = mapped_column(sa.String)
     severity: Mapped[int] = mapped_column(sa.Integer, default=1)
+    # Who owns this finding, and WHY. The reasoning is stored rather than
+    # recomputed because routing rules change: a year from now, "why did this
+    # reach me" must be answerable from the record, not from today's config.
+    assignee_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True
+    )
+    assignment_reasoning: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Notified because the blast radius touches their area -- not on the hook.
+    watcher_user_ids: Mapped[list] = mapped_column(JSONB, default=list)
     assurance_score: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     assurance_rubric: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     evidence: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -147,6 +186,25 @@ class Fix(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     issue_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("issues.id"))
     patch_hash: Mapped[str | None] = mapped_column(sa.String, nullable=True)
+    # The proposed patch itself, persisted rather than left in the worktree.
+    #
+    # Nothing is pushed to GitHub until a human approves, so the PR body is no
+    # longer where the reviewer reads the diff -- this column is. It also
+    # survives the worktree, which is deleted on merge and rebuilt on demand,
+    # so a superseded attempt stays readable long after its checkout is gone.
+    diff: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    # 1 for the council's first proposal, incremented on every revision the
+    # human asks for. Also the cap the revision limit is enforced against.
+    attempt: Mapped[int] = mapped_column(sa.Integer, default=1, server_default="1")
+    # The attempt that replaced this one, when a human asked for a different
+    # approach. Null for the current attempt and for terminal outcomes.
+    superseded_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("fixes.id"), nullable=True
+    )
+    # Free text from whoever rejected or asked for changes. The single most
+    # valuable signal in the system and, until now, the one thing a boolean
+    # approve/reject threw away.
+    decision_note: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     resolution_score: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     resolution_rubric: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     branch_name: Mapped[str | None] = mapped_column(sa.String, nullable=True)
@@ -166,6 +224,132 @@ class Fix(Base):
     updated_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()
     )
+
+
+class FixReview(Base):
+    """One review conversation about one issue's fix, spanning every attempt.
+
+    The thread outlives individual Fix rows on purpose. Asking for a different
+    approach produces a NEW Fix (new patch, new sandbox verification, new
+    adversarial score) while the conversation that led there continues -- so
+    attempt 3 can be prompted with everything the human said about attempts 1
+    and 2, not just the most recent sentence.
+
+    Modelled on the sibling `opencode` deployment's PlanningSession, which
+    solved the same problem: a durable transcript plus a status that says
+    precisely who the system is waiting on, so a reply arriving twice cannot
+    start two concurrent turns against the same thread.
+    """
+
+    __tablename__ = "fix_reviews"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    # One live thread per issue, enforced in the database rather than by
+    # convention -- two threads about the same issue would each hold half the
+    # context and neither would be right.
+    issue_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("issues.id"), unique=True, index=True
+    )
+    # The attempt currently on the table. Every superseded attempt is still
+    # reachable through Fix.issue_id; this is just which one to render.
+    current_fix_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("fixes.id"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(sa.String, default=FixReviewStatus.AWAITING_DECISION.value)
+    # [{role: "council"|"human"|"system", text, at, kind?, fix_id?}]
+    # `kind` marks a turn that is not ordinary chat -- "proposal",
+    # "revision-request", "decision" -- so the UI can render the exchange
+    # without guessing from the role alone.
+    transcript: Mapped[list] = mapped_column(JSONB, default=list)
+    attempts: Mapped[int] = mapped_column(sa.Integer, default=1, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()
+    )
+
+
+class SlackInstallation(Base):
+    """One workspace's install of the Slack app, per organization.
+
+    Declared here rather than left as a hand-made table. This existed only as
+    raw SQL in app/app_settings.py plus a table somebody had created by hand
+    in production, so a fresh database came up without it and every read
+    failed with `relation "slack_installations" does not exist`. Nothing in
+    the schema should be invisible to `create_all`.
+
+    `team_id` is unique and is the only thing identifying whose workspace an
+    inbound button click came from -- a click from an unrecognised team is
+    refused rather than applied against whichever install happens to be first
+    in the table (app/routers/webhooks.py).
+    """
+
+    __tablename__ = "slack_installations"
+    __table_args__ = (sa.UniqueConstraint("team_id", name="uq_slack_install"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("organizations.id"), index=True
+    )
+    team_id: Mapped[str] = mapped_column(sa.String, nullable=False)
+    team_name: Mapped[str] = mapped_column(sa.String, default="", server_default="")
+    bot_token: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    channel_id: Mapped[str] = mapped_column(sa.String, default="", server_default="")
+    channel_name: Mapped[str] = mapped_column(sa.String, default="", server_default="")
+    installed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True
+    )
+    installed_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+    # Set rather than deleted, so an uninstall keeps its audit trail and the
+    # lookups filter on `revoked_at IS NULL`.
+    revoked_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+
+
+class OrgInvite(Base):
+    """An outstanding invitation to join one organization.
+
+    Deliberately NOT the same thing as an AccessRequest. An access request is
+    someone asking the PLATFORM for an account and a system admin deciding;
+    this is an org admin adding a colleague to a team that already exists. The
+    two were conflated at first, which left every approved user sitting in no
+    organization at all -- the gap this table closes.
+
+    Carries the role, seniority and designations the admin chose at invite
+    time, so accepting produces a fully-configured member rather than someone
+    who then has to be set up a second time.
+    """
+
+    __tablename__ = "org_invites"
+    __table_args__ = (
+        # One LIVE invite per email per org. Enforced as a partial unique
+        # index rather than a plain constraint: a revoked or accepted invite
+        # to the same address must not block a fresh one.
+        sa.Index(
+            "uq_org_invite_pending",
+            "org_id",
+            "email",
+            unique=True,
+            postgresql_where=sa.text("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("organizations.id"), index=True
+    )
+    email: Mapped[str] = mapped_column(sa.String, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(sa.String, default="", server_default="")
+    role: Mapped[OrgRole] = mapped_column(sa.Enum(OrgRole, name="org_role"), default=OrgRole.MEMBER)
+    seniority: Mapped[Seniority] = mapped_column(sa.Enum(Seniority, name="seniority"), default=Seniority.SDE2)
+    designation_keys: Mapped[list] = mapped_column(JSONB, default=list)
+    invited_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True
+    )
+    # pending | accepted | revoked
+    status: Mapped[str] = mapped_column(sa.String, default="pending", server_default="pending")
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+    accepted_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
 
 
 class CouncilRun(Base):
@@ -474,3 +658,139 @@ class AppSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()
     )
+
+
+class CounselConversation(Base):
+    """One chat thread with Counsel. Scoped to its owner -- a conversation
+    can quote code and issue detail, so it is never shared implicitly."""
+
+    __tablename__ = "counsel_conversations"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("users.id"), index=True)
+    title: Mapped[str] = mapped_column(sa.String, default="")
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+
+
+class CounselMessage(Base):
+    """A turn. Tool results are deliberately NOT stored: they are large, they
+    go stale the moment a fix lands, and replaying a stale file into a later
+    question is worse than re-reading the current one."""
+
+    __tablename__ = "counsel_messages"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("counsel_conversations.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(sa.String)  # user | assistant
+    content: Mapped[str] = mapped_column(sa.Text)
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+
+
+class Organization(Base):
+    """The tenant.
+
+    Everything a tenant owns hangs off a Repo, and Repo is the only table
+    that carries `org_id` directly. Issues, fixes, traces, chunks and symbols
+    all reach their org THROUGH their repo, which means tenancy has exactly
+    one source of truth rather than a denormalised column on twelve tables
+    that can drift out of sync with each other.
+    """
+
+    __tablename__ = "organizations"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(sa.String, nullable=False)
+    slug: Mapped[str] = mapped_column(sa.String, nullable=False, unique=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+
+
+class OrgMember(Base):
+    """One person's membership of one organization.
+
+    Three orthogonal axes live here, and keeping them apart is the point:
+    `role` is permission, `seniority` is what they can be escalated to, and
+    designations (the join table below) are what they know. Promotion to
+    org_admin touches only `role`.
+    """
+
+    __tablename__ = "org_members"
+    __table_args__ = (sa.UniqueConstraint("org_id", "user_id", name="uq_org_member"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("organizations.id"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("users.id"), index=True)
+    role: Mapped[OrgRole] = mapped_column(sa.Enum(OrgRole, name="org_role"), default=OrgRole.MEMBER)
+    seniority: Mapped[Seniority] = mapped_column(sa.Enum(Seniority, name="seniority"), default=Seniority.SDE2)
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+
+
+class Designation(Base):
+    """An area of expertise -- frontend, backend, devops, security.
+
+    Org-configurable rather than a hardcoded enum, because every company
+    names these differently and a fixed list guarantees a support request in
+    week two.
+    """
+
+    __tablename__ = "designations"
+    __table_args__ = (sa.UniqueConstraint("org_id", "key", name="uq_designation_key"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("organizations.id"), index=True)
+    key: Mapped[str] = mapped_column(sa.String)
+    label: Mapped[str] = mapped_column(sa.String)
+
+
+class MemberDesignation(Base):
+    """Many-to-many: one person can hold several areas, and most do."""
+
+    __tablename__ = "member_designations"
+    __table_args__ = (sa.UniqueConstraint("member_id", "designation_id", name="uq_member_designation"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("org_members.id", ondelete="CASCADE"), index=True)
+    designation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("designations.id", ondelete="CASCADE"))
+
+
+class RoutingRule(Base):
+    """Which designation owns which category, and the seniority floor a
+    severity demands.
+
+    Configurable per org rather than hardcoded: "security findings go to the
+    security team" is true everywhere, but which team that IS, and how senior
+    someone must be to own a critical one, is a decision only the org can
+    make.
+    """
+
+    __tablename__ = "routing_rules"
+    __table_args__ = (sa.UniqueConstraint("org_id", "category", name="uq_routing_rule"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("organizations.id"), index=True)
+    category: Mapped[str] = mapped_column(sa.String)
+    designation_key: Mapped[str] = mapped_column(sa.String)
+    # Severity at or above this demands the seniority below. A critical
+    # security finding should not sit with an SDE1.
+    escalate_at_severity: Mapped[int] = mapped_column(sa.Integer, default=4)
+    min_seniority: Mapped[Seniority] = mapped_column(sa.Enum(Seniority, name="seniority"), default=Seniority.SDE2)
+
+
+class IdentityLink(Base):
+    """Maps a git identity to a person.
+
+    The messy part of attribution: GitHub noreply addresses, personal versus
+    work email, and people who have left. An unmatched author must fall
+    through to designation routing, never block assignment.
+    """
+
+    __tablename__ = "identity_links"
+    __table_args__ = (sa.UniqueConstraint("org_id", "provider", "external_id", name="uq_identity_link"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("organizations.id"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("users.id"), index=True)
+    provider: Mapped[str] = mapped_column(sa.String)  # github | git-email | slack
+    external_id: Mapped[str] = mapped_column(sa.String)

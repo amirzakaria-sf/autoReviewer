@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 
@@ -16,8 +17,13 @@ API_BASE = "https://api.cloudflare.com/client/v4"
 def deploy_branch(worktree_path: str, project_name: str, branch: str) -> str:
     result = subprocess.run(
         [
+            # Pinned to a major version, and --yes so a first run in a fresh
+            # container installs it instead of waiting on a prompt nobody can
+            # answer. Unpinned, a wrangler major release would change this
+            # command's behaviour on a deploy nobody touched.
             "npx",
-            "wrangler",
+            "--yes",
+            "wrangler@3",
             "pages",
             "deploy",
             ".",
@@ -29,12 +35,19 @@ def deploy_branch(worktree_path: str, project_name: str, branch: str) -> str:
         cwd=worktree_path,
         capture_output=True,
         text=True,
+        # The real environment plus the credentials, not a hand-written PATH.
+        # A two-entry PATH has to be kept in step with wherever the base image
+        # happens to put node, and silently breaks the deploy when it is not.
         env={
+            **os.environ,
             "CLOUDFLARE_API_TOKEN": settings.cloudflare_api_token,
             "CLOUDFLARE_ACCOUNT_ID": settings.cloudflare_account_id,
-            "PATH": "/usr/bin:/usr/local/bin",
+            # wrangler writes caches and telemetry under $HOME; without a
+            # writable one it fails on a permissions error unrelated to the
+            # deploy itself.
+            "HOME": os.environ.get("HOME", "/tmp"),
         },
-        timeout=180,
+        timeout=300,
     )
     if result.returncode != 0:
         raise RuntimeError(f"wrangler deploy failed: {result.stderr}")

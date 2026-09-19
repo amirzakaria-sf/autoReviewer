@@ -2,6 +2,7 @@ import "./globals.css";
 import type { ReactNode } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { CommandPalette } from "@/components/CommandPalette";
+import { CounselSidebar } from "@/components/CounselSidebar";
 import { HeaderBar } from "@/components/HeaderBar";
 import { ToastProvider } from "@/components/Toast";
 
@@ -18,6 +19,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <AuthGate>
             <HeaderBar />
             <CommandPalette />
+            <CounselSidebar />
             <main className="max-w-6xl mx-auto px-4 py-7">{children}</main>
           </AuthGate>
         </ToastProvider>

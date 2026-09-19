@@ -15,17 +15,6 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [slackNotice, setSlackNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
-  const [disconnectingSlack, setDisconnectingSlack] = useState(false);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("slack_connected")) setSlackNotice({ kind: "ok", text: "Slack connected." });
-    else if (params.get("slack_error")) setSlackNotice({ kind: "error", text: `Slack connection failed: ${params.get("slack_error")}` });
-    if (params.has("slack_connected") || params.has("slack_error")) {
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-  }, []);
 
   async function refresh() {
     try {
@@ -58,16 +47,6 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
     patch({ categories: { [key]: { [field]: value } } });
   }
 
-  async function disconnectSlack() {
-    if (!confirm("Disconnect Slack from this repo? Fix-proposed and escalation messages will stop posting until reconnected.")) return;
-    setDisconnectingSlack(true);
-    try {
-      await api.disconnectSlack(id);
-      await refresh();
-    } finally {
-      setDisconnectingSlack(false);
-    }
-  }
 
   if (error) return <div className="badge badge-red">{error}</div>;
   if (!settings) return <SettingsSkeleton />;
@@ -80,17 +59,14 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
           <p className="text-sm text-lo mt-1">Category toggles, thresholds, Ask Mode, and the kill switch.</p>
         </div>
         {saving ? (
-          <span className="text-xs text-lo">Saving…</span>
+          <span className="flex items-center gap-2 text-xs text-lo"><span className="spinner" style={{ marginTop: 0 }} />Saving…</span>
         ) : saved ? (
-          <span className="text-xs text-accent-soft">Saved</span>
+          <span className="badge badge-green">Saved</span>
         ) : null}
       </div>
 
-      {slackNotice && (
-        <div className={`badge ${slackNotice.kind === "ok" ? "badge-green" : "badge-red"}`}>{slackNotice.text}</div>
-      )}
 
-      <section className="card p-5 border-red-900/30">
+      <section className="card p-5" style={{ borderColor: "var(--failed-dim)" }}>
         <h2 className="font-semibold mb-1 flex items-center gap-2">
           <span className="badge badge-red">Kill switch</span>
         </h2>
@@ -115,36 +91,10 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
 
       <section className="card p-5">
         <h2 className="font-semibold mb-1">Notifications</h2>
-        <p className="text-xs text-lo mb-4">Where fix-proposed and escalation messages get posted.</p>
-        {settings.slack_channel_id ? (
-          <div className="flex items-center justify-between p-3.5 rounded-lg bg-[rgba(47,212,143,0.06)] border border-[color:var(--verified-dim)]">
-            <div className="flex items-center gap-2.5">
-              <span className="text-base">💬</span>
-              <div>
-                <div className="text-sm font-medium">Connected to Slack</div>
-                <div className="text-xs text-lo">{settings.slack_channel_name ? `#${settings.slack_channel_name}` : settings.slack_channel_id}</div>
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <a href={`/api/slack/oauth/start?repo_id=${id}`} className="btn btn-ghost px-3 py-1.5 text-xs">
-                Change channel
-              </a>
-              <button onClick={disconnectSlack} disabled={disconnectingSlack} className="btn btn-danger px-3 py-1.5 text-xs">
-                {disconnectingSlack ? "…" : "Disconnect"}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex items-center justify-between p-3.5 rounded-lg bg-white/[0.02] border border-border">
-            <div>
-              <div className="text-sm font-medium">Not connected</div>
-              <div className="text-xs text-lo">Pick a Slack channel — no ID to type, Slack shows you a picker.</div>
-            </div>
-            <a href={`/api/slack/oauth/start?repo_id=${id}`} className="btn btn-primary px-4 py-2 text-xs">
-              Connect Slack
-            </a>
-          </div>
-        )}
+        <p className="text-xs text-lo">
+          Slack is connected once for the whole account, and every repo posts to that same channel.
+          Set it on your <a href="/profile" className="text-accent hover:underline">profile</a>.
+        </p>
       </section>
 
       <section className="card p-5">
@@ -157,7 +107,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
               onClick={() => patch({ ask_mode: mode.key })}
               className={`text-left p-3.5 rounded-lg border transition ${
                 settings.ask_mode === mode.key
-                  ? "border-accent bg-accent/10"
+                  ? "border-accent bg-[rgba(255,178,36,0.1)]"
                   : "border-border hover:border-border2 bg-white/[0.02]"
               }`}
             >
@@ -235,9 +185,11 @@ function ThresholdSlider({
     <div>
       <div className="flex items-center justify-between text-xs text-lo mb-1.5">
         <span>{label}</span>
-        <span className="font-mono text-mid">
+        <span className="num text-mid">
           {local}
-          {local !== defaultValue && <span className="text-lo"> (default {defaultValue})</span>}
+          {local !== defaultValue && (
+            <span className="text-lo"> · default {defaultValue}</span>
+          )}
         </span>
       </div>
       <input
@@ -248,7 +200,8 @@ function ThresholdSlider({
         onChange={(e) => setLocal(Number(e.target.value))}
         onMouseUp={() => onChange(local)}
         onTouchEnd={() => onChange(local)}
-        className="w-full accent-[#5b7cfa]"
+        className="w-full"
+        style={{ accentColor: "var(--amber)" }}
       />
     </div>
   );
@@ -271,7 +224,11 @@ function ToggleRow({
     <button
       onClick={() => onChange(!checked)}
       className={`flex items-center justify-between p-3.5 rounded-lg border text-left transition ${
-        checked ? (danger ? "border-red-800/60 bg-red-950/20" : "border-accent bg-accent/10") : "border-border bg-white/[0.02]"
+        checked
+          ? danger
+            ? "border-[color:var(--failed-dim)] bg-[rgba(255,95,86,0.08)]"
+            : "border-accent bg-[rgba(255,178,36,0.1)]"
+          : "border-border bg-white/[0.02]"
       }`}
     >
       <div>

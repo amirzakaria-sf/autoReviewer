@@ -57,3 +57,53 @@ def test_missing_closes_reference_fails():
     result = check_outcome(inputs)
     assert result["agreed"] is False
     assert "github" in result["mismatch_detail"]
+
+
+def _agreeing_inputs(**overrides):
+    base = {
+        "github_state": {
+            "issue_exists": True, "labels": [], "pr_open": True,
+            "pr_merged": False, "closes_reference": True,
+        },
+        "cloudflare_state": {"reachable": True, "assertion_passes": True},
+        "slack_state": {"status_text": None, "configured": False},
+        "dashboard_state": "verified",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_an_unconnected_slack_is_not_a_disagreement():
+    """The checker fails a run closed on ANY disagreement, so counting the
+    absence of an integration nobody set up as one meant every deploy failed
+    for anyone without Slack. Found on a real approval where GitHub,
+    Cloudflare and the dashboard all agreed and this was the sole objection."""
+    result = check_outcome(_agreeing_inputs())
+
+    assert result["agreed"] is True
+    assert result["resolved_status"] == "verified"
+
+
+def test_a_connected_slack_showing_a_stale_status_still_fails():
+    """The check has to keep working where it applies -- the point of reading
+    four systems back is catching the one that quietly drifted."""
+    result = check_outcome(
+        _agreeing_inputs(slack_state={"status_text": "Status: *Deployed*", "configured": True})
+    )
+
+    assert result["agreed"] is False
+    assert "slack" in result["mismatch_detail"]
+
+
+def test_slack_that_cannot_be_read_is_treated_as_absent_not_contradictory():
+    result = check_outcome(_agreeing_inputs(slack_state={"status_text": None, "configured": True}))
+
+    assert result["agreed"] is False, "a configured thread that reads back empty IS a mismatch"
+
+
+def test_an_older_payload_without_the_configured_flag_still_behaves():
+    """Items queued before this field existed must not fail closed on a key
+    they never carried."""
+    result = check_outcome(_agreeing_inputs(slack_state={"status_text": None}))
+
+    assert result["agreed"] is True

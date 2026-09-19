@@ -21,9 +21,11 @@ disk to discard forty-four of them is most of the cost of a retrieval, so
 `rank_chunk_metas` hands back just enough to fuse on and the survivors are
 read afterwards.
 
-The index lives OUTSIDE the worktree (under the workspace root's own cache
-directory) on purpose: writing it inside would show up as an untracked file
-in every `git status` the fix pipeline runs, and eventually in a diff.
+The index lives OUTSIDE the worktree, in its own cache volume
+(`settings.retrieval_cache_dir`), for two reasons: writing it inside the
+worktree would show up as an untracked file in every `git status` the fix
+pipeline runs and eventually in a diff, and the web-facing process mounts the
+workspace READ-ONLY, so a cache under it could never be written there at all.
 """
 
 from __future__ import annotations
@@ -149,7 +151,7 @@ def _chunks_for_file(root: Path, absolute: Path) -> list[Chunk]:
 
 def _cache_path(worktree_path: str | Path) -> Path:
     digest = hashlib.sha256(str(Path(worktree_path).resolve()).encode("utf-8")).hexdigest()[:32]
-    return Path(settings.workspace_root) / ".retrieval-cache" / f"{digest}.json"
+    return Path(settings.retrieval_cache_dir) / f"{digest}.json"
 
 
 def _fingerprint(root: Path) -> str:

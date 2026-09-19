@@ -515,7 +515,7 @@ def arbiter_node(state: FixCouncilState) -> FixCouncilState:
     )
     emit_event({"type": "node", "node": "arbiter", "status": "started", "message": "Arbiter scoring the fix…"})
     verdict = azure_client.call_arbiter(prefix, suffix)
-    emit_event({"type": "node", "node": "arbiter", "status": "done", "message": f"Resolution score: {verdict.score}/100"})
+    emit_event({"type": "node", "node": "arbiter", "status": "done", "message": f"Resolution confidence: {verdict.score}/100"})
     return {
         **state,
         "score": verdict.score,

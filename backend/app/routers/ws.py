@@ -83,16 +83,14 @@ def emit_event(event: dict) -> None:
             pass
 
     try:
-        import psycopg
-
-        from app.retrieval import _sync_dsn
+        from app import sync_db
 
         payload = json.dumps(event)
         if len(payload.encode()) > _MAX_PAYLOAD_BYTES:
             trimmed = dict(event)
             trimmed["message"] = str(trimmed.get("message", ""))[:800] + "…"
             payload = json.dumps(trimmed)[:_MAX_PAYLOAD_BYTES]
-        with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+        with sync_db.connection() as conn, conn.cursor() as cur:
             cur.execute("SELECT pg_notify(%s, %s)", (EVENT_CHANNEL, payload))
             conn.commit()
     except Exception:
@@ -115,6 +113,9 @@ async def listen_for_events() -> None:
     origin = os.getpid()
     while True:
         try:
+            # NOT pooled, deliberately: a LISTEN connection is held open for
+            # the life of the process, and parking one of a small pool's
+            # connections there forever would starve everything else.
             conn = await asyncio.to_thread(psycopg.connect, _sync_dsn())
             conn.autocommit = True
             with conn.cursor() as cur:

@@ -8,3 +8,5 @@
 backend/.venv/
 frontend/.next/
 workspace/
+workspace.*/
+.deploy-logs/

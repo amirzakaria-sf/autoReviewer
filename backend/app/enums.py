@@ -38,6 +38,16 @@ class IssueStatus(str, Enum):
 
 class FixStatus(str, Enum):
     AWAITING_APPROVAL = "awaiting-approval"
+    # A human asked for a different approach and the Fix Council is running
+    # again with that feedback. Distinct from AWAITING_APPROVAL so a second
+    # click cannot queue a second revision against the same fix, and distinct
+    # from IN_PROGRESS, which means "approved, being shipped".
+    REVISING = "revising"
+    # Replaced by a later attempt in the same review thread. Kept rather than
+    # deleted: the rejected approach and the reason it was rejected are the
+    # highest-signal training data this system produces, and a later attempt
+    # reads them back before proposing anything.
+    SUPERSEDED = "superseded"
     APPROVED = "approved"
     IN_PROGRESS = "in-progress"
     DEPLOYED = "deployed"
@@ -124,9 +134,67 @@ FIX_STATUS_RENDER: dict[FixStatus, dict] = {
         "dashboard_badge": "Rejected",
         "dashboard_color": "gray",
     },
+    FixStatus.REVISING: {
+        "github_label": "whipguard:revising",
+        "dashboard_badge": "Reworking",
+        "dashboard_color": "amber",
+    },
+    FixStatus.SUPERSEDED: {
+        "github_label": "whipguard:superseded",
+        "dashboard_badge": "Superseded",
+        "dashboard_color": "gray",
+    },
     FixStatus.MERGED: {
         "github_label": "whipguard:merged",
         "dashboard_badge": "Merged (by human)",
         "dashboard_color": "green",
     },
 }
+
+
+class FixReviewStatus(str, Enum):
+    """Who the review thread is waiting on.
+
+    Stored as a plain string column rather than a Postgres enum type: this
+    deployment creates its schema with `Base.metadata.create_all`, which will
+    happily add a new TABLE but never alters an existing enum type, so a
+    native enum here would be one more thing that only works on a fresh
+    database.
+    """
+
+    AWAITING_DECISION = "awaiting-decision"
+    REVISING = "revising"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class OrgRole(str, Enum):
+    """What a member may CHANGE. Deliberately separate from designation
+    (what they know) and seniority (what they can be escalated) -- "SDE
+    Backend 2" is three independent facts, and modelling it as one field is
+    the mistake that makes this unmaintainable."""
+
+    ORG_ADMIN = "org_admin"
+    MEMBER = "member"
+
+
+class Seniority(str, Enum):
+    """Ordered, because severity routing escalates UP a level and never down."""
+
+    SDE1 = "sde1"
+    SDE2 = "sde2"
+    SDE3 = "sde3"
+    STAFF = "staff"
+
+
+# Index into the ladder. A severity floor is expressed as "at least this",
+# so the comparison has to be ordinal rather than alphabetical -- sorting
+# these as strings puts sde1 above staff.
+SENIORITY_ORDER = [Seniority.SDE1, Seniority.SDE2, Seniority.SDE3, Seniority.STAFF]
+
+
+def seniority_rank(value: "Seniority | str") -> int:
+    try:
+        return SENIORITY_ORDER.index(Seniority(value))
+    except (ValueError, KeyError):
+        return 0

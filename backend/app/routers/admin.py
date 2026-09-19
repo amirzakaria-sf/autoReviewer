@@ -15,16 +15,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import async_session, get_db
 from app.deps import require_admin
-from app.enums import AccessRequestStatus, UserRole, UserStatus
+from app import org_invites, orgs
+from app.enums import AccessRequestStatus, OrgRole, Seniority, UserRole, UserStatus
 from app.integrations import email_client
 from app.models import AccessRequest, AuditLog, Fix, Issue, MemoryTrace, Repo, User
-from app.security import sign_invite_token
+from app.security import sign_invite_token, sign_org_invite_token
 
 logger = logging.getLogger("whipguard.admin")
 
@@ -103,13 +105,42 @@ async def list_access_requests(db: AsyncSession = Depends(get_db)):
     return [_access_request_dict(r) for r in requests]
 
 
+class ApprovalIn(BaseModel):
+    """Which organization to put them in.
+
+    Optional only because the very first account on a deployment is approved
+    before any organization exists. Every other approval should name one --
+    an account in no organization sees no repositories and no issues, which
+    is where this path used to end.
+    """
+
+    org_id: str = Field(default="")
+
+
 @router.post("/access-requests/{request_id}/approve")
-async def approve_access_request(request_id: uuid.UUID, admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def approve_access_request(
+    request_id: uuid.UUID,
+    body: ApprovalIn | None = None,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
     access_request = await db.get(AccessRequest, request_id)
     if not access_request:
         raise HTTPException(404, "access request not found")
     if access_request.status != AccessRequestStatus.PENDING:
         raise HTTPException(409, f"already {access_request.status.value}")
+
+    org_id = (body.org_id if body else "").strip()
+    if org_id:
+        from app.models import Organization
+
+        try:
+            organization = await db.get(Organization, uuid.UUID(org_id))
+        except ValueError as error:
+            raise HTTPException(400, "that is not a valid organization id") from error
+        if organization is None:
+            raise HTTPException(404, "that organization does not exist")
+        access_request.org_id = organization.id
 
     access_request.status = AccessRequestStatus.APPROVED
     access_request.decided_by = admin.id
@@ -372,3 +403,147 @@ async def latest_eval():
         "running": status in ("queued", "running"),
         "report": result if not error else {"error": error},
     }
+
+
+# --- organizations ------------------------------------------------------------
+#
+# A system admin creates organizations and names each one's first admin; from
+# there the org administers itself (app/routers/org.py). Nothing in the product
+# created an org before this -- every row was inserted by hand, so a second
+# company could not exist.
+
+
+class OrgIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    # Optional: derived from the name when absent. Exposed because it becomes
+    # the on-disk directory every one of this org's repositories is cloned
+    # under, and is not changeable afterwards.
+    slug: str = Field(default="", max_length=48)
+    # Who administers it. An existing account is added straight away; an
+    # address with no account is invited.
+    admin_email: str = Field(default="", max_length=254)
+
+
+@router.get("/orgs")
+async def list_orgs(admin: User = Depends(require_admin)):
+    return await asyncio.to_thread(orgs.all_orgs)
+
+
+@router.post("/orgs")
+async def create_org(
+    body: OrgIn,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        org = await asyncio.to_thread(
+            orgs.create_org, name=body.name, slug=body.slug, created_by=admin.id
+        )
+    except orgs.OrgError as error:
+        raise HTTPException(409, str(error)) from error
+
+    admin_email = (body.admin_email or "").strip().lower()
+    outcome: dict = {"admin": None, "invite_link": None}
+
+    if admin_email:
+        existing = (await db.execute(select(User).where(User.email == admin_email))).scalars().first()
+        if existing is not None:
+            try:
+                await asyncio.to_thread(
+                    orgs.add_member,
+                    org_id=org["id"],
+                    user_id=existing.id,
+                    role=OrgRole.ORG_ADMIN,
+                    seniority=Seniority.SDE3,
+                )
+                outcome["admin"] = existing.email
+            except orgs.OrgError as error:
+                # The org is already created; report the admin problem rather
+                # than failing the whole call and leaving an org nobody knows
+                # exists.
+                outcome["warning"] = str(error)
+        else:
+            invite = await org_invites.create_invite(
+                db,
+                org_id=uuid.UUID(org["id"]),
+                email=admin_email,
+                role=OrgRole.ORG_ADMIN,
+                seniority=Seniority.SDE3,
+                invited_by=admin.id,
+            )
+            link = f"{settings.public_base_url}/join?token={sign_org_invite_token(invite.id)}"
+            outcome["invite_link"] = link
+            if email_client.smtp_configured():
+                try:
+                    subject, html, text_body = email_client.build_org_invite_email(
+                        admin_email.split("@")[0], org["name"], admin.email, link
+                    )
+                    await asyncio.to_thread(email_client.send_email, admin_email, subject, html, text_body)
+                except Exception:
+                    logger.exception("could not send the org admin invite for %s", org["id"])
+
+    # An org with no admin can invite nobody and configure nothing, so say so
+    # here rather than letting it be discovered later.
+    if not admin_email:
+        outcome["warning"] = (
+            "This organization has no admin yet. Nobody can invite members or change its "
+            "routing until one is named."
+        )
+
+    return {"ok": True, "org": org, **outcome}
+
+
+class OrgAdminIn(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+
+@router.post("/orgs/{org_id}/admins")
+async def add_org_admin(
+    org_id: uuid.UUID,
+    body: OrgAdminIn,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Name an admin on an organization that already exists.
+
+    The recovery path for an org created without one. Such an org can invite
+    nobody and configure nothing -- its own admin endpoints all require an
+    org admin -- so without this it was unreachable except through a database
+    console.
+    """
+    from app.models import Organization
+
+    organization = await db.get(Organization, org_id)
+    if organization is None:
+        raise HTTPException(404, "that organization does not exist")
+
+    email = body.email.strip().lower()
+    existing = (await db.execute(select(User).where(User.email == email))).scalars().first()
+
+    if existing is not None:
+        try:
+            await asyncio.to_thread(
+                orgs.add_member,
+                org_id=org_id,
+                user_id=existing.id,
+                role=OrgRole.ORG_ADMIN,
+                seniority=Seniority.SDE3,
+            )
+        except orgs.OrgError as error:
+            raise HTTPException(409, str(error)) from error
+        return {"ok": True, "admin": existing.email, "invite_link": None}
+
+    invite = await org_invites.create_invite(
+        db, org_id=org_id, email=email, role=OrgRole.ORG_ADMIN,
+        seniority=Seniority.SDE3, invited_by=admin.id,
+    )
+    link = f"{settings.public_base_url}/join?token={sign_org_invite_token(invite.id)}"
+    if email_client.smtp_configured():
+        try:
+            subject, html, text_body = email_client.build_org_invite_email(
+                email.split("@")[0], organization.name, admin.email, link
+            )
+            await asyncio.to_thread(email_client.send_email, email, subject, html, text_body)
+        except Exception:
+            logger.exception("could not send the org admin invite for %s", org_id)
+    return {"ok": True, "admin": None, "invite_link": link}

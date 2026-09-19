@@ -15,6 +15,16 @@ import httpx
 
 from app.config import settings
 
+
+def _bot_token() -> str:
+    """Read at SEND time, not at import time. A Slack reinstall hands back a
+    new token for the same workspace; a module-level value captured at
+    startup would keep failing every post with invalid_auth until the
+    process restarted."""
+    from app import app_settings
+
+    return app_settings.slack_bot_token()
+
 API_BASE = "https://slack.com/api"
 MAX_TIMESTAMP_SKEW_SECONDS = 60 * 5
 
@@ -22,7 +32,7 @@ MAX_TIMESTAMP_SKEW_SECONDS = 60 * 5
 def post_message(channel: str, blocks: list[dict], text: str) -> str:
     resp = httpx.post(
         f"{API_BASE}/chat.postMessage",
-        headers={"Authorization": f"Bearer {settings.slack_bot_token}"},
+        headers={"Authorization": f"Bearer {_bot_token()}"},
         json={"channel": channel, "blocks": blocks, "text": text},
         timeout=15,
     )
@@ -36,7 +46,7 @@ def post_message(channel: str, blocks: list[dict], text: str) -> str:
 def update_message(channel: str, ts: str, blocks: list[dict], text: str) -> None:
     resp = httpx.post(
         f"{API_BASE}/chat.update",
-        headers={"Authorization": f"Bearer {settings.slack_bot_token}"},
+        headers={"Authorization": f"Bearer {_bot_token()}"},
         json={"channel": channel, "ts": ts, "blocks": blocks, "text": text},
         timeout=15,
     )
@@ -50,7 +60,7 @@ def get_message_text(channel: str, ts: str) -> str | None:
     """Used by the outcome checker to read back the thread's current state."""
     resp = httpx.get(
         f"{API_BASE}/conversations.history",
-        headers={"Authorization": f"Bearer {settings.slack_bot_token}"},
+        headers={"Authorization": f"Bearer {_bot_token()}"},
         params={"channel": channel, "latest": ts, "inclusive": "true", "limit": 1},
         timeout=15,
     )
@@ -60,16 +70,26 @@ def get_message_text(channel: str, ts: str) -> str | None:
     return messages[0]["text"] if messages else None
 
 
-def build_fix_proposed_blocks(fix_id, title: str, score: int, pr_url: str, status_label: str) -> list[dict]:
-    """Block Kit message carrying the finding, the score, a PR link, and
-    Approve/Reject buttons -- signature-verified on the way back in
-    (routers/webhooks.py) before either is trusted."""
+def build_fix_proposed_blocks(fix_id, title: str, score: int, review_url: str, status_label: str) -> list[dict]:
+    """Block Kit message carrying the finding, the score, a link to the review,
+    and Approve/Reject buttons -- signature-verified on the way back in
+    (routers/webhooks.py) before either is trusted.
+
+    The link points at the DASHBOARD, not a PR: nothing is pushed to GitHub
+    until someone approves, so at this moment there is no PR to open. It is
+    also where the third verb lives -- asking for a different approach needs
+    the reviewer to type what they want, which two Block Kit buttons cannot
+    carry.
+    """
     return [
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*WhipGuard fix proposed*\n{title}\nResolution score: *{score}/100*\n<{pr_url}|View PR>\nStatus: *{status_label}*",
+                "text": (
+                    f"*WhipGuard fix proposed*\n{title}\nResolution confidence: *{score}/100*\n"
+                    f"<{review_url}|Review the diff>\nStatus: *{status_label}*"
+                ),
             },
         },
         {
@@ -88,6 +108,12 @@ def build_fix_proposed_blocks(fix_id, title: str, score: int, pr_url: str, statu
                     "style": "danger",
                     "action_id": "reject_fix",
                     "value": f"fix:{fix_id}",
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Ask for changes"},
+                    "action_id": "revise_fix",
+                    "url": review_url,
                 },
             ],
         },

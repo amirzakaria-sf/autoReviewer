@@ -23,11 +23,29 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin docker-buildx-plugin \
     && rm -rf /var/lib/apt/lists/*
 
+# Node, for wrangler. app/integrations/cloudflare_client.py deploys the
+# approved branch with `npx wrangler pages deploy`, and this image had no node
+# at all -- so that step failed with a bare `FileNotFoundError: 'npx'` every
+# time it was reached. It was never reached until now: the approval flow died
+# earlier, at a freshness check comparing against a ref that does not exist in
+# a mirror clone, so no fix had ever got as far as a deploy.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml ./
 COPY app ./app
 
 RUN uv pip install --system --no-cache . \
     && playwright install --with-deps chromium
+
+# The workspace is bind-mounted from the host and owned by the host user,
+# while this container runs as root. Git's ownership check then refuses every
+# command against it ("detected dubious ownership") -- which surfaced as the
+# attribution tools returning "no git history" for files that plainly had
+# some. The repos here are mounted, not trusted-by-ownership, so the check
+# buys nothing in this context.
+RUN git config --global --add safe.directory '*'
 
 EXPOSE 8300
 

@@ -1,93 +1,83 @@
-"""Per-repo Slack channel selection via Slack's own OAuth consent screen --
-requesting the `incoming-webhook` scope makes Slack show a native channel
-picker, so nobody ever hand-types a channel ID (plan.md §7.1's "notification
-routing: Slack channel" setting, done the same way GitHub's own OAuth
-connect works in routers/github.py).
+"""One Slack connection for the whole account.
 
-This does NOT create a second bot identity or a per-repo token: WhipGuard
-still sends every message with its one existing workspace bot token
-(settings.slack_bot_token, kept in sync below since a reinstall CAN rotate
-it). The OAuth round-trip here is purely a UI mechanism for picking a
-channel -- Repo.slack_channel_id is the only thing that actually varies per
-repo.
+ADMIN-ONLY, because this is not a personal preference: the channel chosen
+here is where every user's approval requests land. Left open to any signed-in
+member, one member could quietly redirect the whole team's notifications to a
+channel only they watch, or disconnect Slack entirely -- and since every
+failure in this integration is silent, nobody would notice until an approval
+request went missing.
+
+Connect once, pick one channel, and every repo's notifications go there.
+This replaced a per-repo design where each repository had its own channel:
+that made the user repeat an OAuth round-trip for every repo they connected,
+stored a channel on each `Repo` row, and delivered no benefit -- the
+approvals all land in the same place anyway, and a team watching one channel
+is the normal case rather than the exception.
+
+The `incoming-webhook` scope is requested purely because it makes Slack show
+its own native channel-picker on the consent screen, so nobody has to
+hand-type a channel ID. WhipGuard does not use the webhook URL: every
+message is sent with the workspace bot token via `chat.postMessage`, which
+is what lets it later UPDATE a message in place (the approve/reject buttons
+change state after a decision).
+
+The chosen channel and the bot token are stored in the database
+(app/app_settings.py), not in `.env` -- the process that handles this
+callback is not the process that sends the messages.
 """
 
 from __future__ import annotations
 
-import re
-import uuid
-from pathlib import Path
+import asyncio
+import logging
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
 
+from app import app_settings
 from app.config import settings
-from app.db import async_session
-from app.models import Repo
+from app.deps import require_admin
+from app.models import User
 from app.security import sign_state, verify_state
 
 router = APIRouter(prefix="/api/slack")
+logger = logging.getLogger("whipguard.slack_connect")
 
-_ENV_PATH = Path(__file__).resolve().parents[3] / ".env"
-
-
-def _persist_slack_token(token: str) -> None:
-    """Mirrors github.py's _persist_github_token: a Slack app reinstall (or
-    a fresh scope grant, like incoming-webhook here) can hand back a NEW bot
-    token for the same workspace install -- if we kept using the old static
-    .env value, every future chat.postMessage call would start failing with
-    invalid_auth the moment that happens."""
-    settings.slack_bot_token = token
-    if not _ENV_PATH.exists():
-        return
-    text = _ENV_PATH.read_text()
-    if re.search(r"^SLACK_BOT_TOKEN=.*$", text, flags=re.MULTILINE):
-        text = re.sub(r"^SLACK_BOT_TOKEN=.*$", f"SLACK_BOT_TOKEN={token}", text, flags=re.MULTILINE)
-    else:
-        text += f"\nSLACK_BOT_TOKEN={token}\n"
-    _ENV_PATH.write_text(text)
+# chat:write(.public) are what actually sends and updates messages;
+# incoming-webhook is requested only for its channel-picker consent screen.
+_SCOPES = "chat:write,chat:write.public,incoming-webhook"
 
 
 @router.get("/oauth/start")
-async def oauth_start(repo_id: uuid.UUID):
+async def oauth_start(admin: User = Depends(require_admin)):
     if not settings.slack_client_id:
         raise HTTPException(400, "SLACK_CLIENT_ID is not configured")
 
-    async with async_session() as db:
-        repo = await db.get(Repo, repo_id)
-        if not repo:
-            raise HTTPException(404, "repo not found")
-
-    state = sign_state("slack_oauth", extra={"repo_id": str(repo_id)})
     params = httpx.QueryParams(
         {
-            # chat:write(.public) are already granted on this app's existing
-            # install; requesting them again alongside incoming-webhook is
-            # what makes Slack treat this as "add a scope" rather than
-            # silently dropping the ones already held.
-            "scope": "chat:write,chat:write.public,incoming-webhook",
+            "scope": _SCOPES,
             "client_id": settings.slack_client_id,
             "redirect_uri": settings.slack_oauth_redirect_uri,
-            "state": state,
+            "state": sign_state("slack_oauth"),
         }
     )
     return RedirectResponse(f"https://slack.com/oauth/v2/authorize?{params}")
 
 
 @router.get("/oauth/callback")
-async def oauth_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+async def oauth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    admin: User = Depends(require_admin),
+):
     if error:
-        return RedirectResponse(f"/connect?slack_error={error}")
-
-    decoded_state = verify_state(state, "slack_oauth") if state else None
-    if not decoded_state:
-        return RedirectResponse("/connect?slack_error=state_mismatch")
+        return RedirectResponse(f"/profile?slack_error={error}")
+    if not state or not verify_state(state, "slack_oauth"):
+        return RedirectResponse("/profile?slack_error=state_mismatch")
     if not code:
-        return RedirectResponse("/connect?slack_error=missing_code")
-
-    repo_id = decoded_state.get("repo_id")
+        return RedirectResponse("/profile?slack_error=missing_code")
 
     resp = httpx.post(
         "https://slack.com/api/oauth.v2.access",
@@ -103,39 +93,87 @@ async def oauth_callback(code: str | None = None, state: str | None = None, erro
     payload = resp.json()
 
     if not payload.get("ok"):
-        return RedirectResponse(f"/connect?slack_error={payload.get('error', 'exchange_failed')}")
+        return RedirectResponse(f"/profile?slack_error={payload.get('error', 'exchange_failed')}")
 
     webhook = payload.get("incoming_webhook") or {}
     channel_id = webhook.get("channel_id")
-    channel_name = webhook.get("channel")
-    access_token = payload.get("access_token")
-
     if not channel_id:
-        return RedirectResponse("/connect?slack_error=no_channel_selected")
+        return RedirectResponse("/profile?slack_error=no_channel_selected")
 
-    if access_token:
-        _persist_slack_token(access_token)
+    team = payload.get("team") or {}
+    channel_name = (webhook.get("channel") or "").lstrip("#")
 
-    async with async_session() as db:
-        repo = await db.get(Repo, uuid.UUID(repo_id)) if repo_id else None
-        if repo:
-            repo.slack_channel_id = channel_id
-            repo.slack_channel_name = channel_name
-            await db.commit()
-            return RedirectResponse(f"/repos/{repo.id}/settings?slack_connected=1")
+    # Recorded per ORGANIZATION and keyed by Slack's team_id. That key is what
+    # makes an inbound button click resolvable later: the interaction payload
+    # carries the team, which identifies both the install and the token to
+    # answer with. Without it a second workspace connecting would overwrite
+    # the first and silently redirect their approvals.
+    if team.get("id") and payload.get("access_token"):
+        from app.orgs import orgs_for_user
 
-    return RedirectResponse("/connect?slack_error=repo_not_found")
+        memberships = await asyncio.to_thread(orgs_for_user, admin.id)
+        if memberships:
+            await asyncio.to_thread(
+                app_settings.save_installation,
+                org_id=memberships[0]["id"],
+                team_id=team["id"],
+                team_name=team.get("name", ""),
+                bot_token=payload["access_token"],
+                channel_id=channel_id,
+                channel_name=channel_name,
+                installed_by=admin.id,
+            )
+
+    # The single-workspace settings stay in step so a deployment mid-migration
+    # keeps working from either path.
+    app_settings.set_setting(app_settings.SLACK_CHANNEL_ID, channel_id)
+    app_settings.set_setting(app_settings.SLACK_CHANNEL_NAME, channel_name)
+    if payload.get("access_token"):
+        app_settings.set_setting(app_settings.SLACK_BOT_TOKEN, payload["access_token"])
+
+    logger.info("slack connected: team=%s channel=%s", team.get("name"), webhook.get("channel"))
+    return RedirectResponse("/profile?slack_connected=1")
+
+
+@router.get("/status")
+async def slack_status():
+    return app_settings.slack_status()
 
 
 @router.post("/disconnect")
-async def disconnect(repo_id: uuid.UUID):
-    """Clears just this repo's channel selection -- the workspace bot token
-    itself stays put (it isn't per-repo, and other repos may still use it)."""
-    async with async_session() as db:
-        repo = await db.get(Repo, repo_id)
-        if not repo:
-            raise HTTPException(404, "repo not found")
-        repo.slack_channel_id = None
-        repo.slack_channel_name = None
-        await db.commit()
+async def disconnect(admin: User = Depends(require_admin)):
+    """Clears the stored channel and token. The Slack app itself stays
+    installed in the workspace -- removing it is done from Slack, not from
+    here, and doing it silently on the user's behalf would be surprising."""
+    app_settings.disconnect_slack()
     return {"ok": True}
+
+
+@router.post("/test")
+async def send_test_message(admin: User = Depends(require_admin)):
+    """Posts a real message to the connected channel.
+
+    Exists because every failure mode in this integration is SILENT: a
+    missing channel, a revoked token and a bot that was never invited all
+    end with `post_message` being skipped or refused, and nothing in the
+    dashboard distinguishes them from "no bugs found yet". This turns that
+    into an answer.
+    """
+    status = app_settings.slack_status()
+    if not status["has_token"]:
+        raise HTTPException(400, "No Slack bot token -- connect Slack first.")
+    if not status["channel_id"]:
+        raise HTTPException(400, "No Slack channel selected -- connect Slack first.")
+
+    from app.integrations import slack_client
+
+    try:
+        slack_client.post_message(
+            status["channel_id"],
+            blocks=[],
+            text="WhipGuard is connected. Approval requests for every connected repo will arrive here.",
+        )
+    except Exception as error:  # noqa: BLE001 - the whole point is to surface it
+        raise HTTPException(502, f"Slack rejected the message: {error}") from None
+
+    return {"ok": True, "channel": status["channel_name"] or status["channel_id"]}

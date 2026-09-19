@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 
 import psycopg
 
+from app import sync_db
 from app.config import settings
 from app.retrieval import _sync_dsn
 
@@ -57,7 +58,7 @@ def get(key: str) -> str | None:
     if not _enabled():
         return None
     try:
-        with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+        with sync_db.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "UPDATE llm_response_cache SET hit_count = hit_count + 1 "
                 "WHERE cache_key = %s AND expires_at > now() RETURNING response_text",
@@ -76,7 +77,7 @@ def put(key: str, response_text: str, *, role: str = "", deployment: str = "") -
         return
     try:
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=_ttl_seconds())
-        with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+        with sync_db.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO llm_response_cache
@@ -94,7 +95,7 @@ def put(key: str, response_text: str, *, role: str = "", deployment: str = "") -
 
 def purge_expired() -> int:
     try:
-        with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+        with sync_db.connection() as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM llm_response_cache WHERE expires_at <= now()")
             deleted = cur.rowcount
             conn.commit()
@@ -108,7 +109,7 @@ def stats() -> dict:
     """Surfaced on the admin dashboard -- a saving that leaves no trace
     cannot be told apart from a feature nobody reached."""
     try:
-        with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+        with sync_db.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT count(*), coalesce(sum(hit_count), 0) FROM llm_response_cache WHERE expires_at > now()"
             )

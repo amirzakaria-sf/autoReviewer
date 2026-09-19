@@ -8,6 +8,7 @@ import { useSession } from "./AuthGate";
 const NAV_LINKS = [
   { href: "/dashboard", label: "Overview" },
   { href: "/repos", label: "Repos" },
+  { href: "/org", label: "Team" },
   { href: "/activity", label: "Live activity" },
   { href: "/connect", label: "Connect" },
 ];
@@ -54,7 +55,7 @@ export function HeaderBar() {
   }
 
   return (
-    <div className="border-b border-border bg-panel/70 backdrop-blur-md sticky top-0 z-20">
+    <div className="border-b border-border bg-[color:var(--ink-800)] backdrop-blur-md sticky top-0 z-20">
       <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
         <div className="flex items-center gap-6">
           <a href="/dashboard" className="flex items-center gap-2 font-semibold tracking-tight shrink-0">

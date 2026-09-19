@@ -68,7 +68,46 @@ export type IssueDetail = IssueSummary & {
 };
 
 /** The server actually rejected this session. Only this means "log out". */
+/** Three independent axes per person: permission, expertise, level. */
+export type OrgMember = {
+  member_id: string;
+  user_id: string;
+  email: string;
+  name: string;
+  role: "org_admin" | "member";
+  seniority: "sde1" | "sde2" | "sde3" | "staff";
+  designations: string[];
+};
+
+export type OrgOverview = {
+  id: string;
+  name: string;
+  slug: string;
+  role: "org_admin" | "member";
+  seniority: string;
+  members: OrgMember[];
+  designations: { id: string; key: string; label: string }[];
+  routing_rules: {
+    category: string;
+    designation_key: string;
+    escalate_at_severity: number;
+    min_seniority: string;
+  }[];
+};
+
+export type AssignmentPreview = {
+  assignee: OrgMember | null;
+  watchers: OrgMember[];
+  designation: string;
+  /** Why this person, in order. Shown to the reader because assignment by
+   *  git history reads as blame unless the reasoning is visible. */
+  reasoning: string[];
+};
+
 export class UnauthorizedError extends Error {}
+
+/** The fix moved on between render and click. Refresh, do not error. */
+export class ReviewConflictError extends Error {}
 
 /** The backend could not be reached. The session is untouched -- this is a
  *  redeploy, a dropped connection, or a gateway blip, and treating it as a
@@ -203,7 +242,34 @@ async function postJSON<T>(path: string, body?: unknown): Promise<T> {
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => null);
+    const message = detail?.detail || `${path} -> ${res.status}`;
+    // 409 means the request was fine and the thing moved on -- someone
+    // approved from Slack, or a second click landed. The caller refreshes and
+    // shows what actually happened instead of rendering a form error.
+    throw res.status === 409 ? new ReviewConflictError(message) : new Error(message);
+  }
+  return res.json();
+}
+
+async function putJSON<T>(path: string, body: unknown): Promise<T> {
+  const res = await authedFetch(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
     throw new Error(detail?.detail || `${path} -> ${res.status}`);
+  }
+  return res.json();
+}
+
+async function deleteJSON<T>(path: string): Promise<T> {
+  const res = await authedFetch(path, { method: "DELETE" });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    const message = detail?.detail || `${path} -> ${res.status}`;
+    throw res.status === 409 ? new ReviewConflictError(message) : new Error(message);
   }
   return res.json();
 }
@@ -264,7 +330,13 @@ export type MyProfile = {
   role: "admin" | "member";
   onboarding_completed: boolean;
   created_at: string | null;
-  slack_workspace_connected: boolean;
+  /** Account-level Slack: one workspace, one channel, all repos. */
+  slack: {
+    connected: boolean;
+    channel_id: string;
+    channel_name: string;
+    has_token: boolean;
+  };
 };
 
 export type AdminUser = {
@@ -294,6 +366,11 @@ export type AdminOverview = {
   repos: number;
   issues: number;
   fixes: number;
+  /** Proof the response cache is doing something — a saving that leaves no
+   *  trace is indistinguishable from a feature nobody reached. */
+  llm_cache?: { entries: number; hits: number };
+  /** How much the memory layer has actually accumulated. */
+  memory_traces?: number;
 };
 
 export type UsageStats = {
@@ -320,9 +397,91 @@ export type RepoSettings = {
   ask_mode: "autonomous" | "balanced" | "verbose";
   detection_paused: boolean;
   proposals_paused: boolean;
-  slack_channel_id: string | null;
-  slack_channel_name: string | null;
   categories: CategorySetting[];
+};
+
+export type ReviewTurn = {
+  role: "council" | "human" | "system";
+  text: string;
+  at: string;
+  kind?: string;
+  fix_id?: string;
+};
+
+export type ReviewFix = {
+  id: string;
+  attempt: number;
+  status: string;
+  badge: string;
+  color: string;
+  score: number | null;
+  verdict: string | null;
+  rubric: { factor?: string; note?: string; weight?: number }[];
+  diff: string;
+  branch_name: string | null;
+  pr_number: number | null;
+  preview_url: string | null;
+  decision_note: string | null;
+};
+
+export type FixReview = {
+  issue_id: string;
+  issue_title: string;
+  status: "awaiting-decision" | "revising" | "approved" | "rejected" | null;
+  attempts: number;
+  revisions_left: number;
+  transcript: ReviewTurn[];
+  current: ReviewFix | null;
+  history: ReviewFix[];
+};
+
+export type OrgSummary = {
+  id: string;
+  name: string;
+  slug: string;
+  created_at: string | null;
+  member_count: number;
+  repo_count: number;
+  pending_invites: number;
+};
+
+export type OrgInvite = {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  seniority: string;
+  designations: string[];
+  created_at?: string | null;
+};
+
+export type OrgInviteCheck = {
+  email: string;
+  name: string;
+  org_name: string;
+  role: string;
+  seniority: string;
+  needs_password: boolean;
+};
+
+export type IdentityLink = {
+  id: string;
+  provider: string;
+  external_id: string;
+  user_id: string;
+  email: string;
+};
+
+export type IdentityOverview = {
+  links: IdentityLink[];
+  unlinked_authors: { external_id: string; commits: number }[];
+};
+
+export type RoutingRule = {
+  category: string;
+  designation_key: string;
+  escalate_at_severity: number;
+  min_seniority: string;
 };
 
 export const api = {
@@ -332,8 +491,11 @@ export const api = {
   overview: () => getJSON<Overview>("/api/overview"),
   issues: (status?: string) => getJSON<IssueSummary[]>(`/api/issues${status ? `?status=${status}` : ""}`),
   issue: (id: string) => getJSON<IssueDetail>(`/api/issues/${id}`),
-  approveFix: (id: string) => postJSON(`/api/fixes/${id}/approve`),
-  rejectFix: (id: string) => postJSON(`/api/fixes/${id}/reject`),
+  approveFix: (id: string, note = "") => postJSON(`/api/fixes/${id}/approve`, { note }),
+  rejectFix: (id: string, note = "") => postJSON(`/api/fixes/${id}/reject`, { note }),
+  fixReview: (issueId: string) => getJSON<FixReview>(`/api/issues/${issueId}/review`),
+  reviseFix: (id: string, instruction: string) =>
+    postJSON<{ ok: boolean; status: string; queued: boolean }>(`/api/fixes/${id}/revise`, { instruction }),
   scanRepo: (repoId: string) => postJSON(`/api/repos/${repoId}/scan`),
   triggerFix: (issueId: string) => postJSON(`/api/issues/${issueId}/trigger-fix`),
   repos: () =>
@@ -344,7 +506,6 @@ export const api = {
         default_branch: string;
         detection_paused: boolean;
         proposals_paused: boolean;
-        slack_channel_name: string | null;
       }[]
     >(
       "/api/repos"
@@ -352,6 +513,41 @@ export const api = {
   repoSettings: (repoId: string) => getJSON<RepoSettings>(`/api/repos/${repoId}/settings`),
   updateRepoSettings: (repoId: string, patch: Record<string, unknown>) =>
     patchJSON<{ ok: boolean }>(`/api/repos/${repoId}/settings`, patch),
+
+  orgInvites: () => getJSON<OrgInvite[]>("/api/org/invites"),
+  inviteToOrg: (body: { email: string; name?: string; role?: string; seniority?: string; designations?: string[] }) =>
+    postJSON<{ ok: boolean; invite: OrgInvite; email_sent: boolean; link: string }>("/api/org/invites", body),
+  revokeOrgInvite: (id: string) => deleteJSON<{ ok: boolean }>(`/api/org/invites/${id}`),
+  removeOrgMember: (id: string) => deleteJSON<{ ok: boolean; members: OrgMember[] }>(`/api/org/members/${id}`),
+
+  upsertDesignation: (key: string, label: string) =>
+    postJSON<{ ok: boolean; designations: { id: string; key: string; label: string }[] }>(
+      "/api/org/designations",
+      { key, label },
+    ),
+  deleteDesignation: (key: string) =>
+    deleteJSON<{ ok: boolean; designations: { id: string; key: string; label: string }[] }>(
+      `/api/org/designations/${encodeURIComponent(key)}`,
+    ),
+  setRoutingRule: (
+    category: string,
+    body: { designation_key: string; escalate_at_severity: number; min_seniority: string },
+  ) => putJSON<{ ok: boolean; routing_rules: RoutingRule[] }>(`/api/org/routing-rules/${category}`, body),
+  identityLinks: () => getJSON<IdentityOverview>("/api/org/identity-links"),
+  linkIdentity: (body: { user_id: string; external_id: string; provider?: string }) =>
+    postJSON<{ ok: boolean }>("/api/org/identity-links", body),
+  unlinkIdentity: (id: string) => deleteJSON<{ ok: boolean; links: IdentityLink[] }>(`/api/org/identity-links/${id}`),
+
+  adminOrgs: () => getJSON<OrgSummary[]>("/api/admin/orgs"),
+  createOrg: (body: { name: string; slug?: string; admin_email?: string }) =>
+    postJSON<{ ok: boolean; org: OrgSummary; admin: string | null; invite_link: string | null; warning?: string }>(
+      "/api/admin/orgs",
+      body,
+    ),
+
+  checkOrgInvite: (token: string) => getJSON<OrgInviteCheck>(`/api/auth/org-invite?token=${encodeURIComponent(token)}`),
+  acceptOrgInvite: (token: string, password: string) =>
+    postJSON<{ ok: boolean; role: string }>("/api/auth/accept-org-invite", { token, password }),
 
   requestAccess: (name: string, email: string, reason: string) =>
     postJSON<{ ok: boolean; status: "pending" | "approved"; invite_token?: string }>("/api/auth/request-access", {
@@ -372,7 +568,13 @@ export const api = {
   reactivateUser: (id: string) => postJSON<{ ok: boolean }>(`/api/admin/users/${id}/reactivate`),
 
   accessRequests: () => getJSON<AccessRequest[]>("/api/admin/access-requests"),
-  approveAccessRequest: (id: string) => postJSON<{ ok: boolean; request: AccessRequest }>(`/api/admin/access-requests/${id}/approve`),
+  approveAccessRequest: (id: string, orgId = "") =>
+    postJSON<{ ok: boolean; request: AccessRequest }>(`/api/admin/access-requests/${id}/approve`, { org_id: orgId }),
+  addOrgAdmin: (orgId: string, email: string) =>
+    postJSON<{ ok: boolean; admin: string | null; invite_link: string | null }>(
+      `/api/admin/orgs/${orgId}/admins`,
+      { email },
+    ),
   rejectAccessRequest: (id: string, reason: string) =>
     postJSON<{ ok: boolean; request: AccessRequest }>(`/api/admin/access-requests/${id}/reject`, { reason }),
   adminOverview: () => getJSON<AdminOverview>("/api/admin/overview"),
@@ -384,9 +586,15 @@ export const api = {
   githubRepos: () => getJSON<GithubRepo[]>("/api/github/repos"),
   connectRepo: (full_name: string) => postJSON<{ ok: boolean; repo_id: string }>("/api/github/connect", { full_name }),
   disconnectGithub: () => postJSON<{ ok: boolean }>("/api/github/disconnect"),
-  disconnectSlack: (repoId: string) => postJSON<{ ok: boolean }>(`/api/slack/disconnect?repo_id=${repoId}`),
+  disconnectSlack: () => postJSON<{ ok: boolean }>("/api/slack/disconnect"),
+  testSlack: () => postJSON<{ ok: boolean; channel: string }>("/api/slack/test"),
 
   me: () => getJSON<MyProfile>("/api/me"),
+  org: () => getJSON<OrgOverview>("/api/org"),
+  updateOrgMember: (memberId: string, patch: Record<string, unknown>) =>
+    patchJSON<{ ok: boolean; members: OrgMember[] }>(`/api/org/members/${memberId}`, patch),
+  previewAssignment: (body: { category: string; severity: number; author?: string }) =>
+    postJSON<AssignmentPreview>("/api/org/preview-assignment", body),
   updateMe: (patch: { first_name?: string; last_name?: string; mobile_number?: string }) =>
     patchJSON<{ ok: boolean; profile: MyProfile }>("/api/me", patch),
   changePassword: (currentPassword: string, newPassword: string) =>

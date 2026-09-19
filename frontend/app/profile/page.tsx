@@ -21,6 +21,9 @@ export default function ProfilePage() {
   const [savingPassword, setSavingPassword] = useState(false);
 
   const [disconnectingGithub, setDisconnectingGithub] = useState(false);
+  const [disconnectingSlack, setDisconnectingSlack] = useState(false);
+  const [testingSlack, setTestingSlack] = useState(false);
+  const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
   async function refresh() {
     try {
@@ -38,7 +41,38 @@ export default function ProfilePage() {
 
   useEffect(() => {
     refresh();
+    // The Slack OAuth callback lands back here with the outcome in the URL.
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("slack_connected")) setNotice({ kind: "ok", text: "Slack connected." });
+    else if (params.get("slack_error")) setNotice({ kind: "error", text: `Slack connection failed: ${params.get("slack_error")}` });
+    if (params.has("slack_connected") || params.has("slack_error")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
   }, []);
+
+  async function disconnectSlack() {
+    if (!confirm("Disconnect Slack? Approval requests will stop being posted until you reconnect.")) return;
+    setDisconnectingSlack(true);
+    try {
+      await api.disconnectSlack();
+      await refresh();
+      setNotice({ kind: "ok", text: "Slack disconnected." });
+    } finally {
+      setDisconnectingSlack(false);
+    }
+  }
+
+  async function testSlack() {
+    setTestingSlack(true);
+    try {
+      const result = await api.testSlack();
+      setNotice({ kind: "ok", text: `Test message sent to #${result.channel}.` });
+    } catch (err) {
+      setNotice({ kind: "error", text: err instanceof Error ? err.message : "Could not send a test message." });
+    } finally {
+      setTestingSlack(false);
+    }
+  }
 
   async function saveProfile(e: React.FormEvent) {
     e.preventDefault();
@@ -81,6 +115,8 @@ export default function ProfilePage() {
       setDisconnectingGithub(false);
     }
   }
+
+  const isAdmin = profile?.role === "admin";
 
   if (error) return <div className="badge badge-red">{error}</div>;
   if (!profile) return <ProfileSkeleton />;
@@ -127,6 +163,10 @@ export default function ProfilePage() {
         </form>
       </section>
 
+      {notice && (
+        <div className={`badge ${notice.kind === "ok" ? "badge-green" : "badge-red"}`}>{notice.text}</div>
+      )}
+
       <section className="card p-5">
         <h2 className="font-semibold mb-4">Connected apps</h2>
         <div className="space-y-3">
@@ -158,27 +198,53 @@ export default function ProfilePage() {
             </div>
           )}
 
-          {profile?.slack_workspace_connected ? (
-            <div className="flex items-center justify-between p-3.5 rounded-lg bg-[rgba(47,212,143,0.06)] border border-[color:var(--verified-dim)]">
+          {profile.slack.connected ? (
+            <div className="flex items-center justify-between gap-3 p-3.5 rounded-lg bg-[rgba(47,212,143,0.06)] border border-[color:var(--verified-dim)]">
+              <div className="min-w-0">
+                <div className="text-sm font-medium">Slack</div>
+                <div className="text-xs text-lo">
+                  Posting to{" "}
+                  <span className="num text-mid">
+                    {profile.slack.channel_name ? `#${profile.slack.channel_name}` : profile.slack.channel_id}
+                  </span>{" "}
+                  — every repo notifies this one channel.
+                </div>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                {isAdmin && (
+                  <button onClick={testSlack} disabled={testingSlack} className="btn btn-ghost px-3 py-1.5 text-xs">
+                    {testingSlack ? "Sending…" : "Send test"}
+                  </button>
+                )}
+                {isAdmin && (
+                  <a href="/api/slack/oauth/start" className="btn btn-ghost px-3 py-1.5 text-xs">
+                    Change channel
+                  </a>
+                )}
+                {isAdmin && (
+                  <button onClick={disconnectSlack} disabled={disconnectingSlack} className="btn btn-danger px-3 py-1.5 text-xs">
+                    {disconnectingSlack ? "…" : "Disconnect"}
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-3 p-3.5 rounded-lg bg-white/[0.02] border border-border">
               <div>
                 <div className="text-sm font-medium">Slack</div>
                 <div className="text-xs text-lo">
-                  Workspace connected — pick which channel each repo posts to from that repo&apos;s settings page
+                  {profile.slack.has_token
+                    ? "Installed, but no channel picked yet — nothing will be sent."
+                    : "Not connected. Approval requests for every repo will go to the channel you pick."}
                 </div>
               </div>
-              <a href="/repos" className="btn btn-ghost px-3 py-1.5 text-xs">
-                Manage channels
-              </a>
-            </div>
-          ) : (
-            <div className="flex items-center justify-between p-3.5 rounded-lg bg-white/[0.02] border border-border">
-              <div>
-                <div className="text-sm font-medium">Slack</div>
-                <div className="text-xs text-lo">Not connected</div>
-              </div>
-              <a href="/connect" className="btn btn-primary px-4 py-2 text-xs">
-                Connect Slack
-              </a>
+              {isAdmin ? (
+                <a href="/api/slack/oauth/start" className="btn btn-primary px-4 py-2 text-xs shrink-0">
+                  Connect Slack
+                </a>
+              ) : (
+                <span className="badge badge-gray shrink-0">Admin sets this up</span>
+              )}
             </div>
           )}
         </div>
@@ -207,7 +273,7 @@ export default function ProfilePage() {
               className="input w-full px-3 py-2 text-sm"
             />
           </div>
-          {passwordError && <p className="text-sm text-red-400">{passwordError}</p>}
+          {passwordError && <p className="text-sm text-[color:var(--failed)]">{passwordError}</p>}
           <div className="flex items-center gap-3 pt-1">
             <button
               type="submit"

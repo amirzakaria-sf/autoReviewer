@@ -18,6 +18,8 @@ import uuid
 
 import psycopg
 
+from app import sync_db
+
 from app.config import settings
 
 logger = logging.getLogger("whipguard.council_runs")
@@ -41,7 +43,7 @@ def record_council_run(
 ) -> None:
     prompt_hash = hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:16]
     try:
-        with psycopg.connect(_sync_dsn()) as conn:
+        with sync_db.connection() as conn:
             conn.execute(
                 """
                 INSERT INTO council_runs

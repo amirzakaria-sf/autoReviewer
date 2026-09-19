@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.calibration import record_calibration_event
+from app import app_settings
 from app.config import settings
 from app.db import get_db
 from app.enums import FixStatus, IssueStatus
@@ -134,11 +135,11 @@ async def _handle_pull_request(db: AsyncSession, payload: dict) -> None:
 
             if issue:
                 try:
-                    from app.sandbox.worktree import ensure_mirror, remove_worktree, repo_slug
+                    from app.sandbox.worktree import ensure_mirror, remove_worktree, repo_root
 
                     mirror = await asyncio.to_thread(ensure_mirror, repo_full_name)
                     worktree_path = (
-                        Path(settings.workspace_root) / repo_slug(repo_full_name) / "fixes" / fix.branch_name.split("/")[-1]
+                        repo_root(repo_full_name) / "fixes" / fix.branch_name.split("/")[-1]
                     )
                     await asyncio.to_thread(remove_worktree, mirror, worktree_path)
                     logger.info("removed local worktree for merged branch %s", fix.branch_name)
@@ -165,8 +166,7 @@ async def _handle_pull_request(db: AsyncSession, payload: dict) -> None:
         from app.config import settings
         from app.graphs.approval_graph import _update_slack_status
 
-        repo = await db.get(Repo, issue.repo_id)
-        channel_id = (repo.slack_channel_id if repo else None) or settings.slack_channel_id
+        channel_id = app_settings.slack_for_repo(issue.repo_id)[1]
         _update_slack_status(fix, issue.title, channel_id, f"PR #{pr_number} {'merged' if merged else 'closed'} on GitHub")
 
 
@@ -215,10 +215,23 @@ async def _handle_issues(db: AsyncSession, payload: dict) -> None:
 
 
 async def _handle_issue_comment(db: AsyncSession, payload: dict) -> None:
+    """`/reject [reason]` and `/revise <instruction>`, from a GitHub comment.
+
+    A comment is the one approval surface that is naturally free text, so it
+    is the only one besides the dashboard that can carry the third verb. The
+    reason and the instruction are both kept verbatim: they are what a later
+    attempt on this issue reads back before proposing anything.
+    """
     if payload.get("action") != "created":
         return
-    body = payload["comment"]["body"].strip().lower()
-    if body != "/reject":
+
+    body = payload["comment"]["body"].strip()
+    command, _, argument = body.partition(" ")
+    command = command.lower()
+    argument = argument.strip()
+    if command not in {"/reject", "/revise"}:
+        return
+    if command == "/revise" and not argument:
         return
 
     issue_number = payload["issue"]["number"]
@@ -230,9 +243,34 @@ async def _handle_issue_comment(db: AsyncSession, payload: dict) -> None:
     fix = (
         await db.execute(select(Fix).where(Fix.issue_id == issue.id).order_by(Fix.created_at.desc()))
     ).scalars().first()
-    if fix:
-        actor = payload["comment"]["user"]["login"]
-        await resolve_approval(db, fix.id, approved=False, actor=actor, surface="github-comment")
+    if not fix:
+        return
+
+    actor = payload["comment"]["user"]["login"]
+
+    if command == "/revise":
+        from app.fix_review import RevisionRejected, request_revision
+
+        try:
+            await request_revision(db, fix.id, instruction=argument, actor=actor, surface="github-comment")
+        except RevisionRejected as error:
+            # Said back on the thread the person is standing in, rather than
+            # swallowed -- a webhook that silently does nothing looks
+            # identical to one that is broken.
+            logger.info("revision from a GitHub comment refused: %s", error)
+            try:
+                repo_full_name = payload.get("repository", {}).get("full_name", "")
+                if repo_full_name:
+                    await asyncio.to_thread(
+                        github_client.comment_issue, repo_full_name, issue_number, f"WhipGuard: {error}"
+                    )
+            except Exception:
+                logger.exception("could not reply to a refused /revise on #%s", issue_number)
+        return
+
+    await resolve_approval(
+        db, fix.id, approved=False, actor=actor, surface="github-comment", note=argument
+    )
 
 
 @router.post("/slack/interactions")
@@ -248,10 +286,73 @@ async def slack_interactions(request: Request, db: AsyncSession = Depends(get_db
 
     payload = json.loads(unquote_plus(form["payload"]))
 
+    # Which workspace clicked. With one install this is decoration; with
+    # several it is the only thing distinguishing them, and a click from an
+    # unknown workspace must be refused rather than applied against whichever
+    # install happens to be first in the table.
+    team_id = (payload.get("team") or {}).get("id", "")
+    if team_id:
+        from app import app_settings
+
+        install = await asyncio.to_thread(app_settings.installation_for_team, team_id)
+        if install is None:
+            legacy = await asyncio.to_thread(app_settings.slack_is_connected)
+            if not legacy:
+                logger.warning("slack interaction from unknown workspace %s -- refusing", team_id)
+                raise HTTPException(403, "This Slack workspace is not connected to WhipGuard.")
+
     action = payload["actions"][0]
+    action_id = action.get("action_id", "")
+
+    # Only the two decision buttons act. The "Ask for changes" button is a
+    # plain link to the dashboard -- Slack still posts an interaction for it,
+    # but it carries no `value`, so treating anything that is not
+    # `approve_fix` as a rejection (which this did) would both crash on the
+    # missing key and, if it had not, reject the fix the reviewer was opening
+    # in order to give feedback on.
+    if action_id not in {"approve_fix", "reject_fix"}:
+        logger.info("ignoring non-decision slack action %r", action_id)
+        return {"ok": True, "ignored": action_id}
+
     fix_id = uuid.UUID(action["value"].split(":")[1])
-    approved = action["action_id"] == "approve_fix"
+    approved = action_id == "approve_fix"
     actor = payload["user"]["username"]
 
-    result = await resolve_approval(db, fix_id, approved=approved, actor=actor, surface="slack")
-    return result
+    # Slack's two buttons carry no free text. A reviewer who wants to say WHY,
+    # or ask for a different approach, follows the link to the dashboard --
+    # which is what the third button is for.
+    return await resolve_approval(
+        db, fix_id, approved=approved, actor=actor, surface="slack",
+        note="" if approved else "Rejected from Slack (no reason captured -- Slack buttons carry no text).",
+    )
+
+
+@router.post("/slack/events")
+async def slack_events(request: Request):
+    """Slack's Events API. Only `app_uninstalled` matters today.
+
+    Without it, an install revoked from Slack's side keeps failing every post
+    forever -- and those failures are silent, so nobody notices until an
+    approval request goes missing.
+    """
+    body_bytes = await request.body()
+    body_str = body_bytes.decode()
+
+    if not verify_signature(dict(request.headers), body_str, settings.slack_signing_secret):
+        raise HTTPException(401, "invalid Slack signature")
+
+    payload = json.loads(body_str)
+
+    # Slack verifies a new Events URL by POSTing a challenge to it.
+    if payload.get("type") == "url_verification":
+        return {"challenge": payload.get("challenge", "")}
+
+    event_type = (payload.get("event") or {}).get("type") or payload.get("type")
+    if event_type in {"app_uninstalled", "tokens_revoked"}:
+        from app import app_settings
+
+        team_id = payload.get("team_id", "")
+        await asyncio.to_thread(app_settings.revoke_installation, team_id)
+        logger.info("slack app uninstalled for team %s", team_id)
+
+    return {"ok": True}

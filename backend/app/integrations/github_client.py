@@ -102,7 +102,15 @@ def get_pr(repo: str, number: int) -> dict:
 
 
 def push_branch(worktree_path: str, branch: str) -> None:
-    """Push `branch` from a worktree to `origin`. Never force-pushes."""
+    """Push `branch` from a worktree to `origin`. Never force-pushes.
+
+    The remote URL is inherited from the mirror this worktree hangs off, and
+    carries the credential -- see app/sandbox/worktree.py's
+    `authenticated_remote`, which also explains why a malformed one only ever
+    fails HERE and never at clone time.
+    """
+    from app.sandbox.worktree import _git_env
+
     subprocess.run(
         ["git", "push", "origin", f"HEAD:refs/heads/{branch}"],
         cwd=worktree_path,
@@ -110,6 +118,7 @@ def push_branch(worktree_path: str, branch: str) -> None:
         capture_output=True,
         text=True,
         timeout=60,
+        env=_git_env(),
     )
 
 

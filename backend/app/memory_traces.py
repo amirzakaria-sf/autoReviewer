@@ -34,6 +34,7 @@ import re
 
 import psycopg
 
+from app import sync_db
 from app.config import settings
 from app.retrieval import _sync_dsn
 
@@ -96,7 +97,7 @@ def record_trace(
     import json
 
     try:
-        with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+        with sync_db.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO memory_traces
@@ -142,7 +143,7 @@ def structural_terms(repo_id, *, limit: int = 6) -> list[str]:
     try:
         from app.hybrid_retrieval import query_identifiers
 
-        with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+        with sync_db.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT failing_command, detail FROM memory_traces
@@ -178,7 +179,7 @@ def search_history(repo_id, query: str, *, exclude_run_id=None, limit: int = _MA
         if not tsquery:
             return []
 
-        with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+        with sync_db.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT created_at, category, stage, outcome, failing_command, exit_code, detail,

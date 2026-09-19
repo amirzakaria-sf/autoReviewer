@@ -100,6 +100,9 @@ def _bug_council_patches(mock_record_condition):
         patch("app.integrations.github_client.create_issue", return_value=101),
         patch("app.notifications.record_condition", new_callable=AsyncMock, side_effect=mock_record_condition),
         patch("app.integrations.slack_client.post_message", return_value="1700000000.000100"),
+        # Slack is configured once for the ACCOUNT now, not per repo, so
+        # these stub the account-level resolvers rather than a Repo field.
+        patch("app.graphs.bug_council.app_settings.slack_channel_id", return_value="C123TEST"),
     )
 
 
@@ -120,13 +123,13 @@ async def test_bug_raised_notifies_immediately_on_first_occurrence():
     a second occurrence (as an ordinary condition_key would) means this would
     never fire in production, since occurrence_count of a fresh UUID never
     reaches 2 — this is why bug_council.py passes is_escalation=True."""
-    repo = types.SimpleNamespace(id=uuid.uuid4(), github_full_name="acme/demo", thresholds=None, slack_channel_id="C123TEST")
+    repo = types.SimpleNamespace(id=uuid.uuid4(), github_full_name="acme/demo", thresholds=None, default_branch="main")
     db = _FakeDB()
     record_condition_fake = _make_record_condition_fake()
 
     patches = _bug_council_patches(record_condition_fake)
-    with patches[0], patches[1], patches[2], patches[3], patches[4] as mock_azure, patches[5], patches[6] as mock_record_condition, patches[7] as mock_post_message, patch.object(
-        settings, "slack_bot_token", "xoxb-test-token"
+    with patches[0], patches[1], patches[2], patches[3], patches[4] as mock_azure, patches[5], patches[6] as mock_record_condition, patches[7] as mock_post_message, patches[8], patch(
+        "app.graphs.bug_council.app_settings.slack_bot_token", return_value="xoxb-test-token"
     ):
         mock_azure.call_skeptic.return_value = "looks real"
         mock_azure.call_arbiter.return_value = _above_threshold_verdict()
@@ -144,13 +147,13 @@ async def test_bug_raised_empty_slack_token_does_not_crash_the_flow():
     """No live Slack app configured yet (slack_bot_token == '') -- issue
     creation must still succeed without raising, and without a real Slack call
     succeeding (mirrors the approval-flow empty-token test below)."""
-    repo = types.SimpleNamespace(id=uuid.uuid4(), github_full_name="acme/demo", thresholds=None, slack_channel_id="C123TEST")
+    repo = types.SimpleNamespace(id=uuid.uuid4(), github_full_name="acme/demo", thresholds=None, default_branch="main")
     db = _FakeDB()
     record_condition_fake = _make_record_condition_fake()
 
     patches = _bug_council_patches(record_condition_fake)
-    with patches[0], patches[1], patches[2], patches[3], patches[4] as mock_azure, patches[5], patches[6], patches[7] as mock_post_message, patch.object(
-        settings, "slack_bot_token", ""
+    with patches[0], patches[1], patches[2], patches[3], patches[4] as mock_azure, patches[5], patches[6], patches[7] as mock_post_message, patches[8], patch(
+        "app.graphs.bug_council.app_settings.slack_bot_token", return_value=""
     ):
         mock_azure.call_skeptic.return_value = "looks real"
         mock_azure.call_arbiter.return_value = _above_threshold_verdict()
@@ -174,17 +177,29 @@ def _make_issue():
 
 
 def _make_repo(repo_id):
-    return types.SimpleNamespace(id=repo_id, github_full_name="acme/demo", slack_channel_id="C123TEST")
+    return types.SimpleNamespace(id=repo_id, github_full_name="acme/demo", default_branch="main")
 
 
 def _approval_patches(mock_record_condition, sandbox_exit_code):
+    # The verification gates now call THIS issue's category detector rather
+    # than a hardcoded Playwright run, so the stand-in is a detector, not a
+    # sandbox. `failed` is what the flow reads.
+    detector = types.SimpleNamespace(
+        run=lambda *args, **kwargs: types.SimpleNamespace(
+            failed=sandbox_exit_code != 0, assertion_text="post-deploy failed", stderr=""
+        )
+    )
     return (
-        patch("app.graphs.approval_graph.subprocess.run", side_effect=[MagicMock(returncode=0), MagicMock(returncode=0)]),
-        patch("app.graphs.approval_graph.run_in_sandbox", return_value=(sandbox_exit_code, "", "post-deploy failed")),
+        patch(
+            "app.graphs.approval_graph.subprocess.run",
+            side_effect=[MagicMock(returncode=0), MagicMock(returncode=0, stderr="")],
+        ),
+        patch("app.graphs.approval_graph.get_detector", return_value=detector),
         patch("app.integrations.github_client.push_branch"),
         patch("app.integrations.cloudflare_client.deploy_branch", return_value="https://preview.example.com"),
         patch("app.graphs.approval_graph.record_condition", new_callable=AsyncMock, side_effect=mock_record_condition),
         patch("app.integrations.slack_client.post_message", return_value="1700000000.000200"),
+        patch("app.graphs.approval_graph.app_settings.slack_channel_id", return_value="C123TEST"),
     )
 
 
@@ -197,8 +212,8 @@ async def test_verification_failed_notifies_immediately_on_first_occurrence():
     record_condition_fake = _make_record_condition_fake()
 
     patches = _approval_patches(record_condition_fake, sandbox_exit_code=1)
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as mock_post_message, patch.object(
-        settings, "slack_bot_token", "xoxb-test-token"
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as mock_post_message, patches[6], patch(
+        "app.graphs.approval_graph.app_settings.slack_bot_token", return_value="xoxb-test-token"
     ):
         # apply=True: the worker's entry point. The web-facing call now stops at
         # the security seam and queues this half (app/graphs/approval_graph.py),
@@ -219,8 +234,8 @@ async def test_empty_slack_bot_token_does_not_crash_the_flow():
     record_condition_fake = _make_record_condition_fake()
 
     patches = _approval_patches(record_condition_fake, sandbox_exit_code=1)
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as mock_post_message, patch.object(
-        settings, "slack_bot_token", ""
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as mock_post_message, patches[6], patch(
+        "app.graphs.approval_graph.app_settings.slack_bot_token", return_value=""
     ):
         # apply=True: the worker's entry point. The web-facing call now stops at
         # the security seam and queues this half (app/graphs/approval_graph.py),

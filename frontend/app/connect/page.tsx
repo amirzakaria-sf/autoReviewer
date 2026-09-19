@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, type GithubProfile, type GithubRepo } from "@/lib/api";
 
-type ConnectedRepo = { id: string; slack_channel_name: string | null };
+type ConnectedRepo = { id: string };
 
 export default function ConnectPage() {
   const [profile, setProfile] = useState<GithubProfile | null>(null);
@@ -28,7 +28,7 @@ export default function ConnectPage() {
       setRepos(r);
       setConnected(
         Object.fromEntries(
-          connectedRepos.map((c) => [c.github_full_name, { id: c.id, slack_channel_name: c.slack_channel_name }])
+          connectedRepos.map((c) => [c.github_full_name, { id: c.id }])
         )
       );
       setError(null);
@@ -57,8 +57,8 @@ export default function ConnectPage() {
 
       <section className="card p-5">
         <h2 className="font-semibold mb-3">GitHub</h2>
-        {error && <p className="text-sm text-red-400 mb-3">{error}</p>}
-        {oauthError && <p className="text-sm text-red-400 mb-3">GitHub sign-in failed: {oauthError}</p>}
+        {error && <p className="text-sm text-[color:var(--failed)] mb-3">{error}</p>}
+        {oauthError && <p className="text-sm text-[color:var(--failed)] mb-3">GitHub sign-in failed: {oauthError}</p>}
         {profile?.connected ? (
           <div className="flex items-center gap-3">
             {profile.avatar_url && (
@@ -99,20 +99,6 @@ export default function ConnectPage() {
               {repo.connected ? (
                 <div className="flex items-center gap-2">
                   <span className="badge badge-green">Connected</span>
-                  {connected[repo.full_name]?.slack_channel_name ? (
-                    <span className="badge" title="Slack channel this repo posts to">
-                      #{connected[repo.full_name].slack_channel_name}
-                    </span>
-                  ) : (
-                    connected[repo.full_name] && (
-                      <a
-                        href={`/api/slack/oauth/start?repo_id=${connected[repo.full_name].id}`}
-                        className="btn btn-ghost px-3 py-1.5 text-xs"
-                      >
-                        Connect Slack
-                      </a>
-                    )
-                  )}
                   {connected[repo.full_name] && (
                     <a href={`/repos/${connected[repo.full_name].id}/settings`} className="btn btn-ghost px-3 py-1.5 text-xs">
                       Settings

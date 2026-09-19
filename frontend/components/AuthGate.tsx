@@ -7,7 +7,10 @@ import { OnboardingModal } from "./OnboardingModal";
 
 // The marketing landing page ("/"), login, and signup need no session at
 // all -- everything else (the actual dashboard) is gated.
-const PUBLIC_PATHS = ["/", "/login", "/signup", "/accept-invite"];
+// "/join" is here for the same reason as "/accept-invite": the person
+// holding the link has no session yet -- that is the entire point of the
+// link -- and bouncing them to /login loses the token.
+const PUBLIC_PATHS = ["/", "/login", "/signup", "/accept-invite", "/join"];
 
 const SessionContext = createContext<SessionInfo>({ authenticated: false });
 

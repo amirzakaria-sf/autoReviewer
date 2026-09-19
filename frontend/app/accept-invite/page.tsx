@@ -46,7 +46,7 @@ export default function AcceptInvitePage() {
 
   if (checkError) {
     return (
-      <div className="min-h-screen flex items-center justify-center px-4 bg-grid-fade">
+      <div className="auth-shell">
         <div className="w-full max-w-sm card p-7 text-center space-y-3 animate-fade-in">
           <div className="text-3xl">⚠️</div>
           <h1 className="font-semibold">Link not usable</h1>
@@ -58,9 +58,9 @@ export default function AcceptInvitePage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 bg-grid-fade">
-      <form onSubmit={submit} className="w-full max-w-sm card p-7 space-y-5 animate-fade-in">
-        <div className="flex items-center gap-2.5 text-lg font-semibold">
+    <div className="auth-shell">
+      <form onSubmit={submit} className="auth-card card p-7 space-y-5 animate-fade-in">
+        <div className="auth-mark">
           <span className="text-xl">🛡️</span> WhipGuard
         </div>
         {invitee ? (
@@ -100,7 +100,7 @@ export default function AcceptInvitePage() {
           </div>
         </div>
 
-        {submitError && <p className="text-sm text-red-400">{submitError}</p>}
+        {submitError && <p className="auth-error">{submitError}</p>}
 
         <button
           type="submit"

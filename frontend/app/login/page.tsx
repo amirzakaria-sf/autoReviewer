@@ -40,15 +40,15 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 bg-grid-fade">
-      <form onSubmit={submit} className="w-full max-w-sm card p-7 space-y-5 animate-fade-in">
-        <div className="flex items-center gap-2.5 text-lg font-semibold">
+    <div className="auth-shell">
+      <form onSubmit={submit} className="auth-card card p-7 space-y-5 animate-fade-in">
+        <div className="auth-mark">
           <span className="text-xl">🛡️</span> WhipGuard
         </div>
         <p className="text-sm text-lo -mt-3">Sign in to your bug council dashboard.</p>
 
         {notice && (
-          <div className="text-sm bg-accent-dim border border-accent/30 text-accent-soft rounded-lg px-3 py-2.5">
+          <div className="auth-note">
             {notice}
           </div>
         )}
@@ -79,14 +79,14 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {error && <p className="text-sm text-red-400">{error}</p>}
+        {error && <p className="auth-error">{error}</p>}
 
         <button type="submit" disabled={loading || !email || !password} className="btn btn-primary w-full py-2.5 text-sm">
           {loading ? "Signing in…" : "Sign in"}
         </button>
 
         <p className="text-center text-sm text-lo">
-          No account? <a href="/signup" className="text-accent-soft hover:underline">Request access</a>
+          No account? <a href="/signup" className="text-accent hover:underline">Request access</a>
         </p>
       </form>
     </div>

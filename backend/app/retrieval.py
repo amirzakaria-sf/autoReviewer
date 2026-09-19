@@ -2,14 +2,15 @@
 (CodeChunk, IssueEmbedding), backing plan.md §10.3's RetrievalNode alongside
 (not instead of) the one-hop static import scan.
 
-Uses a plain SYNC psycopg connection, not the app's async SQLAlchemy session --
+Uses a POOLED sync psycopg connection (app/sync_db.py), not the app's async
+SQLAlchemy session --
 deliberately: this module's callers are graph NODES (sync functions, run via
 asyncio.to_thread from the async wrappers in bug_council.py/fix_council.py),
 which never carry an AsyncSession into the graph at all (every other DB write
 in this codebase happens in the async wrapper OUTSIDE the graph, not inside a
 node). Threading an AsyncSession into a sync node would need its own event
-loop inside a worker thread; one small sync connection here is far simpler
-and matches how the sandbox/subprocess calls already work in these nodes.
+loop inside a worker thread; a pooled sync connection here is far simpler and
+matches how the sandbox/subprocess calls already work in these nodes.
 """
 
 from __future__ import annotations
@@ -17,9 +18,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import psycopg
-from pgvector.psycopg import register_vector
-
+from app import sync_db
 from app.config import settings
 from app.embeddings import chunk_file, embed_text
 
@@ -35,10 +34,10 @@ def _sync_dsn() -> str:
     return settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
 
 
-def _connect() -> psycopg.Connection:
-    conn = psycopg.connect(_sync_dsn())
-    register_vector(conn)
-    return conn
+def _connect():
+    """pgvector adapters are registered once per pooled connection in
+    app/sync_db.py's configure hook, so this is now just the pool."""
+    return sync_db.connection()
 
 
 def index_repo_files(repo_id, worktree_path: str) -> int:

@@ -4,6 +4,7 @@ import asyncio
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,7 +12,8 @@ from app.config import settings
 from app.db import get_db
 from app.enums import FIX_STATUS_RENDER, ISSUE_STATUS_RENDER, FixStatus, IssueStatus
 from app.graphs.approval_graph import resolve_approval
-from app.models import Fix, Issue, OutcomeCheck, Repo
+from app.deps import current_user, visible_repo_ids
+from app.models import Fix, Issue, OutcomeCheck, Repo, User
 from app.runner import trigger_fix_council
 
 router = APIRouter(prefix="/api")
@@ -29,6 +31,10 @@ def _issue_dict(issue: Issue) -> dict:
         "severity": issue.severity,
         "assurance_score": issue.assurance_score,
         "assurance_rubric": issue.assurance_rubric,
+        "assignee_user_id": str(issue.assignee_user_id) if issue.assignee_user_id else None,
+        # Stored rather than recomputed: routing rules change, and "why did
+        # this reach me" must stay answerable from the record.
+        "assignment_reasoning": issue.assignment_reasoning or [],
         "evidence": issue.evidence,
         "status": issue.status.value,
         "badge": render["dashboard_badge"],
@@ -56,8 +62,35 @@ def _fix_dict(fix: Fix) -> dict:
     }
 
 
+def _guard(repo_id, repo_ids: list[uuid.UUID]) -> None:
+    """404, never 403, for a repository outside the caller's organization.
+
+    403 confirms the id names something real, which tells the caller a
+    repository they may not see exists. A tenancy boundary should not be a
+    lookup service for the other side of it.
+    """
+    if repo_id not in repo_ids:
+        raise HTTPException(404, "repo not found")
+
+
 @router.get("/overview")
-async def overview(db: AsyncSession = Depends(get_db)):
+async def overview(
+    db: AsyncSession = Depends(get_db),
+    repo_ids: list[uuid.UUID] = Depends(visible_repo_ids),
+):
+    """Counts for the caller's own organization.
+
+    Scoped like every other product read (app/deps.py's visible_repo_ids).
+    Unscoped, a member of a brand-new org with no repositories saw twenty
+    findings belonging to somebody else.
+    """
+    if not repo_ids:
+        return {"raised_by_ai": 0, "resolved_and_verified": 0, "awaiting_approval": 0, "failed": 0}
+
+    # Fixes reach their org through their issue, which reaches it through its
+    # repo -- the single source of truth for tenancy (see Organization).
+    mine = select(Issue.id).where(Issue.repo_id.in_(repo_ids))
+
     # "Raised by AI" is cumulative -- every issue that ever cleared the
     # assurance threshold, not just ones currently stuck in the bare RAISED
     # state before a fix got proposed (which undercounted the moment a fix
@@ -66,7 +99,8 @@ async def overview(db: AsyncSession = Depends(get_db)):
     raised = (
         await db.execute(
             select(func.count()).select_from(Issue).where(
-                Issue.status.in_([IssueStatus.RAISED, IssueStatus.FIX_PROPOSED, IssueStatus.CLOSED])
+                Issue.repo_id.in_(repo_ids),
+                Issue.status.in_([IssueStatus.RAISED, IssueStatus.FIX_PROPOSED, IssueStatus.CLOSED]),
             )
         )
     ).scalar()
@@ -77,14 +111,23 @@ async def overview(db: AsyncSession = Depends(get_db)):
     # pull_request webhook synced it back.
     verified = (
         await db.execute(
-            select(func.count()).select_from(Fix).where(Fix.status.in_([FixStatus.VERIFIED, FixStatus.MERGED]))
+            select(func.count()).select_from(Fix).where(
+                Fix.issue_id.in_(mine), Fix.status.in_([FixStatus.VERIFIED, FixStatus.MERGED])
+            )
         )
     ).scalar()
-    awaiting = (await db.execute(select(func.count()).select_from(Fix).where(Fix.status == FixStatus.AWAITING_APPROVAL))).scalar()
+    awaiting = (
+        await db.execute(
+            select(func.count()).select_from(Fix).where(
+                Fix.issue_id.in_(mine), Fix.status == FixStatus.AWAITING_APPROVAL
+            )
+        )
+    ).scalar()
     failed = (
         await db.execute(
             select(func.count()).select_from(Fix).where(
-                Fix.status.in_([FixStatus.VERIFICATION_FAILED, FixStatus.OUTCOME_CHECK_FAILED])
+                Fix.issue_id.in_(mine),
+                Fix.status.in_([FixStatus.VERIFICATION_FAILED, FixStatus.OUTCOME_CHECK_FAILED]),
             )
         )
     ).scalar()
@@ -97,8 +140,13 @@ async def overview(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/repos")
-async def list_repos(db: AsyncSession = Depends(get_db)):
-    repos = (await db.execute(select(Repo))).scalars().all()
+async def list_repos(
+    db: AsyncSession = Depends(get_db),
+    repo_ids: list[uuid.UUID] = Depends(visible_repo_ids),
+):
+    if not repo_ids:
+        return []
+    repos = (await db.execute(select(Repo).where(Repo.id.in_(repo_ids)))).scalars().all()
     return [
         {
             "id": str(r.id),
@@ -106,16 +154,20 @@ async def list_repos(db: AsyncSession = Depends(get_db)):
             "default_branch": r.default_branch,
             "detection_paused": r.detection_paused,
             "proposals_paused": r.proposals_paused,
-            "slack_channel_name": r.slack_channel_name,
         }
         for r in repos
     ]
 
 
 @router.get("/repos/{repo_id}/settings")
-async def get_repo_settings(repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_repo_settings(
+    repo_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    repo_ids: list[uuid.UUID] = Depends(visible_repo_ids),
+):
     from app.categories import CATEGORY_REGISTRY
 
+    _guard(repo_id, repo_ids)
     repo = await db.get(Repo, repo_id)
     if not repo:
         raise HTTPException(404, "repo not found")
@@ -141,16 +193,20 @@ async def get_repo_settings(repo_id: uuid.UUID, db: AsyncSession = Depends(get_d
         "ask_mode": repo.ask_mode,
         "detection_paused": repo.detection_paused,
         "proposals_paused": repo.proposals_paused,
-        "slack_channel_id": repo.slack_channel_id,
-        "slack_channel_name": repo.slack_channel_name,
         "categories": categories,
     }
 
 
 @router.patch("/repos/{repo_id}/settings")
-async def update_repo_settings(repo_id: uuid.UUID, body: dict, db: AsyncSession = Depends(get_db)):
+async def update_repo_settings(
+    repo_id: uuid.UUID,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    repo_ids: list[uuid.UUID] = Depends(visible_repo_ids),
+):
     from app.categories import CATEGORY_REGISTRY
 
+    _guard(repo_id, repo_ids)
     repo = await db.get(Repo, repo_id)
     if not repo:
         raise HTTPException(404, "repo not found")
@@ -205,8 +261,14 @@ async def update_repo_settings(repo_id: uuid.UUID, body: dict, db: AsyncSession 
 
 
 @router.get("/issues")
-async def list_issues(status: str | None = None, db: AsyncSession = Depends(get_db)):
-    stmt = select(Issue).order_by(Issue.created_at.desc())
+async def list_issues(
+    status: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    repo_ids: list[uuid.UUID] = Depends(visible_repo_ids),
+):
+    if not repo_ids:
+        return []
+    stmt = select(Issue).where(Issue.repo_id.in_(repo_ids)).order_by(Issue.created_at.desc())
     if status:
         stmt = stmt.where(Issue.status == status)
     issues = (await db.execute(stmt)).scalars().all()
@@ -233,9 +295,17 @@ async def _outcome_check_dict(db: AsyncSession, fix_id) -> dict | None:
 
 
 @router.get("/issues/{issue_id}")
-async def get_issue(issue_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_issue(
+    issue_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    repo_ids: list[uuid.UUID] = Depends(visible_repo_ids),
+):
     issue = await db.get(Issue, issue_id)
     if not issue:
+        raise HTTPException(404, "issue not found")
+    # An issue reaches its org through its repo. Reported as a missing issue
+    # rather than a forbidden one, for the reason _guard explains.
+    if issue.repo_id not in repo_ids:
         raise HTTPException(404, "issue not found")
     fixes = (await db.execute(select(Fix).where(Fix.issue_id == issue_id).order_by(Fix.created_at.desc()))).scalars().all()
     fix_dicts = []
@@ -267,9 +337,32 @@ async def get_issue(issue_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     }
 
 
+async def _fix_in_scope(db, fix_id, repo_ids: list[uuid.UUID]) -> Fix:
+    """A fix the caller's organization owns, or a 404.
+
+    Guards the DECISION endpoints as well as the reads: approving or
+    rejecting another org's fix would push a branch and deploy code that has
+    nothing to do with the person clicking.
+    """
+    fix = await db.get(Fix, fix_id)
+    if fix is None:
+        raise HTTPException(404, "fix not found")
+    issue = await db.get(Issue, fix.issue_id)
+    if issue is None or issue.repo_id not in repo_ids:
+        raise HTTPException(404, "fix not found")
+    return fix
+
+
 @router.get("/fixes")
-async def list_fixes(status: str | None = None, db: AsyncSession = Depends(get_db)):
-    stmt = select(Fix).order_by(Fix.created_at.desc())
+async def list_fixes(
+    status: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    repo_ids: list[uuid.UUID] = Depends(visible_repo_ids),
+):
+    if not repo_ids:
+        return []
+    mine = select(Issue.id).where(Issue.repo_id.in_(repo_ids))
+    stmt = select(Fix).where(Fix.issue_id.in_(mine)).order_by(Fix.created_at.desc())
     if status:
         stmt = stmt.where(Fix.status == status)
     fixes = (await db.execute(stmt)).scalars().all()
@@ -277,33 +370,70 @@ async def list_fixes(status: str | None = None, db: AsyncSession = Depends(get_d
 
 
 @router.get("/fixes/{fix_id}")
-async def get_fix(fix_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    fix = await db.get(Fix, fix_id)
-    if not fix:
-        raise HTTPException(404, "fix not found")
-    return _fix_dict(fix)
+async def get_fix(
+    fix_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    repo_ids: list[uuid.UUID] = Depends(visible_repo_ids),
+):
+    return _fix_dict(await _fix_in_scope(db, fix_id, repo_ids))
+
+
+class DecisionIn(BaseModel):
+    """Why. Optional on an approval, and the whole point of a rejection --
+    it is what a later attempt on this issue reads back before proposing
+    anything (app/context_broker.py)."""
+
+    note: str = Field(default="", max_length=4000)
 
 
 @router.post("/fixes/{fix_id}/approve")
-async def approve_fix(fix_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    result = await resolve_approval(db, fix_id, approved=True, actor="dashboard-user", surface="dashboard")
-    return result
+async def approve_fix(
+    fix_id: uuid.UUID,
+    body: DecisionIn | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+    repo_ids: list[uuid.UUID] = Depends(visible_repo_ids),
+):
+    await _fix_in_scope(db, fix_id, repo_ids)
+    return await resolve_approval(
+        db, fix_id, approved=True, actor=user.email, surface="dashboard",
+        note=(body.note if body else ""),
+    )
 
 
 @router.post("/fixes/{fix_id}/reject")
-async def reject_fix(fix_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    result = await resolve_approval(db, fix_id, approved=False, actor="dashboard-user", surface="dashboard")
-    return result
+async def reject_fix(
+    fix_id: uuid.UUID,
+    body: DecisionIn | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+    repo_ids: list[uuid.UUID] = Depends(visible_repo_ids),
+):
+    await _fix_in_scope(db, fix_id, repo_ids)
+    return await resolve_approval(
+        db, fix_id, approved=False, actor=user.email, surface="dashboard",
+        note=(body.note if body else ""),
+    )
 
 
 @router.post("/repos/{repo_id}/scan")
-async def scan_repo(repo_id: uuid.UUID, category: str | None = None, db: AsyncSession = Depends(get_db)):
+async def scan_repo(
+    repo_id: uuid.UUID,
+    category: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    repo_ids: list[uuid.UUID] = Depends(visible_repo_ids),
+):
     """Manual trigger for the Bug Council — fans out one independent task per
     enabled category (plan.md §10.1's RepoWatchGraph fan-out), fire-and-forget
     so several categories (and several repos) run concurrently, never queued
     one at a time (plan.md §15). Pass `category` to scan just one."""
     from app.categories import enabled_categories_for
     from app.graphs.bug_council import run_and_persist
+
+    # Scanning clones and executes repository code. Doing that for another
+    # organization's repo, on their bill, is not a read the boundary can be
+    # lax about.
+    _guard(repo_id, repo_ids)
 
     repo = await db.get(Repo, repo_id)
     if not repo:
@@ -323,12 +453,16 @@ async def scan_repo(repo_id: uuid.UUID, category: str | None = None, db: AsyncSe
 
 
 @router.post("/issues/{issue_id}/trigger-fix")
-async def trigger_fix(issue_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def trigger_fix(
+    issue_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    repo_ids: list[uuid.UUID] = Depends(visible_repo_ids),
+):
     """Fires the Fix Council for ANY issue, regardless of whether WhipGuard's own
     Bug Council raised it (plan.md §15's origin=filed-externally path, exposed
     here as a manual button too)."""
     issue = await db.get(Issue, issue_id)
-    if not issue:
+    if not issue or issue.repo_id not in repo_ids:
         raise HTTPException(404, "issue not found")
 
     from app.work_queue import enqueue

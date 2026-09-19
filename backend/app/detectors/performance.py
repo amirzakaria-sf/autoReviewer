@@ -18,12 +18,23 @@ _SKIP_DIRS = {"node_modules", ".git", "tests", "test-results", "playwright-repor
 
 
 class PerformanceDetector:
-    def run(self, worktree_path: str) -> DetectionResult:
+    def run(self, worktree_path: str, path_scope: str = "", base_url: str = "") -> DetectionResult:
+        # base_url is accepted for interface parity and ignored: this check
+        # reads source, so there is nothing at a deployed url for it to visit.
+        # Saying so beats silently accepting a url and doing nothing with it.
+        _ = base_url
         root = Path(worktree_path)
+        # A scoped run walks one subtree. Resolved against the worktree so
+        # a caller cannot point it outside.
+        scoped_root = root
+        if path_scope:
+            candidate = (root / path_scope).resolve()
+            if str(candidate).startswith(str(root.resolve())) and candidate.exists():
+                scoped_root = candidate
         total_bytes = 0
         files: list[tuple[str, int]] = []
 
-        for path in root.rglob("*"):
+        for path in scoped_root.rglob("*"):
             if not path.is_file() or path.suffix not in _INDEXABLE_SUFFIXES:
                 continue
             if any(part in _SKIP_DIRS for part in path.parts):

@@ -199,7 +199,7 @@ export default function OverviewPage() {
                 <th className="px-3.5 py-2.5 section-label">Title</th>
                 <th className="px-3.5 py-2.5 section-label">Origin</th>
                 <th className="px-3.5 py-2.5 section-label">Category</th>
-                <th className="px-3.5 py-2.5 section-label">Score</th>
+                <th className="px-3.5 py-2.5 section-label">Assurance</th>
                 <th className="px-3.5 py-2.5 section-label">Status</th>
                 <th className="px-3.5 py-2.5"></th>
               </tr>

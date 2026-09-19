@@ -1,12 +1,14 @@
 "use client";
 
-/* The assurance/resolution score is the single most important number this
-   product produces, and it was previously rendered as plain text next to a
-   threshold the reader had to compare by hand.
+/* Assurance and resolution CONFIDENCE -- a rubric-weighted 0-100 measure an
+   Arbiter assigns, not a raw count of anything, which is why it is named for
+   what it expresses rather than called a bare "score".
 
-   The ring draws the comparison instead: the arc is the score, the notch is
-   the threshold that decides whether anything happens, and the colour is
-   derived from which side of that line the score fell on -- so "did this
+   The single most important number this product produces, and it was once
+   rendered as plain text next to a threshold the reader had to compare by
+   hand. The ring draws the comparison instead: the arc is the value, the
+   notch is the threshold that decides whether anything happens, and the
+   colour is derived from which side of that line it fell on -- so "did this
    clear the bar" is answered before any number is read. */
 
 type Props = {
@@ -68,7 +70,14 @@ export function ScoreRing({ score, threshold, size = 72, label }: Props) {
           </span>
         </div>
       </div>
-      {label && <span className="section-label">{label}</span>}
+      {label && (
+        // Wraps to two lines under the ring rather than widening the row it
+        // sits in -- "resolution confidence" is a long label next to a 60px
+        // circle.
+        <span className="section-label text-center leading-tight" style={{ maxWidth: size + 16 }}>
+          {label}
+        </span>
+      )}
     </div>
   );
 }

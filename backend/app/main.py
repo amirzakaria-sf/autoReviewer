@@ -12,7 +12,8 @@ from app.config import settings
 from app.db import Base, async_session, engine
 from app.enums import UserRole, UserStatus
 from app.models import User
-from app.routers import admin, api, auth, email_actions, github, human_input, me, slack_connect, webhooks, ws
+from app.routers import admin, api, auth, counsel, org, email_actions, fix_review, github, human_input, me, slack_connect, webhooks, ws
+from app.schema_sync import sync_additive_columns, sync_enum_labels
 from app.security import decode_access_token, hash_password
 
 logger = logging.getLogger("whipguard.main")
@@ -57,6 +58,10 @@ async def _seed_bootstrap_admin() -> None:
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # create_all adds missing TABLES but never a missing COLUMN on a
+        # table that already exists -- see app/schema_sync.py.
+        await sync_enum_labels(conn)
+        await sync_additive_columns(conn)
     await _seed_bootstrap_admin()
     ws.set_main_loop(asyncio.get_running_loop())
     # The poller, sweeper and calibration loop moved to the privileged worker
@@ -102,9 +107,12 @@ app.add_middleware(
 app.include_router(admin.router)
 app.include_router(auth.router)
 app.include_router(api.router)
+app.include_router(counsel.router)
+app.include_router(org.router)
 app.include_router(email_actions.router)
 app.include_router(github.router)
 app.include_router(human_input.router)
+app.include_router(fix_review.router)
 app.include_router(me.router)
 app.include_router(slack_connect.router)
 app.include_router(webhooks.router)

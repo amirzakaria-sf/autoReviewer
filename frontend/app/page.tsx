@@ -36,12 +36,12 @@ const PIPELINE = [
 ];
 
 const CATEGORIES = [
-  { label: "UI", icon: "🖥️", ring: "ring-blue-500/30", dot: "bg-blue-400", detail: "Playwright-driven behavioral checks against the running app." },
-  { label: "Backend", icon: "⚙️", ring: "ring-violet-500/30", dot: "bg-violet-400", detail: "node --test / pytest runs catch logic bugs at the source." },
-  { label: "Security", icon: "🔒", ring: "ring-red-500/30", dot: "bg-red-400", detail: "Secret scanning — API keys, credentials, private key blocks." },
-  { label: "Performance", icon: "⚡", ring: "ring-yellow-500/30", dot: "bg-yellow-400", detail: "Bundle-size budget enforcement on every change." },
-  { label: "Accessibility", icon: "♿", ring: "ring-emerald-500/30", dot: "bg-emerald-400", detail: "axe-core WCAG checks — contrast, labels, ARIA." },
-  { label: "Documentation", icon: "📝", ring: "ring-cyan-500/30", dot: "bg-cyan-400", detail: "Flags README references to functions that no longer exist." },
+  { label: "UI", icon: "🖥️", ring: "rgba(167,139,250,0.3)", dot: "bg-[color:var(--pending)]", detail: "Playwright-driven behavioral checks against the running app." },
+  { label: "Backend", icon: "⚙️", ring: "rgba(167,139,250,0.3)", dot: "bg-[color:var(--pending)]", detail: "node --test / pytest runs catch logic bugs at the source." },
+  { label: "Security", icon: "🔒", ring: "rgba(255,95,86,0.3)", dot: "bg-[color:var(--failed)]", detail: "Secret scanning — API keys, credentials, private key blocks." },
+  { label: "Performance", icon: "⚡", ring: "rgba(255,178,36,0.3)", dot: "bg-[color:var(--amber)]", detail: "Bundle-size budget enforcement on every change." },
+  { label: "Accessibility", icon: "♿", ring: "rgba(47,212,143,0.3)", dot: "bg-[color:var(--verified)]", detail: "axe-core WCAG checks — contrast, labels, ARIA." },
+  { label: "Documentation", icon: "📝", ring: "rgba(169,166,161,0.3)", dot: "bg-[color:var(--text-mid)]", detail: "Flags README references to functions that no longer exist." },
 ];
 
 type Health = "checking" | "up" | "down";
@@ -63,19 +63,19 @@ export default function LandingPage() {
     <div className="min-h-screen relative overflow-hidden">
       {/* Ambient glow orbs -- fixed, behind everything, decorative only */}
       <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-        <div className="absolute -top-32 left-1/4 w-[36rem] h-[36rem] rounded-full bg-accent/10 blur-3xl" />
-        <div className="absolute top-1/3 -right-40 w-[28rem] h-[28rem] rounded-full bg-violet-500/10 blur-3xl" />
-        <div className="absolute bottom-0 left-1/3 w-[24rem] h-[24rem] rounded-full bg-emerald-500/5 blur-3xl" />
+        <div className="absolute -top-32 left-1/4 w-[36rem] h-[36rem] rounded-full bg-[rgba(255,178,36,0.1)] blur-3xl" />
+        <div className="absolute top-1/3 -right-40 w-[28rem] h-[28rem] rounded-full bg-[rgba(167,139,250,0.08)] blur-3xl" />
+        <div className="absolute bottom-0 left-1/3 w-[24rem] h-[24rem] rounded-full bg-[rgba(47,212,143,0.06)] blur-3xl" />
       </div>
 
-      <nav className="border-b border-border bg-panel/60 backdrop-blur-md sticky top-0 z-10">
+      <nav className="border-b border-border bg-[color:var(--ink-800)] backdrop-blur-md sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
           <span className="flex items-center gap-2 font-semibold tracking-tight">
             <span className="text-lg">🛡️</span> WhipGuard
           </span>
           <div className="flex items-center gap-3 text-sm">
             <span className={`badge hidden sm:inline-flex ${health === "up" ? "badge-green" : health === "down" ? "badge-red" : "badge-gray"}`}>
-              <span className={`dot ${health === "up" ? "bg-green-400 animate-pulse-dot" : health === "down" ? "bg-red-400" : "bg-gray-400"}`} />
+              <span className={`dot ${health === "up" ? "bg-[color:var(--verified)] animate-pulse-dot" : health === "down" ? "bg-[color:var(--failed)]" : "bg-[color:var(--ink-600)]"}`} />
               {health === "checking" ? "checking…" : health === "up" ? "council running" : "unreachable"}
             </span>
             <a href="/signup" className="text-mid hover:text-hi transition hidden sm:inline">Request access</a>
@@ -145,7 +145,14 @@ export default function LandingPage() {
         </div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {CATEGORIES.map((c) => (
-            <div key={c.label} className={`card card-hover p-4 ring-1 ${c.ring}`}>
+            <div
+              key={c.label}
+              className="card card-hover p-4"
+              // A colour rather than a class: these follow the palette
+              // tokens now, and Tailwind cannot build a ring utility from a
+              // runtime value.
+              style={{ boxShadow: `inset 0 0 0 1px ${c.ring}` }}
+            >
               <div className="flex items-center gap-2.5 mb-1.5">
                 <span className="text-base">{c.icon}</span>
                 <span className="font-semibold text-sm">{c.label}</span>
@@ -190,7 +197,7 @@ export default function LandingPage() {
           </div>
           <div className="card p-5">
             <div className="text-2xl mb-3">📊</div>
-            <div className="font-semibold text-white mb-1.5">Every score, traceable</div>
+            <div className="font-semibold text-white mb-1.5">Every confidence score, traceable</div>
             <p className="text-sm text-mid leading-relaxed">
               Real token counts, latency, and cost tracked per model call — never a number on
               the dashboard nobody can trace back to a reason.

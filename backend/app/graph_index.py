@@ -14,7 +14,7 @@ from pathlib import Path
 
 import psycopg
 
-from app.retrieval import _sync_dsn
+from app import sync_db
 
 logger = logging.getLogger("whipguard.graph_index")
 
@@ -65,7 +65,7 @@ def index_repo_symbols(repo_id, worktree_path: str) -> int:
     name_to_id: dict[str, str] = {}
     symbol_count = 0
 
-    with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+    with sync_db.connection() as conn, conn.cursor() as cur:
         for relative, symbol in all_symbols:
             cur.execute(
                 """
@@ -111,7 +111,7 @@ def find_symbols(repo_id, term: str, limit: int = 5) -> list[dict]:
     """Locate a named symbol. Exact matches first, then prefix -- an exact
     identifier is the highest-signal thing a query can contain, so a partial
     match must never outrank one."""
-    with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+    with sync_db.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT name, path, kind, line_start
@@ -136,7 +136,7 @@ def symbol_blast_radius(repo_id, symbol_name: str, max_depth: int = 2) -> list[d
     and `cycle` handling is mandatory here rather than defensive: real call
     graphs have cycles, and without it this never terminates.
     """
-    with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+    with sync_db.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
             WITH RECURSIVE seed AS (
@@ -166,7 +166,7 @@ def symbol_blast_radius(repo_id, symbol_name: str, max_depth: int = 2) -> list[d
 def find_dependents(repo_id, symbol_name: str) -> list[dict]:
     """"What depends on this symbol, so I know what I might break?" -- the
     one query this graph exists to answer (plan.md §5.3)."""
-    with psycopg.connect(_sync_dsn()) as conn, conn.cursor() as cur:
+    with sync_db.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT s_from.name, s_from.path, s_from.line_start, e.kind

@@ -12,6 +12,8 @@ request headers elsewhere can't leak the long-lived credential).
 
 from __future__ import annotations
 
+import asyncio
+
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -20,8 +22,9 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
 
 from app.config import settings
+from app import orgs
 from app.db import async_session
-from app.enums import AccessRequestStatus, UserRole, UserStatus
+from app.enums import AccessRequestStatus, OrgRole, Seniority, UserRole, UserStatus
 from app.integrations import email_client
 from app.models import AccessRequest, RefreshToken, User
 from app.security import (
@@ -233,6 +236,77 @@ async def complete_invite(request: Request, response: Response):
         db.add(user)
         access_request.invite_consumed_at = datetime.now(timezone.utc)
         await db.flush()
+
+        if access_request.org_id is not None:
+            # Committed before the membership insert: orgs.add_member runs on a
+            # separate synchronous connection and cannot see a row this session
+            # has not committed.
+            await db.commit()
+            await db.refresh(user)
+            await asyncio.to_thread(
+                orgs.add_member,
+                org_id=access_request.org_id,
+                user_id=user.id,
+                role=OrgRole.MEMBER,
+                seniority=Seniority.SDE2,
+            )
+
+        await _issue_session(db, response, user, request.headers.get("user-agent"))
+        return {"ok": True, "role": user.role.value}
+
+
+@router.get("/org-invite")
+async def check_org_invite(token: str):
+    """What the /join page shows before asking for anything.
+
+    Names the organization and whether an account already exists for this
+    address, so the page can ask for a password or simply say "join" rather
+    than guessing.
+    """
+    from app import org_invites
+    from app.models import Organization
+
+    async with async_session() as db:
+        try:
+            invite = await org_invites.load_pending(db, token)
+        except org_invites.InviteError as error:
+            raise HTTPException(400, str(error)) from error
+
+        org = await db.get(Organization, invite.org_id)
+        existing = (await db.execute(select(User).where(User.email == invite.email))).scalars().first()
+        return {
+            "email": invite.email,
+            "name": invite.name,
+            "org_name": org.name if org else "your organization",
+            "role": invite.role.value,
+            "seniority": invite.seniority.value,
+            # The page asks for a password only when there is no account yet.
+            "needs_password": existing is None,
+        }
+
+
+@router.post("/accept-org-invite")
+async def accept_org_invite(request: Request, response: Response):
+    """Join an organization, creating the account first if there is not one.
+
+    Ends with a live session, so accepting an invitation lands the person
+    inside the product rather than back at a login form -- the step where
+    most invite flows quietly lose people.
+    """
+    from app import org_invites
+
+    body = await request.json()
+    token = str(body.get("token", ""))
+    password = str(body.get("password", ""))
+
+    async with async_session() as db:
+        try:
+            invite = await org_invites.load_pending(db, token)
+            user = await org_invites.accept(db, invite=invite, password=password)
+        except org_invites.InviteError as error:
+            raise HTTPException(400, str(error)) from error
+
+        user.last_login_at = datetime.now(timezone.utc)
         await _issue_session(db, response, user, request.headers.get("user-agent"))
         return {"ok": True, "role": user.role.value}
 

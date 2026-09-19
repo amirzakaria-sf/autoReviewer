@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import text
 
 from app.db import async_session
-from app.work_queue import KINDS, claim_next, connect, enqueue, finish, requeue_stale
+from app.work_queue import KINDS, claim_next, connection, enqueue, finish, requeue_stale
 
 
 # A kind no worker has a handler for, so `claim_next(kinds=list(HANDLERS))`
@@ -68,29 +68,22 @@ async def test_two_workers_never_claim_the_same_item():
     already taken -- the same fix would be applied twice."""
     await _enqueue_test_item()
 
-    first, second = connect(), connect()
-    try:
+    with connection() as first, connection() as second:
         claimed_a = claim_next(first, kinds=[TEST_KIND])
         claimed_b = claim_next(second, kinds=[TEST_KIND])
         assert claimed_a is not None
         assert claimed_b is None or claimed_b["id"] != claimed_a["id"]
         finish(first, claimed_a["id"])
-    finally:
-        first.close()
-        second.close()
 
 
 async def test_finish_records_a_result_that_survives_the_process_boundary():
     await _enqueue_test_item()
-    conn = connect()
-    try:
+    with connection() as conn:
         item = claim_next(conn, kinds=[TEST_KIND])
         finish(conn, item["id"], result={"passed": 3})
         with conn.cursor() as cur:
             cur.execute("SELECT status, result FROM work_items WHERE id = %s", (item["id"],))
             status, result = cur.fetchone()
-    finally:
-        conn.close()
     assert status == "done"
     assert result == {"passed": 3}
 
@@ -100,8 +93,7 @@ async def test_a_crashed_workers_item_is_returned_to_the_queue():
     nothing else will ever pick it up -- the queue would silently lose the
     work rather than retry it."""
     await _enqueue_test_item()
-    conn = connect()
-    try:
+    with connection() as conn:
         item = claim_next(conn, kinds=[TEST_KIND])
         with conn.cursor() as cur:
             cur.execute("UPDATE work_items SET claimed_at = now() - interval '2 hours' WHERE id = %s", (item["id"],))
@@ -111,14 +103,11 @@ async def test_a_crashed_workers_item_is_returned_to_the_queue():
         reclaimed = claim_next(conn, kinds=[TEST_KIND])
         assert reclaimed is not None and reclaimed["id"] == item["id"]
         finish(conn, item["id"])
-    finally:
-        conn.close()
 
 
 async def test_a_poisonous_item_is_failed_rather_than_cycled_forever():
     await _enqueue_test_item()
-    conn = connect()
-    try:
+    with connection() as conn:
         item = claim_next(conn, kinds=[TEST_KIND])
         with conn.cursor() as cur:
             cur.execute(
@@ -130,5 +119,3 @@ async def test_a_poisonous_item_is_failed_rather_than_cycled_forever():
         with conn.cursor() as cur:
             cur.execute("SELECT status FROM work_items WHERE id = %s", (item["id"],))
             assert cur.fetchone()[0] == "failed"
-    finally:
-        conn.close()

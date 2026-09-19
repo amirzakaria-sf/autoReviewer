@@ -133,7 +133,7 @@ def build_fix_proposed_email(issue_title: str, category: str, score: int, pr_url
     <div style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto">
       <h2 style="margin-bottom:4px">Fix proposed</h2>
       <p style="color:#555">{issue_title}</p>
-      <p style="color:#555">Category: <b>{category}</b> &middot; Resolution score: <b>{score}/100</b></p>
+      <p style="color:#555">Category: <b>{category}</b> &middot; Resolution confidence: <b>{score}/100</b></p>
       <p><a href="{pr_url}">View the pull request &rarr;</a></p>
       <div style="margin:24px 0">
         <a href="{approve_url}" style="background:#16a34a;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;margin-right:12px">Approve</a>
@@ -144,7 +144,7 @@ def build_fix_proposed_email(issue_title: str, category: str, score: int, pr_url
     """
     text = (
         f"WhipGuard: fix proposed for \"{issue_title}\"\n"
-        f"Category: {category}. Resolution score: {score}/100.\n"
+        f"Category: {category}. Resolution confidence: {score}/100.\n"
         f"PR: {pr_url}\n\nApprove: {approve_url}\nReject: {reject_url}\n"
     )
     return subject, html, text
@@ -178,6 +178,32 @@ def build_invite_email(name: str, invite_token: str) -> tuple[str, str, str]:
     </div>
     """
     text = f"Welcome, {name}\n\nYour access request was approved. Set a password here:\n{accept_url}\n\nSingle-use, expires in 7 days."
+    return subject, html, text
+
+
+def build_org_invite_email(name: str, org_name: str, inviter: str, accept_url: str) -> tuple[str, str, str]:
+    """An invitation to join a team, not an approved access request.
+
+    Says who invited them and to which organization -- an unattributed "set a
+    password" mail from a product nobody signed up for reads as phishing, and
+    is treated accordingly.
+    """
+    subject = f"{inviter} invited you to {org_name} on WhipGuard"
+    html = f"""
+    <div style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto">
+      <h2 style="margin-bottom:4px">Join {org_name}</h2>
+      <p style="color:#555">Hi {name}, <b>{inviter}</b> invited you to the <b>{org_name}</b> organization on
+      WhipGuard, where bugs found in your repositories are reviewed and fixes approved.</p>
+      <div style="margin:24px 0">
+        <a href="{accept_url}" style="background:#ffb224;color:#1a1a1a;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600">Accept the invitation</a>
+      </div>
+      <p style="color:#999;font-size:12px">This link expires in 7 days. If you were not expecting it, ignore this email.</p>
+    </div>
+    """
+    text = (
+        f"Hi {name},\n\n{inviter} invited you to the {org_name} organization on WhipGuard.\n\n"
+        f"Accept here:\n{accept_url}\n\nExpires in 7 days. If you were not expecting this, ignore it."
+    )
     return subject, html, text
 
 

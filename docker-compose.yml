@@ -37,7 +37,7 @@ services:
       # reading "Read-only file system" out of a git fetch, not by assuming
       # the workspace path was right).
       WORKSPACE_ROOT: /srv/workspace
-      WORKSPACE_HOST_PATH: ${PWD}/workspace
+      WORKSPACE_HOST_PATH: ${WORKSPACE_HOST_ROOT:-${PWD}/workspace}
       SANDBOX_UID: "${UID:-1000}"
       SANDBOX_GID: "${GID:-1000}"
       REPO_ROOT: ${PWD}
@@ -55,7 +55,19 @@ services:
       #
       # The workspace stays mounted READ-ONLY: retrieval and the dashboard
       # read worktrees, but nothing on this side writes to them.
-      - ./workspace:/srv/workspace:ro
+      #
+      # WORKSPACE_HOST_ROOT (.env) puts cloned repositories on the dedicated
+      # 100G data disk rather than the 29G root filesystem, which is the same
+      # split the sibling `opencode` deployment uses for its managed
+      # projects. Without it this defaults to ./workspace -- i.e. the root
+      # disk, which had 6.6G free: a handful of connected repos with
+      # node_modules in their fix worktrees is enough to fill it, and a full
+      # root disk takes down every service on the host, not just this one.
+      - ${WORKSPACE_HOST_ROOT:-./workspace}:/srv/workspace:ro
+      # Derived retrieval indexes. Writable even though the workspace is not:
+      # the chat agent runs retrieval in THIS process, and an index it cannot
+      # persist is an index rebuilt on every keystroke-driven question.
+      - whipguard_cache:/srv/cache
 
   # The privileged half (plan.md §15). Same image, different entrypoint: it
   # polls work_items and executes what it finds. No `ports:` on purpose --
@@ -78,7 +90,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://whipguard:whipguard@postgres:5432/whipguard
       WORKSPACE_ROOT: /srv/workspace
-      WORKSPACE_HOST_PATH: ${PWD}/workspace
+      WORKSPACE_HOST_PATH: ${WORKSPACE_HOST_ROOT:-${PWD}/workspace}
       SANDBOX_UID: "${UID:-1000}"
       SANDBOX_GID: "${GID:-1000}"
       REPO_ROOT: ${PWD}
@@ -88,7 +100,10 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./workspace:/srv/workspace
+      - ${WORKSPACE_HOST_ROOT:-./workspace}:/srv/workspace
+      # Same cache the web process reads, so an index built by either side
+      # serves the other rather than each maintaining its own copy.
+      - whipguard_cache:/srv/cache
       # Mounted at its OWN real host path (not translated) on purpose: the
       # redeploy runs `docker compose build/up` from INSIDE this container
       # against the host's dockerd. docker compose hands the daemon each
@@ -114,3 +129,4 @@ services:
 
 volumes:
   whipguard_pg_data:
+  whipguard_cache:

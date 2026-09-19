@@ -65,6 +65,12 @@ class Settings(BaseSettings):
 
     fixture_repo: str = "amirzakaria-sf/whipguard-demo-ui"
 
+    # Where this dashboard is reachable from the outside. Used to build the
+    # review link that Slack and email point at. Several older call sites
+    # still hardcode the same string inline; this is the one that new code
+    # reads, and the place to consolidate them on.
+    public_base_url: str = "https://whip-guard.zakarias.in"
+
     # Where THIS process sees the workspace directory. Defaults to the
     # container layout (docker-compose bind-mounts it at /srv/workspace, since
     # the Dockerfile's WORKDIR is /srv) — override via env for local dev (venv),
@@ -116,6 +122,12 @@ class Settings(BaseSettings):
     # hardcoded to whatever the current model family happens to use.
     prompt_budget_tokens: int = 32000
     prompt_tokenizer_encoding: str = "o200k_base"
+
+    # Where the BM25 index is cached. NOT inside the workspace: the
+    # web-facing process mounts the workspace read-only (plan.md §15), so a
+    # cache under it means every retrieval from the chat agent fails to
+    # persist its index and silently rebuilds on every single query.
+    retrieval_cache_dir: str = "/srv/cache/retrieval"
 
     # Retrieval (app/hybrid_retrieval.py). Disabling falls the councils back
     # to the dense-only path they used before fusion existed.

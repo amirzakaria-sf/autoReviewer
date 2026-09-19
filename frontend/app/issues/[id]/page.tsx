@@ -6,7 +6,7 @@ import { api, type IssueDetail } from "@/lib/api";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ScoreRing } from "@/components/ScoreRing";
 import { RowSkeleton } from "@/components/EmptyState";
-import { useToast } from "@/components/Toast";
+import { FixReviewPanel } from "@/components/FixReviewPanel";
 
 function githubUrl(repo: string | null | undefined, kind: "issues" | "pull", number: number) {
   return repo ? `https://github.com/${repo}/${kind}/${number}` : undefined;
@@ -15,9 +15,7 @@ function githubUrl(repo: string | null | undefined, kind: "issues" | "pull", num
 export default function IssueDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [issue, setIssue] = useState<IssueDetail | null>(null);
-  const [acting, setActing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const toast = useToast();
 
   const refresh = useCallback(async () => {
     try {
@@ -39,34 +37,23 @@ export default function IssueDetailPage({ params }: { params: Promise<{ id: stri
 
   const fix = issue.fixes[0];
 
-  async function act(action: "approve" | "reject") {
-    if (!fix) return;
-    setActing(true);
-    try {
-      await (action === "approve" ? api.approveFix(fix.id) : api.rejectFix(fix.id));
-      toast(action === "approve" ? "success" : "info", action === "approve" ? "Fix approved — applying patch…" : "Fix rejected.");
-      await refresh();
-    } catch {
-      toast("error", `Could not ${action} this fix. Nothing was changed.`);
-    } finally {
-      setActing(false);
-    }
-  }
-
   const evidenceText =
     issue.evidence &&
     String(
       (issue.evidence as Record<string, unknown>).assertion_text ?? JSON.stringify(issue.evidence, null, 2),
     );
 
+  // pb-20 clears the fixed Ask Counsel launcher, which otherwise sits on top
+  // of the last thing on the page -- on a long review thread, the most recent
+  // message.
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="space-y-6 animate-fade-in pb-20">
       <Link href="/dashboard" className="text-xs text-lo hover:text-hi transition">
         ← Overview
       </Link>
 
       <header className="flex items-start gap-5">
-        <ScoreRing score={issue.assurance_score} threshold={issue.assurance_threshold ?? undefined} label="assurance" />
+        <ScoreRing score={issue.assurance_score} threshold={issue.assurance_threshold ?? undefined} label="assurance confidence" />
         <div className="min-w-0 flex-1">
           <h1 className="text-lg font-semibold leading-snug">{issue.title}</h1>
           <div className="mt-2.5 flex flex-wrap items-center gap-2">
@@ -128,57 +115,16 @@ export default function IssueDetailPage({ params }: { params: Promise<{ id: stri
         </section>
       )}
 
-      {fix && (
-        <section className="card p-5 space-y-4">
-          <div className="flex items-start gap-5">
-            <ScoreRing
-              score={fix.resolution_score}
-              threshold={issue.resolution_threshold ?? undefined}
-              size={60}
-              label="resolution"
-            />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="font-semibold text-sm">Proposed fix</h2>
-                <StatusBadge label={fix.badge} color={fix.color} />
-              </div>
-              <p className="text-sm text-mid mt-2 leading-relaxed">
-                {fix.resolution_rubric?.verdict ?? "No verdict recorded."}
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {fix.pr_number && issue.repo_full_name && (
-                  <a className="badge badge-gray hover:text-hi transition" target="_blank" rel="noreferrer"
-                     href={githubUrl(issue.repo_full_name, "pull", fix.pr_number)}>
-                    PR #{fix.pr_number}
-                  </a>
-                )}
-                {fix.preview_url && (
-                  <a className="badge badge-amber hover:opacity-80 transition" target="_blank" rel="noreferrer" href={fix.preview_url}>
-                    Live preview ↗
-                  </a>
-                )}
-                {fix.branch_name && <span className="badge badge-gray num">{fix.branch_name}</span>}
-              </div>
-            </div>
-          </div>
+      {/* The fix, its diff, the review conversation, and the three verbs.
+          Approve/reject/revise all live in here now -- the old inline pair of
+          buttons could only carry a boolean, and a boolean cannot say what to
+          do differently. */}
+      <FixReviewPanel issueId={id} onChanged={refresh} />
 
-          {fix.status === "awaiting-approval" && (
-            <div className="flex gap-3 pt-1">
-              <button disabled={acting} onClick={() => act("approve")} className="btn btn-approve flex-1 px-5 py-2.5">
-                {acting ? "Working…" : "Approve & deploy"}
-              </button>
-              <button disabled={acting} onClick={() => act("reject")} className="btn btn-reject flex-1 px-5 py-2.5">
-                {acting ? "Working…" : "Reject"}
-              </button>
-            </div>
-          )}
-
-          {fix.approved_by && (
-            <p className="text-xs text-lo">
-              Handled by <span className="text-mid">{fix.approved_by}</span> via {fix.approved_via}
-            </p>
-          )}
-        </section>
+      {fix?.approved_by && (
+        <p className="text-xs text-lo">
+          Handled by <span className="text-mid">{fix.approved_by}</span> via {fix.approved_via}
+        </p>
       )}
 
       {fix?.outcome_check && (

@@ -19,7 +19,23 @@ class DetectionResult:
 
 
 class Detector(Protocol):
-    def run(self, worktree_path: str) -> DetectionResult: ...
+    def run(self, worktree_path: str, path_scope: str = "", base_url: str = "") -> DetectionResult:
+        """`path_scope` narrows the check to one subtree, so Counsel can ask
+        "check just the orders service" instead of re-scanning a whole repo.
+
+        `base_url` points a browser-driven check at a DEPLOYED url instead of
+        the local dev server -- the post-deploy oracle's whole purpose, since
+        "it passes in a sandbox" and "it passes on the thing users will hit"
+        are different claims. Ignored by the static scanners, which read source
+        and have no url to visit.
+
+        Optional, and deliberately NOT honoured by every detector: the static
+        scanners filter the files they walk, but a Playwright suite is
+        addressed by test name rather than by source path, and silently
+        pretending to scope one would be worse than saying so. A detector
+        that ignores the scope reports that it did.
+        """
+        ...
 
 
 @dataclass(frozen=True)

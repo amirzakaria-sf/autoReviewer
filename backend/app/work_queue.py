@@ -21,7 +21,7 @@ import uuid
 
 import psycopg
 
-from app.retrieval import _sync_dsn
+from app import sync_db
 
 logger = logging.getLogger("whipguard.work_queue")
 
@@ -31,7 +31,14 @@ WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 # time rather than discovered at claim time, so a typo surfaces in the
 # request that caused it instead of in a background loop an hour later.
 KINDS = frozenset(
-    {"scan_repo", "fix_council", "resume_human_input", "apply_approval", "reindex_repo", "redeploy", "run_eval"}
+    {
+        "scan_repo", "fix_council", "resume_human_input", "apply_approval",
+        "reindex_repo", "redeploy", "run_eval", "counsel_prd",
+        "counsel_investigate",
+        # A human asked for a different approach: re-run the Fix Council with
+        # everything they have said about this issue so far.
+        "revise_fix",
+    }
 )
 
 
@@ -55,6 +62,30 @@ async def enqueue(kind: str, payload: dict) -> uuid.UUID:
         )
         await db.commit()
     logger.info("enqueued %s (%s)", kind, item_id)
+    return item_id
+
+
+def enqueue_sync(kind: str, payload: dict) -> uuid.UUID:
+    """Synchronous enqueue, for callers with no event loop of their own.
+
+    Counsel's tools run on a thread pulled from the executor, where there is
+    no running loop -- and spinning one up with asyncio.run() does not work
+    either, because the async engine's connections belong to the MAIN loop
+    and are unusable from another one. A plain psycopg insert sidesteps the
+    whole question.
+    """
+    if kind not in KINDS:
+        raise ValueError(f"unknown work kind: {kind}")
+
+    item_id = uuid.uuid4()
+    with sync_db.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO work_items (id, kind, payload, status, attempts, created_at) "
+            "VALUES (%s, %s, %s::jsonb, 'queued', 0, now())",
+            (str(item_id), kind, json.dumps(payload)),
+        )
+        conn.commit()
+    logger.info("enqueued %s (%s) [sync]", kind, item_id)
     return item_id
 
 
@@ -130,5 +161,11 @@ def requeue_stale(conn: psycopg.Connection, *, older_than_minutes: int = 30, max
     return count
 
 
-def connect() -> psycopg.Connection:
-    return psycopg.connect(_sync_dsn())
+def connection():
+    """Borrow a pooled connection.
+
+    A context manager, not a bare connection: the pool needs the borrow
+    returned, and `with` is the only way to guarantee that on every path
+    including an exception.
+    """
+    return sync_db.connection()

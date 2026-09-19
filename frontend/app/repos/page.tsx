@@ -34,7 +34,7 @@ export default function ReposPage() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold">Repositories</h1>
-          <p className="text-xs text-lo mt-0.5">Everything WhipGuard watches, and where each one reports.</p>
+          <p className="text-xs text-lo mt-0.5">Everything WhipGuard watches. Slack notifications for all of them go to the one channel set on your profile.</p>
         </div>
         <Link href="/connect" className="btn btn-primary px-4 py-2">
           Connect a repo
@@ -69,13 +69,6 @@ export default function ReposPage() {
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   <span className="badge badge-gray num">{repo.default_branch}</span>
-                  {repo.slack_channel_name ? (
-                    <span className="badge badge-green">#{repo.slack_channel_name}</span>
-                  ) : (
-                    <a href={`/api/slack/oauth/start?repo_id=${repo.id}`} className="badge badge-gray hover:text-hi transition">
-                      Connect Slack
-                    </a>
-                  )}
                   {repo.detection_paused && <span className="badge badge-amber">Detection paused</span>}
                   {repo.proposals_paused && <span className="badge badge-amber">Proposals paused</span>}
                 </div>

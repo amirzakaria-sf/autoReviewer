@@ -14,6 +14,8 @@ same field dynamically, so nothing else needed to change.
 
 from __future__ import annotations
 
+import uuid
+
 import re
 from pathlib import Path
 
@@ -152,18 +154,48 @@ async def list_repos():
 
 @router.post("/connect")
 async def connect_repo(body: dict, request: Request):
+    """Connect a repository to the caller's organization.
+
+    `repos.org_id` is the one column carrying tenancy -- issues, fixes, traces
+    and chunks all reach their org through their repo -- and nothing set it
+    until now, so every repository connected through the product was orphaned
+    from the org that owned it. Assignment routing, per-org Slack and the
+    on-disk workspace layout all read it.
+
+    Taken from the connector rather than asked for: one person belongs to one
+    organization today, so there is nothing to choose between.
+    """
+    import asyncio
+
+    from app import orgs
+
     full_name = body.get("full_name")
     if not full_name:
         raise HTTPException(400, "full_name is required")
+
+    user_id = current_user_id(request)
+    memberships = await asyncio.to_thread(orgs.orgs_for_user, user_id)
+    if not memberships:
+        raise HTTPException(
+            409,
+            "You are not in an organization yet, and a repository has to belong to one. "
+            "Ask a system admin to add you to one first.",
+        )
+    org_id = memberships[0]["id"]
 
     async with async_session() as db:
         existing = (
             await db.execute(select(Repo).where(Repo.github_full_name == full_name))
         ).scalars().first()
         if existing:
+            # An older repo connected before tenancy was wired has no org at
+            # all. Adopt it rather than leaving it permanently invisible to
+            # every org-scoped query.
+            if existing.org_id is None:
+                await asyncio.to_thread(orgs.assign_repo, existing.id, org_id)
             return {"ok": True, "repo_id": str(existing.id), "already_connected": True}
 
-        repo = Repo(github_full_name=full_name, owner_user_id=current_user_id(request))
+        repo = Repo(github_full_name=full_name, owner_user_id=user_id, org_id=uuid.UUID(org_id))
         db.add(repo)
         await db.commit()
         return {"ok": True, "repo_id": str(repo.id)}

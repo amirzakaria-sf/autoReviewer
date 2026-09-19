@@ -68,20 +68,22 @@ if (( PULL )) && [[ -z "${DEPLOY_ALREADY_PULLED:-}" ]]; then
   fi
 fi
 
-# /srv/workspace is the container's own path to the real host ./workspace
-# directory; when this script runs INSIDE the backend container (the
-# detached admin-triggered path) that's the one writable, still-readable-
-# after-the-container-dies place to put a log. When YOU run this directly
-# on the host, $ROOT/workspace is the same physical directory, reached the
-# normal way instead. /.dockerenv (not "does /srv/workspace exist") is the
-# actual signal for which case this is -- an empty, root-owned /srv/workspace
-# can and does exist on the host too (found by actually running this: a
-# stray leftover directory there made the existence check pick the
-# container path on the host and fail with Permission denied).
-if [[ -f /.dockerenv ]]; then
-  LOG_DIR="/srv/workspace"
-else
-  LOG_DIR="$ROOT/workspace"
+# /srv/workspace is the one writable, still-readable-after-the-container-dies
+# place to put a log when this runs INSIDE the backend container (the
+# detached admin-triggered path).
+#
+# It used to be a different physical directory on the host, which is why this
+# block once branched on /.dockerenv. It no longer does: the workspace lives
+# on the docker data disk, bind-mounted at /srv/workspace on the HOST as well
+# (see /etc/fstab) -- the same absolute path the containers see -- so both
+# callers log to the same real file and the dashboard reads one log. The host
+# fallback stays because that bind is convenience, not a dependency: if it is
+# ever not mounted, a deploy must still produce a log somewhere and say so
+# rather than fail or write somewhere nobody looks.
+LOG_DIR="/srv/workspace"
+if [[ ! -f /.dockerenv ]] && { ! mkdir -p "$LOG_DIR" 2>/dev/null || [[ ! -w "$LOG_DIR" ]]; }; then
+  echo "[deploy] $LOG_DIR is not writable from the host (is the bind mount up?) -- logging to $ROOT/.deploy-logs instead"
+  LOG_DIR="$ROOT/.deploy-logs"
 fi
 mkdir -p "$LOG_DIR"
 

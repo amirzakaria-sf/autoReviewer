@@ -31,7 +31,7 @@ export default function RequestAccessPage() {
 
   if (result === "pending") {
     return (
-      <div className="min-h-screen flex items-center justify-center px-4 bg-grid-fade">
+      <div className="auth-shell">
         <div className="w-full max-w-sm card p-7 text-center space-y-3 animate-fade-in">
           <div className="text-3xl">✋</div>
           <h1 className="font-semibold">Request sent</h1>
@@ -45,9 +45,9 @@ export default function RequestAccessPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 bg-grid-fade">
-      <form onSubmit={submit} className="w-full max-w-sm card p-7 space-y-5 animate-fade-in">
-        <div className="flex items-center gap-2.5 text-lg font-semibold">
+    <div className="auth-shell">
+      <form onSubmit={submit} className="auth-card card p-7 space-y-5 animate-fade-in">
+        <div className="auth-mark">
           <span className="text-xl">🛡️</span> WhipGuard
         </div>
         <p className="text-sm text-lo -mt-3">
@@ -91,7 +91,7 @@ export default function RequestAccessPage() {
           </div>
         </div>
 
-        {error && <p className="text-sm text-red-400">{error}</p>}
+        {error && <p className="auth-error">{error}</p>}
 
         <button
           type="submit"
@@ -102,7 +102,7 @@ export default function RequestAccessPage() {
         </button>
 
         <p className="text-center text-sm text-lo">
-          Already have an account? <a href="/login" className="text-accent-soft hover:underline">Sign in</a>
+          Already have an account? <a href="/login" className="text-accent hover:underline">Sign in</a>
         </p>
       </form>
     </div>

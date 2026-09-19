@@ -18,14 +18,25 @@ _SKIP_DIRS = {"node_modules", ".git", "test-results", "playwright-report"}
 
 
 class DocumentationDetector:
-    def run(self, worktree_path: str) -> DetectionResult:
+    def run(self, worktree_path: str, path_scope: str = "", base_url: str = "") -> DetectionResult:
+        # base_url is accepted for interface parity and ignored: this check
+        # reads source, so there is nothing at a deployed url for it to visit.
+        # Saying so beats silently accepting a url and doing nothing with it.
+        _ = base_url
         root = Path(worktree_path)
+        # A scoped run walks one subtree. Resolved against the worktree so
+        # a caller cannot point it outside.
+        scoped_root = root
+        if path_scope:
+            candidate = (root / path_scope).resolve()
+            if str(candidate).startswith(str(root.resolve())) and candidate.exists():
+                scoped_root = candidate
         readme = root / "README.md"
         if not readme.exists():
             return DetectionResult(failed=False, assertion_text="No README.md to check.")
 
         real_symbols: set[str] = set()
-        for path in root.rglob("*"):
+        for path in scoped_root.rglob("*"):
             if not path.is_file() or path.suffix not in _SYMBOL_SUFFIXES:
                 continue
             if any(part in _SKIP_DIRS for part in path.parts):
