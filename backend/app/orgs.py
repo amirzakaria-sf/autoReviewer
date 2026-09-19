@@ -552,6 +552,25 @@ def repo_ids_for_org(org_id) -> list:
         return [_uuid.UUID(str(row[0])) for row in cur.fetchall()]
 
 
+def repo_ids_for_user(user_id) -> list:
+    """Every repository across EVERY organization the user belongs to."""
+    import uuid as _uuid
+
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.id FROM repos r
+            JOIN org_members m ON m.org_id = r.org_id
+            WHERE m.user_id = %s
+            """,
+            (str(user_id),),
+        )
+        seen: dict = {}
+        for (repo_id,) in cur.fetchall():
+            seen[_uuid.UUID(str(repo_id))] = True
+        return list(seen)
+
+
 # --- configuring an org: designations, routing, identities ---------------------
 #
 # All three were seeded once and then read-only: displayed on the team page

@@ -64,4 +64,4 @@ async def visible_repo_ids(request: Request) -> list[uuid.UUID]:
         # Not an error: a brand-new account genuinely owns nothing yet, and
         # every list endpoint correctly returns empty rather than refusing.
         return []
-    return await asyncio.to_thread(orgs.repo_ids_for_org, memberships[0]["id"])
+    return await asyncio.to_thread(orgs.repo_ids_for_user, user_id)

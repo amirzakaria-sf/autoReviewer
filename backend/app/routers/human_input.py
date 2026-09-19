@@ -76,5 +76,13 @@ async def answer_request(request_id: uuid.UUID, body: dict, db: AsyncSession = D
         from app.work_queue import enqueue
 
         await enqueue("resume_human_input", {"request_id": str(request_id), "answer": answer_text})
+    elif request.node_name == "fix_council.patch_generation":
+        from app.work_queue import enqueue
+
+        if request.issue_id:
+            await enqueue(
+                "fix_council",
+                {"issue_id": str(request.issue_id), "feedback": answer_text},
+            )
 
     return {"ok": True, "status": "answered"}

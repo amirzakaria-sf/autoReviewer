@@ -92,6 +92,45 @@ export default function AdminOverviewPage() {
         <StatCard label="Remembered failures" value={overview?.memory_traces} color="yellow" />
       </section>
 
+      <section className="card p-5" style={{ borderColor: "var(--failed-dim)" }}>
+        <h2 className="font-semibold mb-1 flex items-center gap-2">
+          <span className="badge badge-red">Global kill switch</span>
+        </h2>
+        <p className="text-xs text-lo mb-4">
+          Stops detection or proposals on every connected repo. Per-repo pauses still exist on each repo&apos;s settings page.
+        </p>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <button
+            className={`flex items-center justify-between p-3.5 rounded-lg border text-left ${
+              overview?.kill_switch?.detection_paused ? "border-[color:var(--failed-dim)] bg-[rgba(255,95,86,0.08)]" : "border-border"
+            }`}
+            onClick={async () => {
+              await api.setKillSwitch({ detection_paused: !overview?.kill_switch?.detection_paused });
+              refresh();
+            }}
+          >
+            <div>
+              <div className="text-sm font-medium">Pause all detection</div>
+              <div className="text-xs text-lo mt-0.5">No new Bug Council scans, from webhooks or the dashboard.</div>
+            </div>
+          </button>
+          <button
+            className={`flex items-center justify-between p-3.5 rounded-lg border text-left ${
+              overview?.kill_switch?.proposals_paused ? "border-[color:var(--failed-dim)] bg-[rgba(255,95,86,0.08)]" : "border-border"
+            }`}
+            onClick={async () => {
+              await api.setKillSwitch({ proposals_paused: !overview?.kill_switch?.proposals_paused });
+              refresh();
+            }}
+          >
+            <div>
+              <div className="text-sm font-medium">Pause all fix proposals</div>
+              <div className="text-xs text-lo mt-0.5">Raised issues will not get a Fix Council run.</div>
+            </div>
+          </button>
+        </div>
+      </section>
+
       <section className="card p-5">
         <div className="flex items-center justify-between mb-4">
           <div>

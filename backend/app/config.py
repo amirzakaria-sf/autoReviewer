@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     github_app_id: str = ""
     github_app_private_key: str = ""
     github_app_installation_id: str = ""
+    # Shared secret GitHub sends as X-Hub-Signature-256. Empty means the
+    # webhook handler logs a warning and still accepts events (local/dev).
+    # Set this in any deployment that is reachable from the internet.
+    github_webhook_secret: str = ""
 
     fixture_repo: str = "amirzakaria-sf/whipguard-demo-ui"
 
@@ -115,6 +119,9 @@ class Settings(BaseSettings):
     # + a dashboard login page instead).
     admin_password: str = "whipguard-demo"
     session_secret: str = "change-me-in-real-deployments"
+    # Production must set ADMIN_PASSWORD and SESSION_SECRET. Tests and a
+    # local venv may flip this so the process can boot with the demo values.
+    allow_insecure_defaults: bool = False
 
     # Context assembly (app/prompt_compiler.py). One budget for the whole
     # prompt rather than a per-injection-point character cap; the encoding

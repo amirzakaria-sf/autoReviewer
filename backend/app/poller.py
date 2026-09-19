@@ -13,12 +13,14 @@ import logging
 
 from sqlalchemy import select
 
+from app.categories import category_from_labels
 from app.config import settings
 from app.db import async_session
 from app.enums import IssueStatus
-from app.integrations import github_client
+from app.integrations import github_app_auth, github_client
 from app.models import Issue, Repo
 from app.work_queue import enqueue
+from app import kill_switch
 
 logger = logging.getLogger("whipguard.poller")
 
@@ -41,7 +43,10 @@ async def _poll_once() -> None:
         # repo this loop silently ignored externally-filed bugs on every
         # other repository a user had connected.
         repos = (await db.execute(select(Repo))).scalars().all()
-        if not repos or not settings.github_token:
+        github_ready = bool(settings.github_token) or github_app_auth.github_app_configured()
+        if not repos or not github_ready:
+            return
+        if kill_switch.detection_paused():
             return
 
         for repo in repos:
@@ -70,7 +75,7 @@ async def _poll_once() -> None:
 
                 issue = Issue(
                     repo_id=repo.id,
-                    category="ui",
+                    category=category_from_labels(gh_issue.get("labels") or []),
                     origin="filed-externally",
                     github_issue_number=gh_issue["number"],
                     title=gh_issue["title"],

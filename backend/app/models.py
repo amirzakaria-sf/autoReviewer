@@ -143,11 +143,29 @@ class Repo(Base):
     # detector has to be stoppable in one click, per-repo.
     detection_paused: Mapped[bool] = mapped_column(sa.Boolean, default=False, server_default=sa.false())
     proposals_paused: Mapped[bool] = mapped_column(sa.Boolean, default=False, server_default=sa.false())
+    # Per-repo Pages project. Empty falls back to CLOUDFLARE_PAGES_PROJECT
+    # so an existing single-project deployment keeps working.
+    cloudflare_pages_project: Mapped[str | None] = mapped_column(sa.String, nullable=True)
     # No Slack fields here on purpose: Slack is connected ONCE for the
     # account and every repo notifies the same channel (app/app_settings.py).
     # A per-repo channel made the user repeat an OAuth round-trip for every
     # repository and bought nothing.
     connected_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+
+
+class WebhookDelivery(Base):
+    """Durable GitHub webhook idempotency (X-GitHub-Delivery).
+
+    The in-memory set in routers/webhooks.py is still consulted first; this
+    table is what survives a process restart and a second replica.
+    """
+
+    __tablename__ = "webhook_deliveries"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    delivery_id: Mapped[str] = mapped_column(sa.String, nullable=False, unique=True)
+    event: Mapped[str] = mapped_column(sa.String, default="")
+    received_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
 
 
 class Issue(Base):
@@ -705,6 +723,10 @@ class Organization(Base):
     slug: Mapped[str] = mapped_column(sa.String, nullable=False, unique=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+    # GitHub App installation for THIS org. Empty falls back to the process-
+    # wide GITHUB_APP_INSTALLATION_ID so a single-install deployment is
+    # unchanged.
+    github_app_installation_id: Mapped[str | None] = mapped_column(sa.String, nullable=True)
 
 
 class OrgMember(Base):

@@ -22,6 +22,10 @@ _LIVE_DATABASE_URL = os.environ.get(
 )
 # Same server, same credentials, different database.
 os.environ["DATABASE_URL"] = _LIVE_DATABASE_URL.rsplit("/", 1)[0] + "/" + _TEST_DATABASE
+# Lifespan refuses the demo password / session secret. Tests are not a
+# deployment, and they import the Settings object before any fixture can
+# override it, so this has to be set here.
+os.environ.setdefault("ALLOW_INSECURE_DEFAULTS", "true")
 
 import psycopg
 import pytest

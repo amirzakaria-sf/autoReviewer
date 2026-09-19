@@ -65,6 +65,10 @@ async def run_calibration_pass() -> None:
                 await _calibrate_one(db, repo, category)
         await db.commit()
 
+    from app.ask_mode import learn_ask_mode_pass
+
+    await learn_ask_mode_pass()
+
 
 async def _calibrate_one(db, repo: Repo, category: str) -> None:
     rows = (

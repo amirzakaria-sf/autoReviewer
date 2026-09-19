@@ -24,7 +24,7 @@ logger = logging.getLogger("whipguard.main")
 # IS the credential -- see email_client.verify_action_token), and the
 # healthcheck.
 _PUBLIC_PATHS = (
-    "/api/auth/", "/api/webhooks/", "/api/slack/interactions", "/api/email/action",
+    "/api/auth/", "/api/webhooks/", "/api/slack/interactions", "/api/slack/events", "/api/email/action",
     "/healthz", "/api/healthz",
 )
 
@@ -56,6 +56,9 @@ async def _seed_bootstrap_admin() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.boot_checks import refuse_insecure_defaults
+
+    refuse_insecure_defaults()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # create_all adds missing TABLES but never a missing COLUMN on a

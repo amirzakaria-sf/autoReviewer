@@ -335,5 +335,26 @@ def draft(
         ungrounded=[str(item) for item in (arbiter.get("ungrounded") or [])],
     )
     result.markdown = _render_markdown(result, skeptic)
+    apply_coverage_floor(result)
     emit(f"Done — coverage {result.coverage_score}/100")
+    return result
+
+
+COVERAGE_FLOOR = 50
+
+
+def apply_coverage_floor(result: PrdResult, floor: int = COVERAGE_FLOOR) -> PrdResult:
+    """A PRD below the floor is still returned — bannered, not silently dropped."""
+    if result.coverage_score >= floor:
+        return result
+    if not result.ungrounded:
+        result.ungrounded = [
+            str(item.get("requirement") or item.get("text") or item)
+            for item in result.requirements
+        ] or ["coverage below the completeness floor"]
+    result.markdown = (
+        f"> Coverage {result.coverage_score}/100 is below the {floor} floor. "
+        "Treat this as an incomplete feasibility note, not a shipping PRD.\n\n"
+        + result.markdown
+    )
     return result

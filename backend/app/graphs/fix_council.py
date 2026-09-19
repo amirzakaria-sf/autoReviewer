@@ -17,7 +17,7 @@ from typing import Any, TypedDict
 from openai import AzureOpenAI
 
 from app import azure_client
-from app.categories import CATEGORY_REGISTRY, scope_excludes
+from app.categories import CATEGORY_REGISTRY, entry_files_for, scope_excludes
 from app.config import settings
 from app.detectors import get_detector
 from app.integrations import context7_client
@@ -133,6 +133,9 @@ class FixCouncilState(TypedDict, total=False):
     verdict: str
     attempt: int
     prior_rejection: str | None
+    issue_id: Any
+    base_sha: str
+    needs_human: dict | None
 
 
 def retrieval_node(state: FixCouncilState) -> FixCouncilState:
@@ -147,8 +150,14 @@ def retrieval_node(state: FixCouncilState) -> FixCouncilState:
     emit_event({"type": "node", "node": "retrieval", "status": "started", "message": "Scanning one-hop imports…"})
     worktree = Path(state["worktree_path"])
     touched: list[str] = []
+    base_sha = state.get("base_sha") or ""
+    if not base_sha:
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(worktree), capture_output=True, text=True, timeout=15
+        )
+        base_sha = (sha.stdout or "").strip()
 
-    for entry in CATEGORY_REGISTRY[category].entry_files:
+    for entry in entry_files_for(category, str(worktree)):
         entry_path = worktree / entry
         if not entry_path.exists():
             continue
@@ -213,7 +222,7 @@ def retrieval_node(state: FixCouncilState) -> FixCouncilState:
         # entry file? Blast radius the static import scan can't see (nothing
         # importing app.js would show up there, but something app.js's own
         # symbols are called BY would matter to "what might this fix break").
-        for entry in CATEGORY_REGISTRY[category].entry_files:
+        for entry in entry_files_for(category, str(worktree)):
             entry_path = worktree / entry
             if not entry_path.exists():
                 continue
@@ -241,6 +250,7 @@ def retrieval_node(state: FixCouncilState) -> FixCouncilState:
         "similar_chunks": similar_chunks,
         "dependents": dependents,
         "briefing": briefing,
+        "base_sha": base_sha,
     }
 
 
@@ -253,7 +263,9 @@ def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
     category = state["category"]
     emit_event({"type": "node", "node": "patch_generation", "status": "started", "message": "Patch-generation worker (ReAct loop) starting…"})
     worktree = Path(state["worktree_path"])
-    workspace_map = build_workspace_map(state.get("repo_full_name", ""), state["touched_files"])
+    workspace_map = build_workspace_map(
+        state.get("repo_full_name", ""), state["touched_files"], state["worktree_path"]
+    )
 
     system_prompt = pad_to_cache_floor(
         build_prefix(
@@ -370,46 +382,30 @@ def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
                     result = f"REFUSED: already asked {asks_used} question(s) this attempt (cap: {MAX_ASKS_PER_ATTEMPT}). Proceed with your best judgment." + nudge
                 else:
                     asks_used += 1
-                    from app.models import HumanInputRequest
-                    from app.db import async_session
-
-                    async def _record_ask():
-                        async with async_session() as db:
-                            options = [{"id": str(i), "label": o} for i, o in enumerate(args.get("options", []))]
-                            db.add(
-                                HumanInputRequest(
-                                    node_name="fix_council.patch_generation",
-                                    kind="single_select" if options else "free_text",
-                                    question=args["question"],
-                                    options=options or None,
-                                    context={"already_considered": args["already_considered"], "category": category},
-                                    thread=[{"from": "agent", "text": args["question"], "at": None}],
-                                )
-                            )
-                            await db.commit()
-
-                    import asyncio as _asyncio
-
-                    try:
-                        _loop = _asyncio.get_event_loop()
-                    except RuntimeError:
-                        _loop = None
-                    if _loop and _loop.is_running():
-                        _asyncio.run_coroutine_threadsafe(_record_ask(), _loop)
-                    # This firing point records the question for visibility
-                    # and audit (dashboard-inspectable, per plan.md §10.5's
-                    # HumanInputRequest schema) but does not block this
-                    # synchronous ReAct loop waiting for a real answer -- a
-                    # true mid-attempt suspend needs a heavier execution model
-                    # than one blocking invoke() call. Named as the real scope
-                    # here rather than hidden: the Bug Council's Arbiter path
-                    # (resume_with_clarification_answer) is where this
-                    # primitive actually blocks and resumes.
-                    result = (
-                        f"Question recorded for a human to see on the dashboard: {args['question']!r}. "
-                        "No answer is available yet in this attempt -- proceed with your best judgment "
-                        "given what you already considered, and note the open question in your summary."
-                    ) + nudge
+                    question = args["question"]
+                    _record_fix_ask(
+                        issue_id=state.get("issue_id"),
+                        category=category,
+                        question=question,
+                        options=args.get("options") or [],
+                        already_considered=args["already_considered"],
+                    )
+                    # Pause. A recorded question the model then answers itself
+                    # is not a human in the loop. Resume is
+                    # worker._handle_resume_human_input -> trigger_fix_council
+                    # with the answer as prior_rejection.
+                    emit_event({
+                        "type": "node", "node": "patch_generation", "status": "done",
+                        "message": "Waiting on a human answer",
+                    })
+                    return {
+                        **state,
+                        "diff": "",
+                        "needs_human": {
+                            "question": question,
+                            "already_considered": args["already_considered"],
+                        },
+                    }
             elif name == "finish_patch":
                 result = "acknowledged" + nudge
             else:
@@ -506,7 +502,9 @@ def arbiter_node(state: FixCouncilState) -> FixCouncilState:
     prefix = pad_to_cache_floor(
         build_prefix(
             role="You are the Arbiter scoring a proposed FIX. Score 0-100 given the diff and the Verifier's real test result.",
-            workspace_map=build_workspace_map(state.get("repo_full_name", ""), state["touched_files"]),
+            workspace_map=build_workspace_map(
+                state.get("repo_full_name", ""), state["touched_files"], state.get("worktree_path", "")
+            ),
             category_rules=CATEGORY_REGISTRY[category].rules,
         )
     )
@@ -531,6 +529,69 @@ def route_on_resolution_score(state: FixCouncilState) -> str:
     return "retry" if state.get("attempt", 1) < 2 else "hold"
 
 
+def route_after_patch(state: FixCouncilState) -> str:
+    if state.get("needs_human"):
+        return "ask"
+    return "verify"
+
+
+def retry_prepare_node(state: FixCouncilState) -> FixCouncilState:
+    """Second attempt: reset the worktree to the SHA retrieval captured, keep
+    the byte-identical system prefix (workspace_map + rules), and put the
+    rejection reason in the volatile suffix only."""
+    worktree = Path(state["worktree_path"])
+    base = state.get("base_sha") or ""
+    if base:
+        subprocess.run(
+            ["git", "reset", "--hard", base],
+            cwd=str(worktree), capture_output=True, text=True, timeout=30,
+        )
+        subprocess.run(
+            ["git", "clean", "-fd"],
+            cwd=str(worktree), capture_output=True, text=True, timeout=30,
+        )
+    emit_event({
+        "type": "node", "node": "retry", "status": "started",
+        "message": "Retrying the patch with the previous verdict as rejection",
+    })
+    return {
+        **state,
+        "attempt": int(state.get("attempt") or 1) + 1,
+        "prior_rejection": state.get("verdict") or "below resolution threshold",
+        "diff": "",
+        "score": 0,
+        "verifier_result": {},
+        "needs_human": None,
+    }
+
+
+def _record_fix_ask(*, issue_id, category: str, question: str, options: list, already_considered: str) -> None:
+    """Sync write — patch generation is not an async node."""
+    from app import sync_db
+
+    option_rows = [{"id": str(i), "label": o} for i, o in enumerate(options)]
+    with sync_db.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO human_input_requests
+                (id, issue_id, node_name, kind, question, options, context, status, thread, created_at)
+            VALUES (
+                gen_random_uuid(), %s, 'fix_council.patch_generation',
+                %s, %s, %s::jsonb, %s::jsonb, 'pending', %s::jsonb, now()
+            )
+            """,
+            (
+                str(issue_id) if issue_id else None,
+                "single_select" if option_rows else "free_text",
+                question,
+                json.dumps(option_rows),
+                json.dumps({"already_considered": already_considered, "category": category}),
+                json.dumps([{"from": "agent", "text": question, "at": None}]),
+            ),
+        )
+        conn.commit()
+
+
 def build_fix_council_graph():
     from langgraph.graph import END, StateGraph
 
@@ -539,14 +600,18 @@ def build_fix_council_graph():
     graph.add_node("patch_generation", patch_generation_node)
     graph.add_node("verifier", verifier_node)
     graph.add_node("arbiter", arbiter_node)
+    graph.add_node("retry_prepare", retry_prepare_node)
 
     graph.set_entry_point("retrieval")
     graph.add_edge("retrieval", "patch_generation")
-    graph.add_edge("patch_generation", "verifier")
+    graph.add_conditional_edges(
+        "patch_generation", route_after_patch, {"verify": "verifier", "ask": END}
+    )
     graph.add_edge("verifier", "arbiter")
     graph.add_conditional_edges(
-        "arbiter", route_on_resolution_score, {"propose": END, "retry": END, "hold": END}
+        "arbiter", route_on_resolution_score, {"propose": END, "retry": "retry_prepare", "hold": END}
     )
+    graph.add_edge("retry_prepare", "patch_generation")
     return graph.compile()
 
 
@@ -555,6 +620,7 @@ def run_fix_council(
     category: str = "ui",
     repo_full_name: str = "",
     repo_id: Any = None,
+    issue_id: Any = None,
     bug_description: str = "",
     resolution_threshold: int | None = None,
     attempt: int = 1,
@@ -567,6 +633,7 @@ def run_fix_council(
             "category": category,
             "repo_full_name": repo_full_name,
             "repo_id": repo_id,
+            "issue_id": issue_id,
             "bug_description": bug_description,
             "resolution_threshold": resolution_threshold or CATEGORY_REGISTRY[category].resolution_threshold,
             "attempt": attempt,

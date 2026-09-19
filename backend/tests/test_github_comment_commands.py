@@ -185,3 +185,37 @@ async def test_ordinary_comments_are_ignored():
         assert fix.status == FixStatus.AWAITING_APPROVAL
     finally:
         await _cleanup(issue_id)
+
+
+async def test_issue_commands_are_scoped_to_the_payload_repository():
+    """Repo B's #N must not act on repo A's #N."""
+    from app.routers.webhooks import _handle_issues
+
+    other_name = "other-org/not-the-fixture"
+    number = ISSUE_NUMBER + 7
+    issue_id, fix_id = await _seed(number)
+    try:
+        async with async_session() as db:
+            other = Repo(github_full_name=other_name)
+            db.add(other)
+            await db.commit()
+
+        async with async_session() as db:
+            await _handle_issues(
+                db,
+                {
+                    "action": "closed",
+                    "issue": {"number": number},
+                    "repository": {"full_name": other_name},
+                },
+            )
+            await db.commit()
+
+        async with async_session() as db:
+            issue = await db.get(Issue, issue_id)
+        assert issue.status == IssueStatus.FIX_PROPOSED
+    finally:
+        await _cleanup(issue_id)
+        async with async_session() as db:
+            await db.execute(delete(Repo).where(Repo.github_full_name == other_name))
+            await db.commit()

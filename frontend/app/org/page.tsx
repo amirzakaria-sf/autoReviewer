@@ -96,6 +96,22 @@ export default function OrgPage() {
 
       {isAdmin && <OrgInvitePanel designations={org.designations} onMemberJoined={refresh} />}
 
+      {isAdmin && (
+        <section className="card p-5">
+          <h2 className="font-semibold mb-1">GitHub App installation</h2>
+          <p className="text-xs text-lo mb-3">
+            Installation id for this organization. Empty uses the process-wide GITHUB_APP_INSTALLATION_ID.
+          </p>
+          <GitHubInstallField
+            value={org.github_app_installation_id || ""}
+            onSave={async (v) => {
+              await api.updateOrg({ github_app_installation_id: v });
+              refresh();
+            }}
+          />
+        </section>
+      )}
+
       <section>
         <h2 className="section-label mb-3">People</h2>
         {org.members.length === 0 ? (
@@ -310,5 +326,24 @@ function RoutingPreview({ categories }: { categories: string[] }) {
         </div>
       )}
     </section>
+  );
+}
+
+function GitHubInstallField({ value, onSave }: { value: string; onSave: (v: string) => void }) {
+  const [local, setLocal] = useState(value);
+  useEffect(() => setLocal(value), [value]);
+  return (
+    <input
+      className="w-full bg-white/[0.04] border border-border rounded-lg px-3 py-2 text-sm num"
+      value={local}
+      placeholder="Installation id"
+      onChange={(e) => setLocal(e.target.value)}
+      onBlur={() => {
+        if (local !== value) onSave(local.trim());
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && local !== value) onSave(local.trim());
+      }}
+    />
   );
 }

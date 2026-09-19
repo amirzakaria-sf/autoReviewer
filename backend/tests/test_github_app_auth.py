@@ -29,6 +29,8 @@ def _throwaway_private_key_pem() -> tuple[str, object]:
 def _reset_cache():
     github_app_auth._cached_token = None
     github_app_auth._cached_expires_at = 0.0
+    github_app_auth._cached.clear()
+    github_app_auth._discovered_id = None
 
 
 def test_github_app_configured_requires_both_id_and_key():

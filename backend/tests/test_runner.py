@@ -254,6 +254,27 @@ async def test_trigger_fix_council_below_threshold_rejects_and_never_pushes_or_o
         await _cleanup(issue_id)
 
 
+async def test_ask_human_pauses_without_writing_a_fix():
+    issue_id = await _make_issue(ABOVE_THRESHOLD_ISSUE_NUMBER + 50)
+    try:
+        mock_graph = MagicMock()
+        mock_graph.invoke.return_value = {"needs_human": {"question": "which helper?"}}
+        with (
+            patch("app.runner.ensure_mirror", return_value="/tmp/mirror"),
+            patch("app.runner.create_worktree", return_value="/tmp/mirror/fixes/1"),
+            patch("app.graphs.fix_council.build_fix_council_graph", return_value=mock_graph),
+        ):
+            await trigger_fix_council(issue_id)
+
+        async with async_session() as db:
+            issue = await db.get(Issue, issue_id)
+            fixes = (await db.execute(select(Fix).where(Fix.issue_id == issue_id))).scalars().all()
+        assert issue.status == IssueStatus.AWAITING_CLARIFICATION
+        assert fixes == []
+    finally:
+        await _cleanup(issue_id)
+
+
 async def test_trigger_fix_council_returns_cleanly_for_unknown_issue_id():
     missing_issue_id = uuid.uuid4()
 

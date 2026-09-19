@@ -93,6 +93,7 @@ export type OrgOverview = {
     escalate_at_severity: number;
     min_seniority: string;
   }[];
+  github_app_installation_id?: string;
 };
 
 export type AssignmentPreview = {
@@ -371,6 +372,7 @@ export type AdminOverview = {
   llm_cache?: { entries: number; hits: number };
   /** How much the memory layer has actually accumulated. */
   memory_traces?: number;
+  kill_switch?: { detection_paused: boolean; proposals_paused: boolean };
 };
 
 export type UsageStats = {
@@ -397,6 +399,7 @@ export type RepoSettings = {
   ask_mode: "autonomous" | "balanced" | "verbose";
   detection_paused: boolean;
   proposals_paused: boolean;
+  cloudflare_pages_project: string;
   categories: CategorySetting[];
 };
 
@@ -578,6 +581,8 @@ export const api = {
   rejectAccessRequest: (id: string, reason: string) =>
     postJSON<{ ok: boolean; request: AccessRequest }>(`/api/admin/access-requests/${id}/reject`, { reason }),
   adminOverview: () => getJSON<AdminOverview>("/api/admin/overview"),
+  setKillSwitch: (body: { detection_paused?: boolean; proposals_paused?: boolean }) =>
+    postJSON<{ detection_paused: boolean; proposals_paused: boolean }>("/api/admin/kill-switch", body),
   usageStats: () => getJSON<UsageStats>("/api/admin/usage"),
   triggerRedeploy: () => postJSON<{ ok: boolean; message: string }>("/api/admin/redeploy"),
   redeployStatus: () => getJSON<{ running: boolean; succeeded?: boolean; log: string | null }>("/api/admin/redeploy/status"),
@@ -591,6 +596,7 @@ export const api = {
 
   me: () => getJSON<MyProfile>("/api/me"),
   org: () => getJSON<OrgOverview>("/api/org"),
+  updateOrg: (patch: Record<string, unknown>) => patchJSON<{ ok: boolean; github_app_installation_id: string }>("/api/org", patch),
   updateOrgMember: (memberId: string, patch: Record<string, unknown>) =>
     patchJSON<{ ok: boolean; members: OrgMember[] }>(`/api/org/members/${memberId}`, patch),
   previewAssignment: (body: { category: string; severity: number; author?: string }) =>

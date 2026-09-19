@@ -22,6 +22,7 @@ Flow (https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
@@ -33,8 +34,15 @@ from app.config import settings
 API_BASE = "https://api.github.com"
 _JWT_TTL_SECONDS = 9 * 60  # under GitHub's 10-minute ceiling, with margin for clock skew
 _TOKEN_REFRESH_MARGIN_SECONDS = 60
+logger = logging.getLogger("whipguard.github_app_auth")
 
 _lock = threading.Lock()
+# installation_id -> (token, expires_at epoch). One cache per installation so
+# org A cannot reuse org B's token after a mint for B.
+_cached: dict[str, tuple[str, float]] = {}
+_discovered_id: str | None = None
+
+# Back-compat aliases the existing tests reset.
 _cached_token: str | None = None
 _cached_expires_at: float = 0.0
 
@@ -65,33 +73,75 @@ def _discover_installation_id(app_jwt: str) -> str:
     return str(installations[0]["id"])
 
 
-def get_installation_token() -> str:
+def _resolve_installation_id(app_jwt: str, explicit: str | None) -> str:
+    global _discovered_id
+    if explicit:
+        return str(explicit)
+    if settings.github_app_installation_id:
+        return str(settings.github_app_installation_id)
+    if _discovered_id:
+        return _discovered_id
+    _discovered_id = _discover_installation_id(app_jwt)
+    return _discovered_id
+
+
+def installation_id_for_repo(repo_full_name: str | None) -> str | None:
+    """The GitHub App installation that owns this repo, if any.
+
+    Reads organizations.github_app_installation_id through the repo's org.
+    Falls back to the process-wide GITHUB_APP_INSTALLATION_ID. Never raises:
+    a missing org must not take down a GitHub write.
+    """
+    if repo_full_name:
+        try:
+            from app import sync_db
+
+            with sync_db.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT o.github_app_installation_id FROM repos r "
+                    "JOIN organizations o ON o.id = r.org_id "
+                    "WHERE r.github_full_name = %s",
+                    (repo_full_name,),
+                )
+                row = cur.fetchone()
+            if row and row[0]:
+                return str(row[0])
+        except Exception:
+            logger.warning("could not resolve GitHub App installation for %s", repo_full_name)
+    return settings.github_app_installation_id or None
+
+
+def get_installation_token(installation_id: str | None = None) -> str:
     """Returns a valid installation access token, minting or refreshing one
     as needed. Thread-safe (github_client.py's callers run in worker
     threads via asyncio.to_thread) -- a lock around the mint/refresh, not
     around every read, since re-checking the cached token inside the lock
-    is what actually prevents a refresh stampede."""
+    is what actually prevents a refresh stampede.
+
+    `installation_id` selects which install to mint for. Empty uses the
+    process-wide setting, then auto-discovery (single-install deployments).
+    """
     global _cached_token, _cached_expires_at
 
     with _lock:
-        if _cached_token and time.time() < _cached_expires_at - _TOKEN_REFRESH_MARGIN_SECONDS:
-            return _cached_token
-
         app_jwt = _app_jwt()
-        installation_id = settings.github_app_installation_id or _discover_installation_id(app_jwt)
+        resolved = _resolve_installation_id(app_jwt, installation_id)
+        cached = _cached.get(resolved)
+        if cached and time.time() < cached[1] - _TOKEN_REFRESH_MARGIN_SECONDS:
+            return cached[0]
 
         resp = httpx.post(
-            f"{API_BASE}/app/installations/{installation_id}/access_tokens",
+            f"{API_BASE}/app/installations/{resolved}/access_tokens",
             headers={"Authorization": f"Bearer {app_jwt}", "Accept": "application/vnd.github+json"},
             timeout=15,
         )
         resp.raise_for_status()
         data = resp.json()
 
-        _cached_token = data["token"]
-        # "2026-01-01T12:00:00Z" -> epoch seconds, without pulling in a full
-        # ISO-8601 parsing dependency for one fixed, always-UTC-Z format.
+        token = data["token"]
         expires_struct = time.strptime(data["expires_at"], "%Y-%m-%dT%H:%M:%SZ")
-        _cached_expires_at = time.mktime(expires_struct) - time.timezone
-
-        return _cached_token
+        expires_at = time.mktime(expires_struct) - time.timezone
+        _cached[resolved] = (token, expires_at)
+        _cached_token = token
+        _cached_expires_at = expires_at
+        return token

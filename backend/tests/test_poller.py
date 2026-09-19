@@ -122,3 +122,30 @@ async def test_poll_once_swallows_github_api_errors_without_propagating():
         result = await _poll_once()  # must not raise
 
     assert result is None
+
+
+async def test_poll_once_reads_category_from_the_whipguard_label():
+    number = 990003
+    await _cleanup_issue(number)
+    try:
+        with (
+            patch("app.poller.github_client.list_issues_with_label") as mock_list,
+            patch("app.poller.enqueue", new_callable=AsyncMock),
+        ):
+            mock_list.return_value = [
+                {
+                    "number": number,
+                    "title": "calculateTotal is wrong",
+                    "labels": [{"name": "whipguard:fix-me"}, {"name": "whipguard:category/backend"}],
+                }
+            ]
+            await _poll_once()
+
+        async with async_session() as db:
+            issue = (
+                await db.execute(select(Issue).where(Issue.github_issue_number == number))
+            ).scalars().first()
+        assert issue is not None
+        assert issue.category == "backend"
+    finally:
+        await _cleanup_issue(number)

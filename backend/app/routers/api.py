@@ -193,6 +193,7 @@ async def get_repo_settings(
         "ask_mode": repo.ask_mode,
         "detection_paused": repo.detection_paused,
         "proposals_paused": repo.proposals_paused,
+        "cloudflare_pages_project": repo.cloudflare_pages_project or "",
         "categories": categories,
     }
 
@@ -220,6 +221,9 @@ async def update_repo_settings(
         repo.detection_paused = bool(body["detection_paused"])
     if "proposals_paused" in body:
         repo.proposals_paused = bool(body["proposals_paused"])
+    if "cloudflare_pages_project" in body:
+        value = (body["cloudflare_pages_project"] or "").strip()
+        repo.cloudflare_pages_project = value or None
 
     # Per-category patches: {"ui": {"issues_enabled": false, "resolution_threshold": 85}, ...}
     # Merged key-by-key into the existing JSONB rather than replacing it
@@ -440,6 +444,9 @@ async def scan_repo(
         raise HTTPException(404, "repo not found")
     if repo.detection_paused:
         raise HTTPException(409, "detection is paused for this repo (kill switch)")
+    from app import kill_switch
+    if kill_switch.detection_paused():
+        raise HTTPException(409, "detection is paused globally (kill switch)")
 
     categories = [category] if category else enabled_categories_for(repo)
 

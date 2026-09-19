@@ -11,14 +11,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.calibration import record_calibration_event
-from app import app_settings
+from app import app_settings, kill_switch
 from app.config import settings
 from app.db import get_db
 from app.enums import FixStatus, IssueStatus
 from app.graphs.approval_graph import resolve_approval
 from app.integrations import github_client
+from app.integrations.github_client import verify_webhook_signature
 from app.integrations.slack_client import verify_signature
-from app.models import Fix, Issue, Repo
+from app.models import Fix, Issue, Repo, WebhookDelivery
 
 router = APIRouter(prefix="/api")
 logger = logging.getLogger("whipguard.webhooks")
@@ -35,16 +36,21 @@ _SEEN_DELIVERIES_MAX = 500
 
 @router.post("/webhooks/github")
 async def github_webhook(request: Request, db: AsyncSession = Depends(get_db)):
-    delivery_id = request.headers.get("X-GitHub-Delivery")
-    if delivery_id:
-        if delivery_id in _SEEN_DELIVERIES:
-            return {"ok": True, "deduped": True}
-        _SEEN_DELIVERIES.add(delivery_id)
-        if len(_SEEN_DELIVERIES) > _SEEN_DELIVERIES_MAX:
-            _SEEN_DELIVERIES.pop()
+    body = await request.body()
+    secret = settings.github_webhook_secret
+    if secret:
+        header = request.headers.get("X-Hub-Signature-256", "")
+        if not verify_webhook_signature(body, header, secret):
+            raise HTTPException(401, "invalid GitHub signature")
+    else:
+        logger.warning("GITHUB_WEBHOOK_SECRET is unset — accepting unsigned webhook")
 
+    delivery_id = request.headers.get("X-GitHub-Delivery")
     event = request.headers.get("X-GitHub-Event", "")
-    payload = await request.json()
+    if await _already_seen_delivery(db, delivery_id, event):
+        return {"ok": True, "deduped": True}
+
+    payload = json.loads(body) if body else {}
 
     if event == "push":
         await _handle_push(db, payload)
@@ -56,6 +62,51 @@ async def github_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         await _handle_issue_comment(db, payload)
 
     return {"ok": True}
+
+
+async def _already_seen_delivery(db: AsyncSession, delivery_id: str | None, event: str) -> bool:
+    """True if this delivery was already handled. In-memory first, then DB."""
+    if not delivery_id:
+        return False
+    if delivery_id in _SEEN_DELIVERIES:
+        return True
+    from sqlalchemy.dialects.postgresql import insert
+
+    stmt = (
+        insert(WebhookDelivery)
+        .values(id=uuid.uuid4(), delivery_id=delivery_id, event=event or "")
+        .on_conflict_do_nothing(index_elements=["delivery_id"])
+    )
+    result = await db.execute(stmt)
+    await db.commit()
+    _SEEN_DELIVERIES.add(delivery_id)
+    if len(_SEEN_DELIVERIES) > _SEEN_DELIVERIES_MAX:
+        _SEEN_DELIVERIES.pop()
+    # rowcount is 1 when we inserted, 0 when the unique key already existed.
+    return result.rowcount == 0
+
+
+async def _repo_from_payload(db: AsyncSession, payload: dict) -> Repo | None:
+    repo_full_name = payload.get("repository", {}).get("full_name")
+    if not repo_full_name:
+        return None
+    return (
+        await db.execute(select(Repo).where(Repo.github_full_name == repo_full_name))
+    ).scalars().first()
+
+
+async def _issue_for_github(db: AsyncSession, payload: dict, issue_number: int | None) -> Issue | None:
+    """Issue numbers restart per repository — always join through the repo."""
+    if issue_number is None:
+        return None
+    repo = await _repo_from_payload(db, payload)
+    if repo is None:
+        return None
+    return (
+        await db.execute(
+            select(Issue).where(Issue.repo_id == repo.id, Issue.github_issue_number == issue_number)
+        )
+    ).scalars().first()
 
 
 async def _handle_push(db: AsyncSession, payload: dict) -> None:
@@ -78,7 +129,7 @@ async def _handle_push(db: AsyncSession, payload: dict) -> None:
     # repo's push silently re-embedded the wrong codebase.
     await enqueue("reindex_repo", {"repo_id": str(repo.id), "repo_full_name": repo.github_full_name})
 
-    if repo.detection_paused:
+    if repo.detection_paused or kill_switch.detection_paused():
         return
     await enqueue("scan_repo", {"repo_id": str(repo.id), "categories": list(enabled_categories_for(repo))})
 
@@ -94,8 +145,14 @@ async def _handle_pull_request(db: AsyncSession, payload: dict) -> None:
     pr = payload.get("pull_request", {})
     pr_number = pr.get("number")
     merged = bool(pr.get("merged"))
+    repo_full_name = payload.get("repository", {}).get("full_name")
 
-    fix = (await db.execute(select(Fix).where(Fix.pr_number == pr_number))).scalars().first()
+    stmt = select(Fix).where(Fix.pr_number == pr_number)
+    if repo_full_name:
+        stmt = stmt.join(Issue, Issue.id == Fix.issue_id).join(Repo, Repo.id == Issue.repo_id).where(
+            Repo.github_full_name == repo_full_name
+        )
+    fix = (await db.execute(stmt)).scalars().first()
     if not fix:
         return
 
@@ -126,8 +183,15 @@ async def _handle_pull_request(db: AsyncSession, payload: dict) -> None:
                 from app.config import settings
                 from app.integrations import cloudflare_client
 
+                pages_project = settings.cloudflare_pages_project
+                if issue:
+                    owned_repo = await db.get(Repo, issue.repo_id)
+                    if owned_repo and owned_repo.cloudflare_pages_project:
+                        pages_project = owned_repo.cloudflare_pages_project
                 deleted = await asyncio.to_thread(
-                    cloudflare_client.delete_deployments_for_branch, settings.cloudflare_pages_project, fix.branch_name
+                    cloudflare_client.delete_deployments_for_branch,
+                    pages_project,
+                    fix.branch_name,
                 )
                 logger.info("deleted %d Cloudflare deployment(s) for merged branch %s", deleted, fix.branch_name)
             except Exception:
@@ -181,9 +245,7 @@ async def _handle_issues(db: AsyncSession, payload: dict) -> None:
         return
 
     issue_number = payload.get("issue", {}).get("number")
-    issue = (
-        await db.execute(select(Issue).where(Issue.github_issue_number == issue_number))
-    ).scalars().first()
+    issue = await _issue_for_github(db, payload, issue_number)
     if not issue:
         return
 
@@ -235,9 +297,7 @@ async def _handle_issue_comment(db: AsyncSession, payload: dict) -> None:
         return
 
     issue_number = payload["issue"]["number"]
-    issue = (
-        await db.execute(select(Issue).where(Issue.github_issue_number == issue_number))
-    ).scalars().first()
+    issue = await _issue_for_github(db, payload, issue_number)
     if not issue:
         return
     fix = (

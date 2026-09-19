@@ -177,7 +177,9 @@ def _make_issue():
 
 
 def _make_repo(repo_id):
-    return types.SimpleNamespace(id=repo_id, github_full_name="acme/demo", default_branch="main")
+    return types.SimpleNamespace(
+        id=repo_id, github_full_name="acme/demo", default_branch="main", cloudflare_pages_project=None
+    )
 
 
 def _approval_patches(mock_record_condition, sandbox_exit_code):

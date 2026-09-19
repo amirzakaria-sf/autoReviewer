@@ -98,6 +98,17 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
       </section>
 
       <section className="card p-5">
+        <h2 className="font-semibold mb-1">Cloudflare Pages</h2>
+        <p className="text-xs text-lo mb-3">
+          Per-repo project name. Empty uses the deployment-wide CLOUDFLARE_PAGES_PROJECT.
+        </p>
+        <CloudflareProjectField
+          value={settings.cloudflare_pages_project || ""}
+          onSave={(v) => patch({ cloudflare_pages_project: v })}
+        />
+      </section>
+
+      <section className="card p-5">
         <h2 className="font-semibold mb-1">Ask Mode</h2>
         <p className="text-xs text-lo mb-4">How eagerly a jury disagreement or a missing-fact escalates to a live question.</p>
         <div className="grid sm:grid-cols-3 gap-3">
@@ -129,6 +140,27 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ id: str
           ))}
         </div>
       </section>
+    </div>
+  );
+}
+
+function CloudflareProjectField({ value, onSave }: { value: string; onSave: (v: string) => void }) {
+  const [local, setLocal] = useState(value);
+  useEffect(() => setLocal(value), [value]);
+  return (
+    <div className="flex gap-2">
+      <input
+        className="flex-1 bg-white/[0.04] border border-border rounded-lg px-3 py-2 text-sm"
+        value={local}
+        placeholder="my-pages-project"
+        onChange={(e) => setLocal(e.target.value)}
+        onBlur={() => {
+          if (local !== value) onSave(local.trim());
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && local !== value) onSave(local.trim());
+        }}
+      />
     </div>
   );
 }

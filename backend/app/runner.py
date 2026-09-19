@@ -50,17 +50,20 @@ async def trigger_fix_council(
             return
 
         repo = await db.get(Repo, issue.repo_id)
-        if repo and repo.proposals_paused:
+        if repo is None:
+            logger.error("fix council: issue %s has no repo — refusing to fall back to the fixture", issue_id)
+            return
+        if repo.proposals_paused:
             logger.info("fix proposals paused for repo %s (kill switch) -- skipping issue %s", repo.id, issue_id)
+            return
+        from app import kill_switch
+        if kill_switch.proposals_paused():
+            logger.info("global proposals kill switch is on -- skipping issue %s", issue_id)
             return
 
         category = issue.category
         threshold = resolution_threshold_for(repo, category) if repo else settings.resolution_threshold
-        # repo.github_full_name, NOT settings.fixture_repo. This clones and
-        # patches whichever repo the ISSUE belongs to; hardcoding the fixture
-        # here meant a fix for any other connected repo was generated against
-        # the fixture repo's source and pushed to the fixture repo's branch.
-        repo_full_name = repo.github_full_name if repo else settings.fixture_repo
+        repo_full_name = repo.github_full_name
         slug = f"issue-{issue.github_issue_number}"
 
         evidence_text = (issue.evidence or {}).get("assertion_text", "")
@@ -82,13 +85,24 @@ async def trigger_fix_council(
                     "worktree_path": str(worktree),
                     "category": category,
                     "repo_full_name": repo_full_name,
-                    "repo_id": repo.id if repo else None,
+                    "repo_id": repo.id,
+                    "issue_id": issue.id,
                     "bug_description": bug_description,
                     "resolution_threshold": threshold,
                     "attempt": attempt,
                     "prior_rejection": feedback or None,
                 },
             )
+
+            if result.get("needs_human"):
+                issue.status = IssueStatus.AWAITING_CLARIFICATION
+                await db.commit()
+                emit_event({
+                    "type": "run", "kind": "fix_council", "status": "done",
+                    "message": "Fix Council paused — waiting on a human answer",
+                })
+                logger.info("fix council paused for issue %s (ask_human)", issue_id)
+                return
 
             proposed = result["score"] >= threshold
             emit_event({

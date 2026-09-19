@@ -53,12 +53,36 @@ async def _require_org_admin(user: User) -> dict:
 @router.get("")
 async def my_org(user: User = Depends(current_user)):
     org = await _current_org(user)
+    installation_id = await asyncio.to_thread(_org_installation_id, org["id"])
     return {
         **org,
+        "github_app_installation_id": installation_id or "",
         "members": await asyncio.to_thread(orgs.members, org["id"]),
         "designations": await asyncio.to_thread(orgs.designations, org["id"]),
         "routing_rules": await asyncio.to_thread(orgs.routing_rules, org["id"]),
     }
+
+
+def _org_installation_id(org_id) -> str:
+    with orgs._connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT github_app_installation_id FROM organizations WHERE id = %s", (str(org_id),))
+        row = cur.fetchone()
+    return (row[0] if row else "") or ""
+
+
+@router.patch("")
+async def update_org(body: dict, user: User = Depends(current_user)):
+    org = await _require_org_admin(user)
+    if "github_app_installation_id" in body:
+        value = str(body.get("github_app_installation_id") or "").strip()
+        with orgs._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE organizations SET github_app_installation_id = %s WHERE id = %s",
+                (value or None, org["id"]),
+            )
+            conn.commit()
+    installation_id = await asyncio.to_thread(_org_installation_id, org["id"])
+    return {"ok": True, "github_app_installation_id": installation_id or ""}
 
 
 @router.patch("/members/{member_id}")

@@ -34,9 +34,14 @@ _shutdown = asyncio.Event()
 
 
 async def _handle_scan_repo(payload: dict) -> None:
+    from app import kill_switch
     from app.db import async_session
     from app.graphs.bug_council import run_and_persist
     from app.models import Repo
+
+    if kill_switch.detection_paused():
+        logger.info("global detection kill switch is on — dropping scan_repo")
+        return
 
     repo_id = uuid.UUID(payload["repo_id"])
     for category in payload.get("categories") or []:
@@ -50,7 +55,10 @@ async def _handle_scan_repo(payload: dict) -> None:
 async def _handle_fix_council(payload: dict) -> None:
     from app.runner import trigger_fix_council
 
-    await trigger_fix_council(uuid.UUID(payload["issue_id"]))
+    await trigger_fix_council(
+        uuid.UUID(payload["issue_id"]),
+        feedback=payload.get("feedback") or "",
+    )
 
 
 async def _handle_resume_human_input(payload: dict) -> None:
@@ -189,9 +197,9 @@ async def _handle_run_eval(payload: dict) -> dict:
     """The detection eval: real sandboxed detectors against controlled
     worktrees. Returns the report so it lands on the work item, which is how
     the web process reads it back across the process boundary."""
-    from app.eval_harness import run_detection_eval
+    from app.eval_harness import run_jury_eval
 
-    report = await asyncio.to_thread(run_detection_eval, payload.get("repo") or settings.fixture_repo)
+    report = await asyncio.to_thread(run_jury_eval, payload.get("repo") or settings.fixture_repo)
     return report.to_dict()
 
 
@@ -337,8 +345,32 @@ async def _background_loops() -> None:
     )
 
 
+async def _maybe_eval_on_prompt_change() -> None:
+    """If prompts.py changed since the last recorded fingerprint, queue the
+    mechanical eval. The worker does this once at boot, not on a timer —
+    prompt files do not change without a redeploy."""
+    from app import app_settings
+    from app.eval_harness import prompts_fingerprint
+    from app.work_queue import enqueue
+
+    digest = prompts_fingerprint()
+    previous = app_settings.get_setting("prompts_sha256")
+    if previous == digest:
+        return
+    logger.info("prompts.py changed (%s -> %s) — queueing eval", previous[:8] or "none", digest[:8])
+    await enqueue("run_eval", {"repo": settings.fixture_repo, "reason": "prompts_changed"})
+    app_settings.set_setting("prompts_sha256", digest)
+
+
 async def main() -> None:
+    from app.boot_checks import refuse_insecure_defaults
+
+    refuse_insecure_defaults()
     logger.info("whipguard worker starting (workspace=%s)", settings.workspace_root)
+    try:
+        await _maybe_eval_on_prompt_change()
+    except Exception:
+        logger.exception("prompt-change eval check failed")
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):

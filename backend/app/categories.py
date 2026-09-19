@@ -526,3 +526,85 @@ def assurance_threshold_for(repo, category_key: str) -> int:
 def resolution_threshold_for(repo, category_key: str) -> int:
     override = (repo.thresholds or {}).get(category_key, {}).get("resolution")
     return override if override is not None else CATEGORY_REGISTRY[category_key].resolution_threshold
+
+
+CATEGORY_LABEL_PREFIX = "whipguard:category/"
+
+
+def category_from_labels(labels) -> str:
+    """Pick a registry key from GitHub labels (`whipguard:category/backend`).
+
+    An unlabeled `whipguard:fix-me` issue still defaults to `ui` so the
+    existing poller tests and the fixture path stay unchanged.
+    """
+    names: list[str] = []
+    for label in labels or []:
+        if isinstance(label, dict):
+            names.append(str(label.get("name") or ""))
+        else:
+            names.append(str(label))
+    for name in names:
+        if name.startswith(CATEGORY_LABEL_PREFIX):
+            key = name[len(CATEGORY_LABEL_PREFIX) :]
+            if key in CATEGORY_REGISTRY:
+                return key
+    return "ui"
+
+
+_UI_CANDIDATES = (
+    "app.js",
+    "src/App.tsx",
+    "src/App.jsx",
+    "src/main.tsx",
+    "src/main.jsx",
+    "app/page.tsx",
+    "index.html",
+    "index.tsx",
+)
+_BACKEND_CANDIDATES = (
+    "backend/calculate.js",
+    "src/index.ts",
+    "src/index.js",
+    "src/main.py",
+    "main.go",
+    "src/main.rs",
+    "app.py",
+    "manage.py",
+)
+_A11Y_CANDIDATES = ("index.html", "style.css", "src/app/globals.css", "app/globals.css")
+_DOCS_CANDIDATES = ("README.md", "README", "docs/README.md")
+_PERF_CANDIDATES = ("app.js", "package.json", "vite.config.ts", "next.config.js")
+_SECURITY_CANDIDATES = ("app.js", "backend/calculate.js", ".env.example", "package.json")
+
+
+def _existing_files(worktree_path: str, candidates: tuple[str, ...]) -> tuple[str, ...]:
+    from pathlib import Path
+
+    root = Path(worktree_path)
+    found = tuple(rel for rel in candidates if (root / rel).exists())
+    return found
+
+
+def entry_files_for(category: str, worktree_path: str = "") -> tuple[str, ...]:
+    """Registry defaults when those files exist; otherwise a layout-aware set.
+
+    The registry rows still name the fixture's files so a checkout of
+    whipguard-demo-ui is unchanged. A second repo that does not contain
+    `app.js` no longer starts retrieval from a path that is not there.
+    """
+    config = CATEGORY_REGISTRY[category]
+    if not worktree_path:
+        return config.entry_files
+    present_defaults = _existing_files(worktree_path, config.entry_files)
+    if present_defaults:
+        return present_defaults
+    inferred = {
+        "ui": _UI_CANDIDATES,
+        "backend": _BACKEND_CANDIDATES,
+        "accessibility": _A11Y_CANDIDATES,
+        "documentation": _DOCS_CANDIDATES,
+        "performance": _PERF_CANDIDATES,
+        "security": _SECURITY_CANDIDATES,
+    }.get(category, config.entry_files)
+    present = _existing_files(worktree_path, inferred)
+    return present or config.entry_files

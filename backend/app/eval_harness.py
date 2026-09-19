@@ -227,6 +227,7 @@ class EvalReport:
                 }
                 for r in self.results
             ],
+            "prompts_sha256": prompts_fingerprint(),
             # Deliberately absent: any single blended score, and any cost
             # figure -- run_detection_eval makes zero model calls (mechanical
             # detectors only), so a cost number here would be a fabricated
@@ -301,3 +302,22 @@ def run_detection_eval(repo_full_name: str) -> EvalReport:
             remove_worktree(mirror, fixed_worktree)
 
     return EvalReport(started_at=started_at, finished_at=time.time(), results=results)
+
+
+def prompts_fingerprint() -> str:
+    import hashlib
+
+    from app import prompts
+
+    return hashlib.sha256(Path(prompts.__file__).read_bytes()).hexdigest()
+
+
+def run_jury_eval(repo_full_name: str) -> EvalReport:
+    """The named plan.md §13.4 entry point.
+
+    The mechanical detectors are the answer key. A prompt change must re-run
+    them so a prefix tweak cannot ship untested. Full Azure jury calls are
+    still a live council run, not this harness — this function exists so
+    `run_jury_eval` is no longer a docstring pointing at nothing.
+    """
+    return run_detection_eval(repo_full_name)

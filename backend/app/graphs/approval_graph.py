@@ -200,6 +200,10 @@ async def resolve_approval(
         )
         return {"ok": True, "status": fix.status.value, "queued": True}
 
+    if repo is None:
+        logger.error("approval: fix %s has no repo — refusing to fall back to the fixture", fix.id)
+        return {"ok": False, "error": "repo not found"}
+
     # Same layout worktree.py uses (settings.workspace_root, not a path derived
     # from this file's own depth) -- that depth differs between local-venv and
     # containerized layouts (backend/ is nested locally, but IS the container
@@ -284,7 +288,7 @@ async def resolve_approval(
     await asyncio.to_thread(github_client.push_branch, str(worktree_path), fix.branch_name)
 
     if fix.pr_number is None:
-        repo_full_name = repo.github_full_name if repo else settings.fixture_repo
+        repo_full_name = repo.github_full_name
         issue_number = issue.github_issue_number if issue else None
         body_lines = [
             f"Closes #{issue_number}" if issue_number else "",
@@ -319,8 +323,15 @@ async def resolve_approval(
     await db.commit()
 
     emit_event({"type": "node", "node": "cloudflare_deploy", "status": "started", "message": "Deploying branch to Cloudflare Pages…"})
+    pages_project = getattr(repo, "cloudflare_pages_project", None) or settings.cloudflare_pages_project
+    if not pages_project:
+        logger.error("approval: no Cloudflare Pages project for fix %s", fix.id)
+        fix.status = FixStatus.VERIFICATION_FAILED
+        _reopen_issue_for_retry(issue)
+        await db.commit()
+        return {"ok": False, "status": fix.status.value, "reason": "no Cloudflare Pages project configured"}
     preview_url = await asyncio.to_thread(
-        cloudflare_client.deploy_branch, str(worktree_path), settings.cloudflare_pages_project, fix.branch_name
+        cloudflare_client.deploy_branch, str(worktree_path), pages_project, fix.branch_name
     )
     fix.preview_url = preview_url
     fix.status = FixStatus.DEPLOYED
@@ -454,26 +465,28 @@ async def _run_outcome_check(
 ) -> dict:
     from app.models import OutcomeCheck
 
-    # Falls back to the fixture repo only if this fix's own repo somehow
-    # can't be resolved -- every real path has repo already, from
-    # resolve_approval's own lookup via issue.repo_id.
-    repo_full_name = repo.github_full_name if repo else settings.fixture_repo
-
-    try:
-        gh_issue = await asyncio.to_thread(github_client.get_issue, repo_full_name, issue.github_issue_number)
-        gh_pr = await asyncio.to_thread(github_client.get_pr, repo_full_name, fix.pr_number) if fix.pr_number else {}
-        github_state = {
-            "issue_exists": gh_issue.get("state") is not None,
-            "labels": [l["name"] for l in gh_issue.get("labels", [])],
-            "pr_open": gh_pr.get("state") == "open",
-            "pr_merged": bool(gh_pr.get("merged")),
-            "closes_reference": f"#{issue.github_issue_number}" in (gh_pr.get("body") or ""),
-        }
-    except Exception:
-        logger.exception("outcome check: could not read GitHub state for fix %s", fix.id)
+    repo_full_name = repo.github_full_name if repo else ""
+    if not repo_full_name:
         github_state = {"issue_exists": False, "labels": [], "pr_open": False, "pr_merged": False, "closes_reference": False}
+    else:
+        try:
+            gh_issue = await asyncio.to_thread(github_client.get_issue, repo_full_name, issue.github_issue_number)
+            gh_pr = await asyncio.to_thread(github_client.get_pr, repo_full_name, fix.pr_number) if fix.pr_number else {}
+            github_state = {
+                "issue_exists": gh_issue.get("state") is not None,
+                "labels": [l["name"] for l in gh_issue.get("labels", [])],
+                "pr_open": gh_pr.get("state") == "open",
+                "pr_merged": bool(gh_pr.get("merged")),
+                "closes_reference": f"#{issue.github_issue_number}" in (gh_pr.get("body") or ""),
+            }
+        except Exception:
+            logger.exception("outcome check: could not read GitHub state for fix %s", fix.id)
+            github_state = {"issue_exists": False, "labels": [], "pr_open": False, "pr_merged": False, "closes_reference": False}
 
-    cloudflare_state = {"reachable": True, "assertion_passes": assertion_passes}
+    from app.preview import probe_preview_url
+
+    reachable = await asyncio.to_thread(probe_preview_url, preview_url)
+    cloudflare_state = {"reachable": reachable, "assertion_passes": assertion_passes}
 
     # `configured` is stated rather than inferred from whether a thread could
     # be read. Slack being disconnected is not Slack disagreeing, and the

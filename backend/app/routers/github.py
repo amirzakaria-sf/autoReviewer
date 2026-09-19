@@ -181,7 +181,13 @@ async def connect_repo(body: dict, request: Request):
             "You are not in an organization yet, and a repository has to belong to one. "
             "Ask a system admin to add you to one first.",
         )
-    org_id = memberships[0]["id"]
+    org_id = body.get("org_id") or memberships[0]["id"]
+    if not any(m["id"] == str(org_id) or m["id"] == org_id for m in memberships):
+        # Allow the UUID object/string mismatch.
+        allowed = {str(m["id"]) for m in memberships}
+        if str(org_id) not in allowed:
+            raise HTTPException(403, "You are not a member of that organization.")
+    org_id = str(org_id)
 
     async with async_session() as db:
         existing = (

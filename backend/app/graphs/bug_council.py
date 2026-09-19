@@ -28,7 +28,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from app import azure_client
-from app.categories import CATEGORY_REGISTRY
+from app.categories import CATEGORY_REGISTRY, entry_files_for
 from app import app_settings
 from app.config import settings
 from app.detectors import get_detector
@@ -82,6 +82,8 @@ def detect_node(state: BugCouncilState) -> BugCouncilState:
     worktree = create_worktree(mirror, issue_number=0, slug=f"detect-{category}")
     try:
         result = get_detector(category).run(str(worktree))
+        if category == "security":
+            result = _merge_dependabot(state.get("repo_full_name") or "", result)
         # Every role reasons next to the actual source, not just the test
         # runner's output text -- plan.md §11.1's "a model reasoning about
         # whether a click handler is broken should be reasoning next to the
@@ -127,11 +129,41 @@ def _read_entry_files(worktree, category: str) -> str:
     from pathlib import Path
 
     parts = []
-    for entry in CATEGORY_REGISTRY[category].entry_files:
+    for entry in entry_files_for(category, str(worktree)):
         path = Path(worktree) / entry
         if path.exists():
             parts.append(f"--- {entry} ---\n{path.read_text()}")
     return "\n\n".join(parts)
+
+
+def _merge_dependabot(repo_full_name: str, result):
+    """Append GitHub Advisory / Dependabot alerts without dropping the regex scan."""
+    from app.categories import DetectionResult
+    from app.integrations import github_client
+
+    if not repo_full_name:
+        return result
+    try:
+        alerts = github_client.list_dependabot_alerts(repo_full_name)
+    except Exception:
+        logger.exception("dependabot alerts lookup failed for %s", repo_full_name)
+        return result
+    if not alerts:
+        return result
+    lines = []
+    for alert in alerts[:10]:
+        advisory = alert.get("security_advisory") or {}
+        pkg = ((alert.get("dependency") or {}).get("package") or {}).get("name") or ""
+        lines.append(
+            f"dependabot: {advisory.get('ghsa_id') or alert.get('number')} {advisory.get('summary') or pkg}"
+        )
+    text = (result.assertion_text.rstrip() + "\n" if result.assertion_text else "") + "\n".join(lines)
+    return DetectionResult(
+        failed=True,
+        assertion_text=text,
+        stderr=result.stderr,
+        extra=result.extra,
+    )
 
 
 def _evidence_suffix(state: BugCouncilState) -> str:
@@ -536,16 +568,18 @@ async def run_and_persist(db, repo, category: str = "ui") -> "Issue":
     # reasoning from the moment it exists. Assigning afterwards leaves a
     # window where a notification can fire for an unowned issue.
     if raised:
-        from app.categories import CATEGORY_REGISTRY as _REGISTRY
+        from app.categories import entry_files_for
         from app.orgs import assign_for_issue
+        from app.sandbox.worktree import repo_root
 
+        counsel_tree = str(repo_root(repo.github_full_name) / "counsel")
         routing = await asyncio.to_thread(
             assign_for_issue,
             repo_id=repo.id,
             repo_full_name=repo.github_full_name,
             category=category,
             severity=issue.severity,
-            paths=list(_REGISTRY[category].entry_files),
+            paths=list(entry_files_for(category, counsel_tree)),
         )
         if routing.get("assignee"):
             issue.assignee_user_id = uuid.UUID(routing["assignee"]["user_id"])

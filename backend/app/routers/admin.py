@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db import async_session, get_db
 from app.deps import require_admin
-from app import org_invites, orgs
+from app import org_invites, orgs, kill_switch
 from app.enums import AccessRequestStatus, OrgRole, Seniority, UserRole, UserStatus
 from app.integrations import email_client
 from app.models import AccessRequest, AuditLog, Fix, Issue, MemoryTrace, Repo, User
@@ -220,7 +220,21 @@ async def admin_overview(db: AsyncSession = Depends(get_db)):
         "memory_traces": (
             await db.execute(select(func.count()).select_from(MemoryTrace))
         ).scalar_one(),
+        "kill_switch": kill_switch.status(),
     }
+
+
+@router.get("/kill-switch")
+async def get_kill_switch():
+    return kill_switch.status()
+
+
+@router.post("/kill-switch")
+async def set_kill_switch(body: dict):
+    return kill_switch.set_paused(
+        detection=body["detection_paused"] if "detection_paused" in body else None,
+        proposals=body["proposals_paused"] if "proposals_paused" in body else None,
+    )
 
 
 @router.get("/usage")

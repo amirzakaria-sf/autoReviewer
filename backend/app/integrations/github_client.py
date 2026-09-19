@@ -4,6 +4,8 @@ defaults off, an absent capability (plan.md §1's forbidden-action rule).
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import subprocess
 
@@ -16,7 +18,15 @@ API_BASE = "https://api.github.com"
 logger = logging.getLogger("whipguard.github_client")
 
 
-def _headers() -> dict:
+def verify_webhook_signature(body: bytes, header: str, secret: str) -> bool:
+    """GitHub's X-Hub-Signature-256: `sha256=<hex>`."""
+    if not secret or not header.startswith("sha256="):
+        return False
+    expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(header[7:], expected)
+
+
+def _headers(repo: str | None = None) -> dict:
     # Prefers the GitHub App installation token (a real, distinct bot
     # identity -- see github_app_auth.py) whenever an App is configured;
     # falls back to the existing OAuth/PAT bearer token unchanged otherwise,
@@ -25,7 +35,8 @@ def _headers() -> dict:
     token = settings.github_token
     if github_app_auth.github_app_configured():
         try:
-            token = github_app_auth.get_installation_token()
+            installation_id = github_app_auth.installation_id_for_repo(repo) if repo else None
+            token = github_app_auth.get_installation_token(installation_id)
         except Exception:
             logger.exception("GitHub App token mint failed; falling back to the configured PAT/OAuth token")
     return {
@@ -37,7 +48,7 @@ def _headers() -> dict:
 def create_issue(repo: str, title: str, body: str, labels: list[str]) -> int:
     resp = httpx.post(
         f"{API_BASE}/repos/{repo}/issues",
-        headers=_headers(),
+        headers=_headers(repo),
         json={"title": title, "body": body, "labels": labels},
         timeout=30,
     )
@@ -48,7 +59,7 @@ def create_issue(repo: str, title: str, body: str, labels: list[str]) -> int:
 def create_draft_pr(repo: str, branch: str, base: str, title: str, body: str, labels: list[str]) -> int:
     resp = httpx.post(
         f"{API_BASE}/repos/{repo}/pulls",
-        headers=_headers(),
+        headers=_headers(repo),
         json={"title": title, "head": branch, "base": base, "body": body, "draft": True},
         timeout=30,
     )
@@ -58,7 +69,7 @@ def create_draft_pr(repo: str, branch: str, base: str, title: str, body: str, la
     if labels:
         label_resp = httpx.post(
             f"{API_BASE}/repos/{repo}/issues/{pr_number}/labels",
-            headers=_headers(),
+            headers=_headers(repo),
             json={"labels": labels},
             timeout=30,
         )
@@ -70,7 +81,7 @@ def create_draft_pr(repo: str, branch: str, base: str, title: str, body: str, la
 def comment_issue(repo: str, issue_number: int, body: str) -> None:
     resp = httpx.post(
         f"{API_BASE}/repos/{repo}/issues/{issue_number}/comments",
-        headers=_headers(),
+        headers=_headers(repo),
         json={"body": body},
         timeout=30,
     )
@@ -80,7 +91,7 @@ def comment_issue(repo: str, issue_number: int, body: str) -> None:
 def list_issues_with_label(repo: str, label: str) -> list[dict]:
     resp = httpx.get(
         f"{API_BASE}/repos/{repo}/issues",
-        headers=_headers(),
+        headers=_headers(repo),
         params={"labels": label, "state": "open"},
         timeout=30,
     )
@@ -90,13 +101,13 @@ def list_issues_with_label(repo: str, label: str) -> list[dict]:
 
 
 def get_issue(repo: str, number: int) -> dict:
-    resp = httpx.get(f"{API_BASE}/repos/{repo}/issues/{number}", headers=_headers(), timeout=30)
+    resp = httpx.get(f"{API_BASE}/repos/{repo}/issues/{number}", headers=_headers(repo), timeout=30)
     resp.raise_for_status()
     return resp.json()
 
 
 def get_pr(repo: str, number: int) -> dict:
-    resp = httpx.get(f"{API_BASE}/repos/{repo}/pulls/{number}", headers=_headers(), timeout=30)
+    resp = httpx.get(f"{API_BASE}/repos/{repo}/pulls/{number}", headers=_headers(repo), timeout=30)
     resp.raise_for_status()
     return resp.json()
 
@@ -127,6 +138,22 @@ def delete_branch(repo: str, branch: str) -> None:
     confirms the branch's PR was merged (webhooks.py's pull_request handler)
     -- never speculatively, and never for main/base branches since callers
     only ever pass a Fix.branch_name (always a whipguard/fix-* branch)."""
-    resp = httpx.delete(f"{API_BASE}/repos/{repo}/git/refs/heads/{branch}", headers=_headers(), timeout=30)
+    resp = httpx.delete(f"{API_BASE}/repos/{repo}/git/refs/heads/{branch}", headers=_headers(repo), timeout=30)
     if resp.status_code not in (204, 422):
         resp.raise_for_status()
+
+
+def list_dependabot_alerts(repo: str) -> list[dict]:
+    """GitHub Dependabot / Advisory alerts. Empty on 403/404 (no permission
+    or not enabled) rather than failing a security scan that still has the
+    regex/gitleaks path."""
+    resp = httpx.get(
+        f"{API_BASE}/repos/{repo}/dependabot/alerts",
+        headers=_headers(repo),
+        params={"state": "open", "per_page": 20},
+        timeout=20,
+    )
+    if resp.status_code in (401, 403, 404):
+        return []
+    resp.raise_for_status()
+    return resp.json() if isinstance(resp.json(), list) else []

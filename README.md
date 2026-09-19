@@ -1,226 +1,248 @@
 # WhipGuard
 
-**An AI bug council that watches a repository, detects real UI bugs, proposes a
-verified fix, and only ships after a human approves and a live re-check confirms
-the fix actually holds.**
+**An AI bug council that watches a connected repository, detects real problems
+across a category registry, proposes a verified fix, and only ships after a
+human approves and a live re-check confirms the fix actually holds.**
 
-Live demo: **https://whip-guard.zakarias.in**
+Live: **https://whip-guard.zakarias.in**
+
+The original design essay is [`plan.md`](./plan.md). That document is the
+*why*; this README is the *what ships today*. Where they disagree, the code
+wins, then this file.
+
 ---
 
 ## Table of contents
 
 1. [What this is](#what-this-is)
-2. [Agentic harness — the part this is actually built around](#agentic-harness--the-part-this-is-actually-built-around)
-3. [External apps this integrates with](#external-apps-this-integrates-with)
-4. [Repository layout](#repository-layout)
-5. [Setup](#setup)
-6. [How reliability was tested](#how-reliability-was-tested)
-7. [Security & scope](#security--scope)
+2. [What is live vs still fixture-shaped](#what-is-live-vs-still-fixture-shaped)
+3. [Agentic harness](#agentic-harness)
+4. [Process split](#process-split)
+5. [External apps](#external-apps)
+6. [Dashboard](#dashboard)
+7. [Repository layout](#repository-layout)
+8. [Setup](#setup)
+9. [How reliability is tested](#how-reliability-is-tested)
+10. [Security & scope](#security--scope)
+11. [Known gaps](#known-gaps)
 
 ---
 
 ## What this is
 
-WhipGuard runs a two-role jury (a Skeptic + mechanical evidence + an Arbiter) over
-a connected repository's own Playwright suite. A finding that clears threshold
-becomes a real GitHub issue. A second jury (a Verifier that actually rebuilds and
-re-tests the patched branch + an Arbiter) turns that issue into a real draft pull
-request. A human approves from Slack or the dashboard. On approval, WhipGuard
-pushes the branch, opens the PR, deploys the branch to a real Cloudflare Pages
-preview URL, and re-runs the exact same check against the *live* URL — not just
-the diff. A final **cross-app outcome checker** reads GitHub, Cloudflare, Slack,
-and the dashboard back independently and fails the whole run closed if any of
-them disagree with each other, even if every individual step upstream reported
-success.
+A connected repo is scanned per enabled category. A finding that clears that
+category's assurance threshold becomes a real GitHub issue. A Fix Council
+turns that issue into a patch, scored by a second jury that **re-runs the
+same detector** against the patched worktree. A human approves from the
+dashboard, Slack, or a signed email magic link. On approval WhipGuard pushes
+the **exact approved patch** (never regenerated), opens a draft PR, deploys
+the branch to Cloudflare Pages, and re-runs the same check against the live
+preview URL. A final **cross-app outcome checker** reads GitHub, Cloudflare,
+Slack, and the dashboard row back independently and fails the run closed if
+they disagree — even if every upstream step reported success.
 
-Full architecture, the reasoning behind every design choice, and what's
-deliberately *not* built (and why) lives in [`plan.md`](./plan.md). This README
-covers the concepts at a practical, code-level depth; `plan.md` covers the
-reasoning behind each one.
+WhipGuard **never merges**. There is no `merge_pr` on the GitHub client.
+A human merge on GitHub is reflected via webhook as `merged`, not claimed as
+WhipGuard's own action.
+
+Login is app-level: email/password, httpOnly cookies, rotating refresh
+tokens. Organizations, designations, seniority routing, and invites exist.
+Counsel is a read-only analyst over the same indexes; it is not a judge and
+cannot approve a fix.
 
 ---
 
-## Agentic harness — the part this is actually built around
+## What is live vs still fixture-shaped
 
-### Two graphs, real state machines, not prose
+Six categories are registered in `backend/app/categories.py`. They are not
+equally deep:
 
-`backend/app/graphs/bug_council.py` and `fix_council.py` are LangGraph
-`StateGraph`s with real conditional edges, not a sequence of function calls
-wearing the word "graph":
+| key | Detector (what actually runs) | Write scope |
+|-----|-------------------------------|-------------|
+| `ui` | Playwright in a Docker sandbox (`playwright test`, excluding `@a11y`) | frontend (fixture globs) |
+| `accessibility` | axe-core Playwright suite (`tests/accessibility.spec.ts`) | frontend |
+| `backend` | Discovers `pytest` / `go test` / `cargo test` / `node --test` from layout markers; the fixture still hits `node --test backend/*.test.js` | backend JS (fixture layout) plus those other runners |
+| `security` | in-process regex secret scan (values redacted from evidence); `gitleaks` if the binary is on PATH; GitHub Dependabot alerts merged in | any file, narrow diff |
+| `performance` | shipped `.js` byte-budget check (not Lighthouse) | whichever file grew |
+| `documentation` | README backtick-calls vs the symbol table | `*.md` only |
+
+UI and accessibility execute the repo's own browser tests. Backend picks a
+runner from the worktree instead of always using the fixture glob. Security
+is still a static scan first; gitleaks and Dependabot are additive, not a
+replacement. Performance / documentation stay honest static heuristics.
+
+Default `entry_files` and `FIXTURE_REPO` still name `whipguard-demo-ui`
+(`app.js`, `backend/calculate.js`, …) so that checkout is unchanged. When
+those files are missing, retrieval infers entry points from the worktree.
+Cloudflare Pages can be set per repo; empty falls back to
+`CLOUDFLARE_PAGES_PROJECT`.
+
+---
+
+## Agentic harness
+
+### Graphs
+
+`bug_council.py`, `fix_council.py`, and `approval_graph.py` are LangGraph
+`StateGraph`s with conditional edges. Side effects (raise issue, notify,
+propose) live in `run_and_persist` / `runner.py` / `resolve_approval()`, not
+as decorative graph nodes.
 
 ```
 BugCouncilGraph:
-  START -> DetectNode -> SkepticNode -> MechanicalRecheckNode -> ArbiterNode
-        -> conditional(score >= 75): raise -> END | hold -> END
+  START -> Detect -> [Skeptic ∥ Corroborator] -> MechanicalRecheck -> Arbiter
+        -> disagreement? MetaAudit (Ask Mode / clarify)
+        -> score >= category assurance? raise : hold
 
 FixCouncilGraph:
-  START -> RetrievalNode -> PatchGenerationNode -> VerifierNode -> ArbiterNode
-        -> conditional(score >= 80): propose -> END | retry/hold -> END
+  START -> Retrieval (hybrid + graph neighbourhood)
+        -> PatchGeneration (ReAct: read_file / write_file / lookup_docs / ask_human / finish_patch)
+        -> Verifier (the category detector, not a model)
+        -> Arbiter
+        -> score >= resolution threshold? propose
+           else retry_prepare -> patch again (one bounded retry), then hold
+        -> ask_human pauses the graph; resume is a fresh attempt with the answer as feedback
 
-ApprovalGraph (backend/app/graphs/approval_graph.py):
-  resolve_approval() -> FreshnessCheck -> ApplyPatch -> OpenPR -> CloudflareDeploy
-        -> PostDeployOracle -> conditional(passes):
-             yes -> OutcomeCheckNode -> conditional(4-way agree): verified | outcome-check-failed
-             no  -> verification-failed
+ApprovalGraph (worker, apply=True):
+  FreshnessCheck -> ApplyPatch -> OpenDraftPR -> CloudflareDeploy
+        -> PostDeployOracle (same detector, PLAYWRIGHT_BASE_URL=preview)
+        -> OutcomeCheck -> verified | verification-failed | outcome-check-failed
 ```
 
-`DetectNode`/`MechanicalRecheckNode` are **not model calls** — they shell into a
-throwaway Docker sandbox (`app/sandbox/docker_runner.py`) and run the repo's own
-Playwright suite for real. A candidate bug is a failing assertion with a real
-trace attached, not a model's guess.
+Detect and mechanical recheck are **not** model calls. They run in a
+throwaway Playwright image via `app/sandbox/docker_runner.py`. A flake that
+passes on rerun is dropped in code before a second model call
+(`tests/test_bug_council_graph.py`).
 
-### The stable-prefix / volatile-suffix prompt contract
+### Prompt contract
 
-`backend/app/prompts.py` implements one rule end to end:
+`backend/app/prompts.py`:
 
-> A byte that repeats across calls belongs in a stable, cached prefix. A byte
-> that changes this call belongs in the volatile suffix. Mixing the two
-> forfeits the provider's prompt cache for every remaining call in the attempt.
+- `build_prefix(role, workspace_map, category_rules)` — byte-identical for
+  identical inputs.
+- `pad_to_cache_floor(prefix)` — pad with already-static content until the
+  provider cache floor (~1024 tokens).
+- The workspace map is computed in `workspace_map.py`, not discovered by
+  tool calls.
+- Oversized rules **fail a test** (`test_oversized_rules_fail_not_truncate`)
+  rather than silently truncating.
 
-- `build_prefix(role, workspace_map, category_rules)` — deterministic; the same
-  inputs produce byte-identical output (`tests/test_prompts.py::test_identical_inputs_produce_byte_identical_prefix`).
-- `pad_to_cache_floor(prefix)` — most providers won't cache a prefix under
-  ~1024 tokens. A short persona-only prefix gets padded by repeating its own
-  static content (never per-attempt content) until it clears the floor.
-- `partition_key(repo, role, prefix)` — `sha256(prefix)[:16]`-based cache
-  partitioning, so two parallel attempts with the same persona/rules share one
-  cache partition, and a rules change gets a fresh key instead of colliding.
-- **The retry contract**: on a rejected patch, the stable prefix passed to
-  `PatchGenerationNode`'s second call is **byte-identical** to the first — only
-  the volatile suffix gains the jury's rejection reason
-  (`tests/test_fix_council_graph.py::test_retry_stable_prefix_is_byte_identical_across_attempts`).
-  A prefix that drifts even by whitespace between attempt 1 and 2 forfeits the
-  cache benefit *and* makes it impossible to know whether a behavior change
-  came from the feedback or an accidental rewording underneath it.
-- **The workspace map is computed by code, in `app/workspace_map.py`, not
-  discovered by tool calls.** A model told "figure out the stack" spends
-  several tool round-trips on a question a handful of pre-computed facts
-  answer for free. This is stated as the single highest-leverage token
-  optimization in `plan.md` §9.4.
-- `tests/test_prompts.py::test_oversized_rules_fail_not_truncate` exists
-  specifically so a rules file that outgrows its configured budget **fails a
-  test**, rather than silently truncating with only a log line as the signal —
-  a real regression this design is built to never repeat.
+`prompt_compiler.py` budgets evidence and briefings. `llm_cache.py` caches
+deterministic jury calls.
 
-### Model routing per role, not one model for everything
+### Model routing
 
-`backend/app/azure_client.py` routes each council seat to a different Azure
-OpenAI deployment, on the reasoning that different roles have different
-accuracy/cost curves:
+| Role | Deployment |
+|------|------------|
+| Skeptic / Corroborator | `AZURE_FAST_DEPLOYMENT` |
+| Patch generation | `AZURE_WORKER_DEPLOYMENT` |
+| Arbiter / Meta-auditor | `AZURE_PLANNER_DEPLOYMENT` |
+| Embeddings | `AZURE_EMBEDDING_DEPLOYMENT` |
 
-| Role | Deployment | Why |
-|---|---|---|
-| Skeptic | `AZURE_FAST_DEPLOYMENT` | adversarial pattern-matching against a fixed rubric is a recall/speed job |
-| Verifier / patch generation | `AZURE_WORKER_DEPLOYMENT` | coding-agent seat — cost of a wrong patch outweighs the tier cost delta |
-| Arbiter | `AZURE_PLANNER_DEPLOYMENT` | the one seat whose structured score is trusted without a second check |
+The Arbiter returns a Pydantic `ArbiterVerdict`: score, `{factor, weight,
+note}` line items, verdict, optional `needs_clarification`. The dashboard
+rubric is those rows in `CouncilRun`, not parsed prose.
 
-### Structured output, not parsed prose
+### Retrieval (live, not the old static-only cut)
 
-The Arbiter's response is validated Pydantic (`ArbiterVerdict` in
-`azure_client.py`): `score`, a list of `{factor, weight, note}` line items that
-sum to the score, a one-sentence verdict, and an optional
-`needs_clarification`. This is what makes the dashboard's rubric view real
-data traced to a `CouncilRun` row, not a model's paragraph that has to be
-parsed and hoped about (`app/models.py::CouncilRun`).
+Fix Council retrieval is **hybrid**:
 
-### The ReAct loop, bounded, with a loop tripwire
+- dense chunks in **pgvector** (`retrieval.py` / `embeddings.py`)
+- BM25 lexical index (`lexical_index.py`)
+- one-hop import / dependent graph in Postgres (`graph_index.py`)
+- fused in `hybrid_retrieval.py`
 
-`PatchGenerationNode` (`fix_council.py`) drives a real tool-calling loop
-(`read_file` / `write_file` / `finish_patch`) against Azure OpenAI's function
-calling, capped at `MAX_TOOL_ITERATIONS = 8`. Every tool call is fingerprinted
-(`name` + canonicalized args); a repeat streak past `REPEAT_NUDGE_THRESHOLD=3`
-gets an explicit "that will not produce a different result" nudge, and past
-`REPEAT_FAIL_THRESHOLD=5` the attempt fails outright rather than spinning.
-`write_file` is refused for any path outside the category's scope glob
-(`is_in_scope()`), enforced in code — not by asking the model nicely.
+`context_broker.py` builds a briefing from that plus `memory_traces`
+(negative outcomes: below-threshold, verify-fail, reject, outcome-fail).
+Context7 (`lookup_docs`) is an optional library-docs tool on the ReAct loop.
 
-### Retrieval — scoped, not "dump the file"
-
-`RetrievalNode` does a one-hop static import scan (`re.finditer` over
-`import`/`require` statements, plus a reverse scan for files that import the
-touched file back) — no vector database, no graph database. `plan.md` §16
-names this as a deliberate cut: the actual retrieval need here ("the touched
-file plus what it imports/is imported by") is fully answered by a static scan;
-a vector/graph store answers a retrieval question this demo doesn't have.
-
-### Human-in-the-loop as an interrupt, not a poll
+### Human in the loop
 
 `resolve_approval(fix_id, approved, actor, surface)` is the **one** function
-every surface calls — a Slack button click (signature-verified in
-`routers/webhooks.py` before anything is trusted), a dashboard click, or a
-GitHub `/reject` issue comment. Whichever surface acts first wins; a second
-call against an already-resolved fix returns `already_handled` instead of
-double-applying anything. This is the same convergence principle applied to
-*where an approval comes from* that plan.md applies elsewhere to *where a fix
-request comes from* (see "resolving bugs raised by others," below).
+the dashboard, Slack buttons, and email magic links call. First surface
+wins; a second call returns `already_handled`.
 
-### The cross-app outcome checker — the actual reliability mechanism
+Fix review (`fix_review.py`) is a thread: approve, reject, or ask for a
+different approach. Revisions run on the worker.
 
-`backend/app/graphs/outcome_checker.py`'s `check_outcome()` is intentionally
-small and mechanical: four independent reads (GitHub issue+PR state, a live
-re-run of the gating Playwright assertion against the real Cloudflare URL, the
-Slack thread's current text, the dashboard's own `Fix.status`), reduced to one
-enum. **Any disagreement fails the whole run closed**, even if every step
-upstream individually reported success — this is the thesis
-`tests/test_outcome_checker.py::test_stale_slack_message_fails_closed_even_though_three_of_four_are_fine`
-exists to prove: three systems can be completely fine and the run still isn't
-trusted if the fourth disagrees.
+Arbiter `needs_clarification` holds the issue as `awaiting-clarification`
+until a human answers. The Fix Council `ask_human` tool currently **records**
+a request but does **not** pause the ReAct loop.
 
-### Notification dedupe — not send-on-every-event
+### Outcome checker
 
-`backend/app/notifications.py` keys one `Notification` row per
-`(fix_or_issue_id, condition_key)` — a repeating condition updates one row's
-`occurrence_count` rather than inserting a new row and sending a new message
-each time. A brand-new, ordinary condition needs `min_occurrences=2`
-consecutive sightings before it ever pages anyone (a single flaky detection
-shouldn't). An **escalation** (`is_escalation=True`) bypasses that
-unconditionally — used for a confirmed raised bug (already past the assurance
-threshold and a mechanical recheck, and identified by a fresh UUID with no
-"second occurrence" to wait for), a verification failure, and an outcome-check
-mismatch. All four properties are asserted directly in
-`tests/test_notifications.py`.
+`graphs/outcome_checker.py` is four reads and a comparison, no model:
 
-### Resolving bugs this system didn't raise itself, in parallel
+- GitHub: issue exists, PR open, `Closes #N`, **not merged**
+- Cloudflare: the post-deploy assertion result (`reachable` is still
+  hardcoded `True` — the Playwright re-check is the real gate)
+- Slack: thread text mentions current status, **if Slack is configured**
+- Dashboard: `Fix.status`
 
-`Issue.origin` is `detected` or `filed-externally`. `backend/app/poller.py`
-polls GitHub every 30s for any open issue labeled `whipguard:fix-me` that
-isn't already tracked, creates the `Issue` row, and fires the exact same
-`trigger_fix_council()` (`app/runner.py`) a Bug-Council-raised issue would —
-the Fix Council does not care who or what decided a fix is worth attempting,
-only that a matching issue exists. Every `trigger_fix_council()` call is
-scheduled as an independent `asyncio.create_task`, each in its own git
-worktree (`app/sandbox/worktree.py`) and its own throwaway sandbox container —
-nothing serializes one fix behind another, so several run concurrently by
-construction, not as an afterthought bolted on later.
+Any mismatch → `outcome-check-failed`.
 
-### Fails closed, everywhere
+### Externally filed bugs
 
-- A tool/API error stops the pipeline before the next irreversible step —
-  never silently retried into a different path, never treated as an implicit
-  pass (`plan.md` §12).
-- `hasattr(github_client, "merge_pr")` is asserted `False` directly in
-  `tests/test_github_client.py` — the forbidden action (never merge, only ever
-  open a PR) is an *absent capability* in the client, not a flag or a prompt
-  instruction that could be argued around.
-- The approved artifact is the shipped artifact: the exact patch on disk at
-  approval time is pushed — never regenerated — with a freshness re-check
-  (`git merge-base --is-ancestor`) if the base branch moved underneath it.
+`poller.py` (on the worker) lists open GitHub issues labeled
+`whipguard:fix-me` per connected repo and enqueues the same Fix Council path.
+Today those rows are stored as `category="ui"` regardless of other labels.
 
 ---
 
-## External apps this integrates with
+## Process split
 
-| App | What it's used for |
-|---|---|
-| **GitHub** | Raises a labeled issue, opens a draft PR (`Closes #N`), never merges — `merge` is not a method that exists on the client, not a flag that defaults off. A registered webhook (`push`, `issue_comment`) drives real detection-on-push and `/reject`-via-comment, deduped on `X-GitHub-Delivery` so a redelivery can't double-fire anything. |
-| **Cloudflare Pages** | Real per-branch preview deploy (`wrangler pages deploy --branch`), the artifact a judge can actually click and load — a fresh Pages project, not a mocked URL. |
-| **Slack** | Block Kit interactive message with Approve/Reject buttons (`slack_client.build_fix_proposed_blocks`), signature-verified via HMAC-SHA256 before any click is trusted (`verify_signature`, with a 5-minute replay window), the thread's text kept in sync with the fix's current status so the outcome checker has something real to read back. |
-| **Azure OpenAI** | Model backend for the Skeptic / Verifier / Arbiter / patch-generation roles, routed per-role to a fast vs. a strong deployment (see above). |
+Four Compose services:
 
-Everything above is on the *acting* side, not the *reading* side: WhipGuard
-writes a branch and a PR on GitHub, deploys real code to a real URL, and posts
-to Slack and acts on the click — each step gated by a threshold or a human that
-can refuse to proceed.
+| Service | Role | `docker.sock` |
+|---------|------|----------------|
+| `postgres` | `pgvector/pgvector:pg16` | no |
+| `backend` | FastAPI `:8300`, workspace **read-only**, retrieval cache rw | **no** |
+| `worker` | `python -m app.worker` — scans, sandboxes, deploys, poller, sweeper, calibration | **yes** |
+| `frontend` | Next.js `:3300` | no |
+
+The worker has **no inbound port**. The web process may only insert a
+`work_items` row. Worker and backend share one image tag
+(`whipguard-backend:latest`) so `docker compose build backend` cannot leave
+the worker on a stale image.
+
+Host ports: frontend `3300`, API `8300`, Postgres `127.0.0.1:5433`.
+
+---
+
+## External apps
+
+These are the surfaces WhipGuard **writes**. Azure OpenAI is the model, not
+an app.
+
+| App | What it does |
+|-----|----------------|
+| **GitHub** | Labeled issue, draft PR (`Closes #N`), comments, branch push/delete. GitHub **App** installation token is preferred when `GITHUB_APP_*` is set (per-org install id on the org, else process-wide); otherwise PAT / OAuth token on `GITHUB_TOKEN`. Webhooks: `push`, `pull_request`, `issues`, `issue_comment`. HMAC via `X-Hub-Signature-256` when `GITHUB_WEBHOOK_SECRET` is set. Delivery ids live in `webhook_deliveries` plus an in-memory set. Issue lookups are `(repo, number)`. |
+| **Cloudflare Pages** | `wrangler pages deploy --branch` → per-branch preview URL. Per-repo project name, falling back to `CLOUDFLARE_PAGES_PROJECT`. Reachability is a GET `< 500`; Playwright (or the category detector) is still the real gate. |
+| **Slack** | Block Kit Approve / Reject; HMAC-SHA256 on interactions (5-minute replay window). Channel picked via Slack OAuth. Manifest in `slack/app-manifest.yaml` declares Events API (`app_uninstalled`, `tokens_revoked`) and history scopes. |
+| **Email** | SMTP (Brevo-shaped) for invites, fix-proposed, and signed approve/reject links (`/api/email/action`). |
+
+---
+
+## Dashboard
+
+Cookie session (`access_token` / rotating `refresh_token`). Nginx proxies
+`/api/` and `/ws/` to the backend and `/` to Next — **no HTTP Basic Auth**.
+
+| Route | What it is |
+|-------|------------|
+| `/` | Marketing landing |
+| `/login`, `/signup`, `/accept-invite`, `/join` | Auth and org invites |
+| `/dashboard` | Overview, clarifications, scan |
+| `/issues/[id]` | Rubric, evidence, fix-review thread |
+| `/repos`, `/repos/[id]/settings` | Per-repo kill switches, Cloudflare Pages project, category toggles, thresholds, Ask Mode |
+| `/connect` | GitHub OAuth + connect repos |
+| `/org` | Members, designations, routing, GitHub App installation id |
+| `/activity` | WebSocket `/ws/activity` |
+| `/profile` | Account, Slack/GitHub disconnect |
+| `/admin`, `/admin/users`, `/admin/orgs` | Platform admin, including the global detection/proposals kill switch |
+
+Counsel lives in the sidebar (`/api/counsel/ask` SSE; heavy jobs on the
+worker).
 
 ---
 
@@ -229,63 +251,79 @@ can refuse to proceed.
 ```
 backend/
   app/
-    graphs/          BugCouncilGraph, FixCouncilGraph, ApprovalGraph, outcome_checker
-    integrations/     github_client, cloudflare_client, slack_client (each's real contract)
-    sandbox/          worktree.py (bare mirror + per-fix git worktrees), docker_runner.py
-    routers/          REST API, GitHub/Slack webhooks, the /ws/activity websocket
-    prompts.py        stable-prefix / volatile-suffix / cache-floor / partition-key
-    azure_client.py   role-routed model calls + the ArbiterVerdict schema
-    poller.py         picks up externally-filed whipguard:fix-me issues
-    runner.py         fire-and-forget Fix Council trigger (concurrency by construction)
-    notifications.py  condition-keyed dedupe
-    enums.py          the ONE definition of Issue/Fix status, rendered everywhere
-  tests/              43 tests — see "How reliability was tested" below
-frontend/   Next.js dashboard (overview, issues/fixes feed, detail + rubric + outcome check, live activity)
-nginx/      The vhost + upstream config actually installed on the demo host
-slack/      The Slack app manifest used to create the bot
-plan.md     Full design doc — read this for the "why" behind every decision
+    graphs/           bug, fix, approval, outcome_checker
+    detectors/        one module per CATEGORY_REGISTRY key
+    counsel/          read-only analyst + PRD/investigate jobs
+    integrations/     github (+ App auth), slack, cloudflare, email, context7
+    sandbox/          bare mirror + worktrees, docker_runner
+    routers/          REST, webhooks, WS, auth, org, counsel, fix_review
+    worker.py         privileged queue consumer
+    hybrid_retrieval.py, graph_index.py, embeddings.py, memory_traces.py
+    prompts.py, prompt_compiler.py, azure_client.py
+    enums.py          the one Issue/Fix status machine every surface renders
+  alembic/            additive migrations (create_all + schema_sync still boot)
+  tests/              pytest modules under backend/tests
+frontend/             Next.js App Router dashboard
+nginx/                vhost actually installed on the demo host
+slack/                Slack app manifest
+plan.md               architecture essay (partly stale vs this file)
 ```
+
+`workspace/` and `workspace.*/` are gitignored. They are live checkouts, not
+source. Do not commit them — git remotes inside those mirrors have leaked
+PATs before.
 
 ---
 
 ## Setup
 
 ### Prerequisites
+
 - Docker + Docker Compose
-- An Azure OpenAI resource with four deployments (fast / worker / planner / mechanical)
-- A GitHub personal access token scoped to one repo (`contents:write`, `issues:write`, `pull_requests:write`)
-- A Cloudflare account with a Pages project + an API token (`Account / Cloudflare Pages / Edit`)
-- A Slack app created from [`slack/app-manifest.yaml`](./slack/app-manifest.yaml), installed to a workspace
+- Azure OpenAI: fast / worker / planner deployments, plus an embedding
+  deployment
+- GitHub: a PAT **or** (preferred) a GitHub App (`contents`, `issues`,
+  `pull_requests`) plus optional OAuth App for “Connect”
+- Cloudflare Pages project + API token (`Account / Cloudflare Pages / Edit`)
+- Slack app from [`slack/app-manifest.yaml`](./slack/app-manifest.yaml)
+- SMTP if you want invites and email approval
 
 ### Configure
 
-Copy the values into a `.env` file at the repo root (see `.env.example`):
+Copy [`.env.example`](./.env.example) to `.env`. Required for a real run:
 
 ```
-DATABASE_URL=postgresql+asyncpg://whipguard:whipguard@postgres:5432/whipguard
+AZURE_API_ENDPOINT=
+AZURE_API_KEY=
+AZURE_OPENAI_API_VERSION=2025-04-01-preview
+AZURE_FAST_DEPLOYMENT=
+AZURE_WORKER_DEPLOYMENT=
+AZURE_PLANNER_DEPLOYMENT=
+AZURE_EMBEDDING_DEPLOYMENT=text-embedding-3-small
 
-AZURE_API_ENDPOINT=...
-AZURE_API_KEY=...
-AZURE_OPENAI_API_VERSION=...
-AZURE_FAST_DEPLOYMENT=...
-AZURE_WORKER_DEPLOYMENT=...
-AZURE_PLANNER_DEPLOYMENT=...
-AZURE_MECHANICAL_DEPLOYMENT=...
+CLOUDFLARE_ACCOUNT_ID=
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_PAGES_PROJECT=
 
-CLOUDFLARE_ACCOUNT_ID=...
-CLOUDFLARE_API_TOKEN=...
-CLOUDFLARE_PAGES_PROJECT=...
+GITHUB_TOKEN=          # PAT fallback; App below is preferred
+GITHUB_APP_ID=
+GITHUB_APP_PRIVATE_KEY=
+GITHUB_APP_INSTALLATION_ID=
+GITHUB_WEBHOOK_SECRET=
 
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_SIGNING_SECRET=...
-SLACK_CHANNEL_ID=...
-
-GITHUB_TOKEN=...
-FIXTURE_REPO=owner/repo
-
-ASSURANCE_THRESHOLD=75
-RESOLUTION_THRESHOLD=80
+ADMIN_PASSWORD=        # do not leave the code default
+SESSION_SECRET=        # do not leave "change-me-in-real-deployments"
+NOTIFY_EMAIL=
+PUBLIC_BASE_URL=https://whip-guard.zakarias.in
 ```
+
+Optional: `SLACK_*`, `SMTP_*` / `EMAIL_FROM_*`, GitHub/Slack OAuth client
+ids, `WORKSPACE_HOST_ROOT` (put clones on a data disk; Compose defaults to
+`./workspace`).
+
+Per-category thresholds live on the repo row and in `CATEGORY_REGISTRY`.
+`ASSURANCE_THRESHOLD` / `RESOLUTION_THRESHOLD` in `.env` are legacy
+fallbacks, not the sliders on `/repos/[id]/settings`.
 
 ### Run
 
@@ -296,14 +334,11 @@ docker compose up --build
 - Dashboard: http://localhost:3300
 - API: http://localhost:8300 (`/healthz`, `/api/*`, `/ws/activity`)
 
-The backend container mounts the host's Docker socket to run sandboxed fix
-attempts as sibling containers ("Docker outside of Docker") — see
-[Security & scope](#security--scope) for the trade-off this makes, and
-`WORKSPACE_HOST_PATH`/`SANDBOX_UID`/`SANDBOX_GID` in `docker-compose.yml` for
-why a bind-mount path has to be translated to the *host's* path before it's
-handed to the host's own Docker daemon.
+The **worker** is what mounts `/var/run/docker.sock` and translates
+container paths to `WORKSPACE_HOST_PATH` before starting sandbox siblings.
+The API container does not get the socket.
 
-### Run the backend test suite
+### Tests
 
 ```bash
 cd backend
@@ -311,76 +346,75 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest tests/ -v
 ```
 
+270 tests across 33 modules. Graph tests mock Azure and detectors; mechanical
+invariants (no merge method, outcome-check fail-closed, poller idempotency,
+org isolation, prefix byte-identity, webhook HMAC, Fix Council retry) are asserted directly.
+
 ---
 
-## How reliability was tested
+## How reliability is tested
 
-This is the part the design is actually built around — see `plan.md` §11–§12
-for the full reasoning. In short:
+1. **Scores are rubrics** traced to `CouncilRun` rows.
+2. **Mechanical recheck** of the same detector before a second model call;
+   a flake zeroes the score in code.
+3. **Approved artifact is the shipped artifact**, with a freshness check if
+   the base branch moved.
+4. **Post-deploy oracle** re-runs the category detector against the live
+   preview URL, not a status-code ping.
+5. **Outcome checker fails closed** on cross-app disagreement
+   (`test_stale_slack_message_fails_closed_even_though_three_of_four_are_fine`).
+   An unconfigured Slack is not treated as disagreement.
+6. **No merge capability** on `github_client`
+   (`test_no_merge_capability_exists_on_the_client`).
+7. **A below-threshold fix never pushes or opens a PR** (`test_runner.py`).
+8. **Poller is idempotent per `(repo_id, issue number)`** and swallows one
+   GitHub error without killing the loop.
+9. **Write-scope** is enforced in `write_file`, not in a prompt.
 
-1. **Every score is a rubric, not a bare number.** Each Skeptic/Verifier/Arbiter
-   call is recorded as a `CouncilRun` row; the dashboard's rubric view is real
-   data traced to those rows, not a model's prose.
-2. **A mechanical, re-runnable check gates every score.** The Bug Council
-   re-runs the *same* Playwright spec, right now, before the Arbiter ever scores
-   it a second time — a flake that passes on rerun is dropped in code
-   (`tests/test_bug_council_graph.py::test_mechanical_recheck_flake_zeroes_the_score_before_any_second_model_call`).
-3. **The approved artifact is the shipped artifact.** The exact patch shown at
-   approval time is applied — never regenerated — with a freshness re-check if
-   the base branch moved underneath it.
-4. **Verification happens against the live deployment, not just the diff.**
-   The post-deploy oracle re-runs the same assertion against the real
-   Cloudflare URL, not a status-code check.
-5. **A cross-app outcome checker fails closed on disagreement.** GitHub,
-   Cloudflare, Slack, and the dashboard are read back independently after the
-   run and reduced to one status; any mismatch — even a stale Slack message
-   while the other three are fine — is reported as `outcome-check-failed`
-   (`tests/test_outcome_checker.py::test_stale_slack_message_fails_closed_even_though_three_of_four_are_fine`).
-6. **No `merge` capability exists on the GitHub client**, tested directly
-   (`tests/test_github_client.py::test_no_merge_capability_exists_on_the_client`),
-   not just documented as a rule.
-7. **A rejected fix never touches GitHub**, tested directly
-   (`tests/test_runner.py::test_trigger_fix_council_below_threshold_rejects_and_never_pushes_or_opens_pr`)
-   — `push_branch`/`create_draft_pr` are asserted `not_called`, not just "should
-   not happen by the code's shape."
-8. **The externally-filed-bug poller is idempotent by construction**
-   (`tests/test_poller.py::test_poll_once_does_not_duplicate_or_retrigger_an_already_tracked_issue`)
-   and fails one polling cycle closed without killing the loop
-   (`test_poll_once_swallows_github_api_errors_without_propagating`).
-9. **43 automated tests** cover the stable-prefix/cache-floor prompt contract,
-   the retry-byte-identical-prefix guarantee, notification dedupe (first
-   sighting never pages an ordinary condition, escalations bypass that), and
-   the routing logic for both councils — run with `pytest backend/tests/ -v`.
-
-Every seeded-bug run was also verified live end-to-end against a real fixture
-repo (a deliberately introduced off-by-one bug in `app.js`'s delete handler),
-not mocked: a real GitHub issue was raised, a real draft PR opened with a
-working diff, a real Cloudflare Pages deploy created, and the exact same
-Playwright assertion re-run against that live URL — confirmed passing.
+A seeded UI bug in the fixture repo (`app.js` delete handler) has been run
+live: real GitHub issue, real draft PR, real Pages preview, same Playwright
+assertion against that URL.
 
 ---
 
 ## Security & scope
 
-- **No application-level login was built for this Tier-0 scope** — protected
-  at the nginx layer with HTTP Basic Auth instead (credentials above), with the
-  GitHub webhook and Slack interactions endpoints explicitly exempted (they're
-  called by GitHub/Slack's own servers, which don't send basic-auth
-  credentials, not by a logged-in browser).
-- **The Docker-outside-of-Docker trade-off, named rather than hidden**: the
-  backend container mounts the host's Docker socket to launch sandboxed fix
-  attempts as sibling containers. `plan.md` §13's own stated rule is that this
-  socket should never be mounted into the process that also renders untrusted
-  repo/model content — Tier 0 runs both in one process for build-time
-  simplicity, a real, named gap against a genuinely hostile repository (see
-  `plan.md` §16's deliberate-cuts table), acceptable here because the
-  connected repo is WhipGuard's own seeded fixture app, not adversarial input.
-- **All repo code executes inside a throwaway Docker container**
-  (`mcr.microsoft.com/playwright:v1.63.0-jammy`, non-root, matching the host
-  user's UID/GID) — never on the orchestrator's own host.
-- **Write-scope enforcement in code**: `PatchGenerationNode`'s `write_file`
-  tool refuses any path outside the category's scope glob, rather than relying
-  on a prompt instruction.
-- **Slack payloads are signature-verified** (HMAC-SHA256 against the signing
-  secret, with a timestamp replay window) before any button click is trusted.
-- **Secrets are never logged.**
+- **Auth**: session cookies; `/api/webhooks/*`, Slack interactions, Slack
+  Events, email action links, and `/healthz` are public (they carry their
+  own signatures or are called by GitHub/Slack). GitHub webhooks are
+  verified with `X-Hub-Signature-256` when `GITHUB_WEBHOOK_SECRET` is set.
+  Delivery ids are stored in `webhook_deliveries` (and still in the
+  process-local set).
+- **Worker holds the Docker socket**; the API process that renders
+  untrusted repo and model text does not. Repo code still runs in a
+  throwaway `mcr.microsoft.com/playwright` container (non-root,
+  `SANDBOX_UID`/`GID`), never on the orchestrator host. The worker also
+  bind-mounts `${PWD}:${PWD}:ro` so in-container `docker compose` redeploy
+  resolves on the host daemon.
+- **Slack interactions** are HMAC-verified. Email actions are signed,
+  single-use, expiring tokens.
+- **Secrets must not be logged**, including in evidence and GitHub issue
+  bodies (security detector attaches pattern labels, not matched values).
+  gitleaks runs when the binary is on PATH; GitHub Dependabot alerts are
+  merged into the security category without replacing the regex scan.
+- **Kill switches**: per-repo on `/repos/[id]/settings`, and a global pair
+  on `/admin`. The worker and the webhook handler both honour them.
+- Set `ADMIN_PASSWORD` and `SESSION_SECRET`. The process **refuses to boot**
+  on the demo defaults unless `ALLOW_INSECURE_DEFAULTS=true` (tests only).
+
+---
+
+## Known gaps
+
+Tracked as product work, not hidden:
+
+- Write-scope globs in `CATEGORY_REGISTRY` are still fixture-shaped; retrieval
+  entry files now infer from the worktree when those defaults are missing.
+- `create_all` + additive `schema_sync` still run at boot. Alembic is added
+  (`backend/alembic`) as a parallel, additive path — destructive migrations
+  are still not automated.
+- Org admin UI still opens `orgs_for_user()[0]`; dashboard reads now union
+  every membership. A person can still only *join* one org at a time.
+- `ask_human` now pauses the Fix Council, but the ReAct transcript is not
+  checkpointed — resume starts a fresh attempt with the answer as feedback.
+- Do not commit `workspace/` or `workspace.*/` (PATs in `mirror/config`).
