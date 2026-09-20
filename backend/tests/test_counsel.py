@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.azure_client import ModelTurn, ToolCall
 from app.counsel import agent
 from app.counsel.tools import ACTION_TOOLS, READ_TOOLS, TOOL_LABELS, TOOL_SCHEMAS, ToolContext, run_tool
 
@@ -125,32 +126,43 @@ def test_prose_that_cites_nothing_yields_no_citations():
 # --- the stream contract -----------------------------------------------------
 
 
-def _events(context, fake_client):
-    with patch.object(agent, "_client", return_value=fake_client):
+def _turn(content="", tool_calls=None, reasoning_items=None):
+    return ModelTurn(
+        content=content,
+        tool_calls=list(tool_calls or []),
+        reasoning_items=list(reasoning_items or []),
+        protocol="responses",
+    )
+
+
+def _events(context, turns):
+    """`turns` is what complete_turn returns, in order -- or a single turn to
+    return every round, or an exception to raise."""
+    if isinstance(turns, BaseException) or (isinstance(turns, type) and issubclass(turns, BaseException)):
+        patcher = patch("app.azure_client.complete_turn", side_effect=turns)
+    elif isinstance(turns, list):
+        patcher = patch("app.azure_client.complete_turn", side_effect=turns)
+    else:
+        patcher = patch("app.azure_client.complete_turn", return_value=turns)
+    with patcher:
         return list(agent.run(context, "how does deletion work?"))
 
 
 def test_a_turn_with_no_tool_calls_still_streams_and_terminates(context):
-    message = MagicMock(tool_calls=[], content="Deletion happens in `app.js:22`.")
-    fake = MagicMock()
-    fake.chat.completions.create.return_value = MagicMock(choices=[MagicMock(message=message)])
-
-    events = _events(context, fake)
+    answer = "Deletion happens in `app.js:22`."
+    events = _events(context, _turn(content=answer))
     kinds = [event["type"] for event in events]
 
     assert kinds[-1] == "done", "the stream must always terminate with a terminal event"
     assert "token" in kinds, "the answer must arrive in fragments, not one block"
-    assert "".join(e["text"] for e in events if e["type"] == "token") == message.content
+    assert "".join(e["text"] for e in events if e["type"] == "token") == answer
     assert events[-1]["citations"] == ["app.js:22"]
 
 
 def test_a_model_failure_ends_the_stream_with_an_error_not_an_exception(context):
     """The sidebar has no way to render an exception. It can render a
     sentence."""
-    fake = MagicMock()
-    fake.chat.completions.create.side_effect = RuntimeError("upstream is down")
-
-    events = _events(context, fake)
+    events = _events(context, RuntimeError("upstream is down"))
     assert events[-1]["type"] == "error"
     assert "Nothing was changed" in events[-1]["text"]
 
@@ -158,19 +170,13 @@ def test_a_model_failure_ends_the_stream_with_an_error_not_an_exception(context)
 def test_tool_use_is_narrated_before_it_runs(context):
     """The whole point of the event stream: the reader learns a step is
     happening while it happens, not after it finished."""
-    call = MagicMock()
-    call.id = "call_1"
-    call.function.name = "search_code"
-    call.function.arguments = '{"query": "deleteItem"}'
-
-    fake = MagicMock()
-    fake.chat.completions.create.side_effect = [
-        MagicMock(choices=[MagicMock(message=MagicMock(tool_calls=[call], content=None))]),
-        MagicMock(choices=[MagicMock(message=MagicMock(tool_calls=[], content="Found it."))]),
+    turns = [
+        _turn(tool_calls=[ToolCall(name="search_code", arguments={"query": "deleteItem"}, id="call_1")]),
+        _turn(content="Found it."),
     ]
 
     with patch.dict(READ_TOOLS, {"search_code": lambda ctx, query: "### app.js:1-3\n```\ncode\n```"}):
-        events = _events(context, fake)
+        events = _events(context, turns)
 
     kinds = [event["type"] for event in events]
     assert kinds.index("tool") < kinds.index("result"), "the tool event must precede its result"
@@ -179,22 +185,43 @@ def test_tool_use_is_narrated_before_it_runs(context):
     assert tool_event["detail"] == "deleteItem"
 
 
+def test_the_replayed_history_is_responses_shaped(context):
+    """A tool result is a `function_call_output` item, never a
+    `{"role": "tool"}` message -- the API rejects the latter outright."""
+    histories = []
+    turns = [
+        _turn(
+            content="Looking.",
+            tool_calls=[ToolCall(name="search_code", arguments={"query": "deleteItem"}, id="c1")],
+            reasoning_items=[{"type": "reasoning", "id": "rs_1", "summary": []}],
+        ),
+        _turn(content="Found it in app.js:22."),
+    ]
+
+    def fake(**kwargs):
+        histories.append([dict(item) for item in kwargs["messages"]])
+        return turns.pop(0)
+
+    with patch.dict(READ_TOOLS, {"search_code": lambda ctx, query: "result text"}), \
+         patch("app.azure_client.complete_turn", side_effect=fake):
+        list(agent.run(context, "how does deletion work?"))
+
+    second = histories[1]
+    assert [item.get("type") or item.get("role") for item in second][-4:] == [
+        "reasoning", "assistant", "function_call", "function_call_output",
+    ]
+    assert isinstance(second[-2]["arguments"], str), "arguments must be a JSON string"
+    assert second[-1] == {"type": "function_call_output", "call_id": "c1", "output": "result text"}
+
+
 def test_a_runaway_loop_is_cut_off_and_still_answers(context):
     """A model that keeps calling tools forever would otherwise spend the
     budget and return nothing at all."""
-    call = MagicMock()
-    call.id = "c"
-    call.function.name = "search_code"
-    call.function.arguments = "{}"
-
-    fake = MagicMock()
-    fake.chat.completions.create.return_value = MagicMock(
-        choices=[MagicMock(message=MagicMock(tool_calls=[call], content=None))]
-    )
+    looping = _turn(tool_calls=[ToolCall(name="search_code", arguments={}, id="c")])
 
     with patch.dict(READ_TOOLS, {"search_code": lambda ctx, **kw: "nothing"}):
         with patch.object(agent, "MAX_TOOL_ROUNDS", 2):
-            events = _events(context, fake)
+            events = _events(context, looping)
 
     assert events[-1]["type"] in {"done", "error"}
     tool_calls = [event for event in events if event["type"] == "tool"]
@@ -205,22 +232,16 @@ def test_a_dispatch_tool_opens_a_job_card_and_hides_the_marker_from_the_model(co
     """The job id is addressed to the interface, not to the reasoning. Left
     in the tool result, the model would helpfully repeat the raw marker back
     to the user."""
-    call = MagicMock()
-    call.id = "c1"
-    call.function.name = "draft_prd"
-    call.function.arguments = '{"requirements": "add presence"}'
-
-    fake = MagicMock()
-    fake.chat.completions.create.side_effect = [
-        MagicMock(choices=[MagicMock(message=MagicMock(tool_calls=[call], content=None))]),
-        MagicMock(choices=[MagicMock(message=MagicMock(tool_calls=[], content="Started it."))]),
+    turns = [
+        _turn(tool_calls=[ToolCall(name="draft_prd", arguments={"requirements": "add presence"}, id="c1")]),
+        _turn(content="Started it."),
     ]
 
     job_id = "3f2b1c4d-0000-0000-0000-000000000000"
     stub = lambda ctx, requirements: f"__JOB__{job_id}__PRD\nStarted a feasibility council."
 
     with patch.dict(ACTION_TOOLS, {"draft_prd": stub}):
-        events = _events(context, fake)
+        events = _events(context, turns)
 
     job_events = [event for event in events if event["type"] == "job"]
     assert len(job_events) == 1

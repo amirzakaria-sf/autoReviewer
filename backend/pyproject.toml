@@ -15,7 +15,11 @@ dependencies = [
   "python-dotenv>=1.0",
   "pydantic-settings>=2.5",
   "pydantic>=2.9",
-  "openai>=1.50",
+  # 1.58.1 is the floor where `prompt_cache_key` is a real kwarg on
+  # `responses.create`; below it the call TypeErrors client-side before any
+  # HTTP request. No upper cap: 3.x is what is installed and verified here,
+  # and the sibling project's `<2.0.0` pin would be a two-major downgrade.
+  "openai>=1.58.1",
   "psycopg[binary,pool]>=3.2",
   "itsdangerous>=2.2",
   "pgvector>=0.3",

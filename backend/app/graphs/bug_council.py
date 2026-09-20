@@ -211,7 +211,7 @@ def skeptic_node(state: BugCouncilState) -> BugCouncilState:
     )
     suffix = build_volatile_suffix(_evidence_suffix(state))
     emit_event({"type": "node", "node": "skeptic", "status": "started", "message": "Skeptic arguing against the finding…"})
-    opinion = azure_client.call_skeptic_opinion(prefix, suffix)
+    opinion = azure_client.call_skeptic_opinion(prefix, suffix, repo_full_name=state.get("repo_full_name", ""))
     emit_event({"type": "node", "node": "skeptic", "status": "done", "message": f"Skeptic confidence (not-a-bug): {opinion.confidence}"})
     return {"skeptic_transcript": opinion.transcript, "skeptic_confidence": opinion.confidence}
 
@@ -243,7 +243,7 @@ def corroborator_node(state: BugCouncilState) -> BugCouncilState:
     )
     suffix = build_volatile_suffix(_evidence_suffix(state))
     emit_event({"type": "node", "node": "corroborator", "status": "started", "message": "Corroborator seeking supporting evidence…"})
-    opinion = azure_client.call_corroborator_opinion(prefix, suffix)
+    opinion = azure_client.call_corroborator_opinion(prefix, suffix, repo_full_name=state.get("repo_full_name", ""))
     emit_event({"type": "node", "node": "corroborator", "status": "done", "message": f"Corroborator confidence (is-a-bug): {opinion.confidence}"})
     return {"corroborator_transcript": opinion.transcript, "corroborator_confidence": opinion.confidence}
 
@@ -296,7 +296,7 @@ def arbiter_node(state: BugCouncilState) -> BugCouncilState:
         f"Mechanical recheck: still fails = {state['mechanical_result']['still_fails']}"
     )
     emit_event({"type": "node", "node": "arbiter", "status": "started", "message": "Arbiter scoring the finding…"})
-    verdict = azure_client.call_arbiter(prefix, suffix)
+    verdict = azure_client.call_arbiter(prefix, suffix, repo_full_name=state.get("repo_full_name", ""))
 
     if verdict.needs_clarification:
         # Plan.md §10.5: forced confidence out of a model missing a fact only
@@ -388,7 +388,7 @@ def meta_audit_node(state: BugCouncilState) -> BugCouncilState:
         f"Corroborator (confidence is-a-bug={state.get('corroborator_confidence', 0)}): {state.get('corroborator_transcript', '')}\n\n"
         f"First-pass Arbiter score: {state['score']} — {state['verdict']}"
     )
-    verdict = azure_client.call_meta_auditor(prefix, suffix)
+    verdict = azure_client.call_meta_auditor(prefix, suffix, repo_full_name=state.get("repo_full_name", ""))
     emit_event({"type": "node", "node": "meta_audit", "status": "done", "message": f"Meta-audit final score: {verdict.score}/100"})
     return {
         **state,
@@ -705,7 +705,7 @@ async def resume_with_clarification_answer(db, request, answer_text: str) -> "Is
         f"A human answered: {answer_text!r}\n"
         f"Score now, using that answer. Do not ask for clarification again."
     )
-    verdict = azure_client.call_arbiter(prefix, suffix)
+    verdict = azure_client.call_arbiter(prefix, suffix, repo_full_name=ctx.get("repo_full_name", ""))
 
     issue = await db.get(Issue, request.issue_id)
     repo_full_name = ctx.get("repo_full_name", "")

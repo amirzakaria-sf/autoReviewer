@@ -14,14 +14,14 @@ import subprocess
 from pathlib import Path
 from typing import Any, TypedDict
 
-from openai import AzureOpenAI
-
 from app import azure_client
 from app.categories import CATEGORY_REGISTRY, entry_files_for, scope_excludes
 from app.config import settings
 from app.detectors import get_detector
 from app.integrations import context7_client
-from app.prompts import build_prefix, build_volatile_suffix, pad_to_cache_floor
+from app.prompts import build_prefix, build_volatile_suffix, pad_to_cache_floor, partition_key
+from app.sandbox.apply_patch import apply_patch as apply_patch_to_worktree
+from app.sandbox.apply_patch import write_file as write_file_in_worktree
 from app.routers.ws import emit_event
 from app.workspace_map import build_workspace_map
 
@@ -45,8 +45,34 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "apply_patch",
+            "description": (
+                "Replace an exact span of an existing file. This is the preferred way to edit: "
+                "old_string must match the file byte for byte, including indentation, and must be "
+                "unique unless replace_all is true. Refused if the path is outside this "
+                "category's write scope."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_string": {"type": "string", "description": "The exact text to replace, copied from read_file output."},
+                    "new_string": {"type": "string", "description": "What to put in its place."},
+                    "replace_all": {"type": "boolean", "description": "Replace every occurrence rather than refusing an ambiguous anchor."},
+                },
+                "required": ["path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "write_file",
-            "description": "Overwrite a file's contents in the worktree. Refused if the path is outside this category's write scope.",
+            "description": (
+                "Create a new file, or replace an existing one in full. Prefer apply_patch for "
+                "any file that already exists -- a full rewrite can drop code the detector does "
+                "not check. Refused if the path is outside this category's write scope."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
@@ -270,10 +296,12 @@ def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
     system_prompt = pad_to_cache_floor(
         build_prefix(
             role=(
-                f"You are a patch-generation worker fixing a {category} bug. You have read_file, "
-                "write_file, and finish_patch tools. Make the SMALLEST correct change. "
-                "Call finish_patch only after you have actually run something to check your "
-                "change (state what you ran in the summary)."
+                f"You are a patch-generation worker fixing a {category} bug. Your tools are "
+                "read_file, apply_patch (preferred for any file that already exists), write_file "
+                "(new files, or a genuine full replace), lookup_docs, ask_human and finish_patch. "
+                "Make the SMALLEST correct change. Do not claim you ran tests: you have no shell. "
+                "The verifier re-runs this category's own detector after you call finish_patch, "
+                "and that result -- not your summary -- is what decides whether the fix stands."
             ),
             workspace_map=workspace_map,
             category_rules=CATEGORY_REGISTRY[category].rules,
@@ -309,42 +337,64 @@ def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
         {"role": "user", "content": user_prompt},
     ]
 
-    client = AzureOpenAI(
-        azure_endpoint=settings.azure_api_endpoint,
-        api_key=settings.azure_api_key,
-        api_version=settings.azure_openai_api_version,
-    )
-
     call_fingerprints: list[str] = []
     asks_used = 0
+    # The prefix is byte-stable across retries by construction (plan.md §9.6),
+    # which is exactly what a provider prefix cache keys on. The volatile
+    # half sits after it in `input`, where it belongs.
+    cache_key = partition_key(state.get("repo_full_name") or "unknown", "patch_worker", system_prompt)
 
     for _ in range(MAX_TOOL_ITERATIONS):
-        response = client.chat.completions.create(
-            model=settings.azure_worker_deployment,
+        turn = azure_client.complete_turn(
+            deployment=settings.azure_worker_deployment,
             messages=messages,
             tools=TOOLS,
+            role="patch_worker",
+            # Every tick, not just the last attempt. A tool loop that cannot
+            # think is the failure this whole protocol change exists to end;
+            # rationing the thinking to the final attempt would reintroduce it
+            # for the seven ticks that actually choose the approach.
+            reasoning_effort="medium",
+            # Never the Postgres exact-match cache: an identical prompt here
+            # means the run is repeating itself, and a cache hit would erase
+            # the only evidence the tripwire below has to work with.
+            cacheable=False,
+            prompt_cache_key=cache_key,
+            issue_id=state.get("issue_id"),
         )
-        message = response.choices[0].message
-        messages.append(message.model_dump(exclude_none=True))
 
-        if not message.tool_calls:
+        # Replay order matters: reasoning items belong AHEAD of the message
+        # they produced, and a function_call item must be in the history
+        # before its own function_call_output.
+        messages.extend(turn.reasoning_items)
+        if turn.content.strip():
+            messages.append({"role": "assistant", "content": turn.content})
+        for call in turn.tool_calls:
+            messages.append({
+                "type": "function_call",
+                "call_id": call.id,
+                "name": call.name,
+                # A JSON string, not a dict. The API rejects the dict.
+                "arguments": json.dumps(call.arguments),
+            })
+
+        if not turn.tool_calls:
             break
 
-        for tool_call in message.tool_calls:
-            name = tool_call.function.name
-            try:
-                args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                args = {}
+        for tool_call in turn.tool_calls:
+            name = tool_call.name
+            args = tool_call.arguments
 
             fingerprint = _tool_fingerprint(name, args)
             call_fingerprints.append(fingerprint)
             repeat_streak = sum(1 for f in reversed(call_fingerprints[-REPEAT_FAIL_THRESHOLD:]) if f == fingerprint)
 
             if repeat_streak >= REPEAT_FAIL_THRESHOLD:
-                messages.append(
-                    {"role": "tool", "tool_call_id": tool_call.id, "content": "Attempt failed: repeated identical tool call too many times."}
-                )
+                messages.append({
+                    "type": "function_call_output",
+                    "call_id": tool_call.id,
+                    "output": "Attempt failed: repeated identical tool call too many times.",
+                })
                 return {**state, "diff": "", "verifier_result": {"error": "loop_tripwire_failed"}}
 
             if repeat_streak >= REPEAT_NUDGE_THRESHOLD:
@@ -353,16 +403,22 @@ def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
                 nudge = ""
 
             if name == "read_file":
-                target = worktree / args["path"]
-                content = target.read_text() if target.exists() else f"ERROR: {args['path']} does not exist"
+                target = worktree / args.get("path", "")
+                content = target.read_text() if target.exists() else f"ERROR: {args.get('path')} does not exist"
                 result = content + nudge
+            elif name == "apply_patch":
+                result = apply_patch_to_worktree(
+                    worktree,
+                    category,
+                    args.get("path", ""),
+                    args.get("old_string", ""),
+                    args.get("new_string", ""),
+                    replace_all=bool(args.get("replace_all")),
+                ) + nudge
             elif name == "write_file":
-                rel_path = args["path"]
-                if scope_excludes(category, rel_path):
-                    result = f"REFUSED: {rel_path} is outside the {category} category's write scope." + nudge
-                else:
-                    (worktree / rel_path).write_text(args["content"])
-                    result = f"wrote {rel_path}" + nudge
+                result = write_file_in_worktree(
+                    worktree, category, args.get("path", ""), args.get("content", "")
+                ) + nudge
             elif name == "lookup_docs":
                 try:
                     result = context7_client.lookup(args["library"], topic=args.get("topic", ""), tokens=1500) + nudge
@@ -411,9 +467,9 @@ def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
             else:
                 result = f"unknown tool {name}"
 
-            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
+            messages.append({"type": "function_call_output", "call_id": tool_call.id, "output": result})
 
-        if any(tc.function.name == "finish_patch" for tc in message.tool_calls):
+        if any(call.name == "finish_patch" for call in turn.tool_calls):
             break
 
     # git diff reads metadata only — it does not execute the repo's own code, so
@@ -512,7 +568,7 @@ def arbiter_node(state: FixCouncilState) -> FixCouncilState:
         f"Diff:\n{state['diff']}\n\nVerifier: tests pass = {state['verifier_result']['passes']}"
     )
     emit_event({"type": "node", "node": "arbiter", "status": "started", "message": "Arbiter scoring the fix…"})
-    verdict = azure_client.call_arbiter(prefix, suffix)
+    verdict = azure_client.call_arbiter(prefix, suffix, repo_full_name=state.get("repo_full_name", ""))
     emit_event({"type": "node", "node": "arbiter", "status": "done", "message": f"Resolution confidence: {verdict.score}/100"})
     return {
         **state,
