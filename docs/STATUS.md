@@ -23,7 +23,8 @@ Two fields need care:
 - **Commits:** `6093ea89a0c488db480d77a78357c0760267678f` (`6093ea8`) — Azure Responses +
   `apply_patch`. `fbcc5b6539342cb3a7aebec5f7e0e3b0b596e059` (`fbcc5b6`) — the curated
   web-research council. `7dab810c57b083b7d6508ee3ef97c4f0df537dac` (`7dab810`) — the three
-  tenancy gaps closed.
+  tenancy gaps closed. `355359e849946f48f667c92a744a3366fc81ba53` (`355359e`) — three more
+  found by re-auditing, in `github.py`.
 - **Deployed:** **no.** All three commits are on `main` and pushed; the running containers are
   still the 2026-09-20 build of `732f41c`. `deploy.sh` builds from the working tree, so
   nothing above is live until someone asks for a deploy. The new `research_findings` table
