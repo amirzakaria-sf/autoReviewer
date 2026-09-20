@@ -11,7 +11,7 @@ file is the only channel.
 ## 2026-09-20 06:55 (UTC) — Adopt the two-agent documentation flow
 
 - **Agent:** claude
-- **Commit:** pending
+- **Commit:** `0545a6ae5a8260c40bf9e006b8c7c3c9d3b81030` (`0545a6a`)
 - **User ask:** implement in WhipGuard the multi-agent documentation flow already running
   in `aiClass`, `opencode` and `jobFlowAuto`, so both agents stay in sync.
 - **Shipped:**
@@ -56,7 +56,7 @@ file is the only channel.
 
 - **Agent:** claude
 - **Type:** review
-- **Commit:** pending (this log)
+- **Commit:** `0545a6ae5a8260c40bf9e006b8c7c3c9d3b81030` (`0545a6a`) — recorded with the protocol commit
 - **Reviewing:** `732f41c4b4956156c98b8a0dc5be5a4fc451803e` — 52 files, +2049/−447.
 - **User ask:** go through Cursor's changes in depth and say whether they were relevant.
 - **Verdict: relevant and correct.** It closed four defects that had each passed tests and

@@ -28,6 +28,7 @@ Two fields need care:
   `webhook_deliveries`, `repos.cloudflare_pages_project` and
   `organizations.github_app_installation_id` automatically. All seven API surfaces 200.
 
+- **Docs commit:** `0545a6ae5a8260c40bf9e006b8c7c3c9d3b81030` (`0545a6a`) — this protocol.
 - **Shipped this session (claude):** the two-agent documentation flow itself — `docs/info.md`,
   this file, `DECISIONS.md`, `ARCHITECTURE.md`, `CHANGELOG.md`, both agent folders,
   `CLAUDE.md` and `AGENTS.md`. No application code changed.
