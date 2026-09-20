@@ -353,3 +353,51 @@ concurrent refreshes would invalidate each other.
   would require deploying. The handshake is covered by a real-server test instead. Worth
   watching the activity feed on the first deploy — that is the one change that fails
   visibly rather than silently.
+
+---
+
+## 2026-09-20 16:55 (UTC) — Three more, found by auditing differently
+
+- **Agent:** claude
+- **Commit:** `355359e849946f48f667c92a744a3366fc81ba53` (`355359e`)
+- **User ask:** "Is it all done?"
+
+The last time that question was asked, my answer was built by re-reading my own to-do list,
+which is a circular check — it can only ever confirm that I did what I wrote down. So this
+time the audit ran a different way: walk every route in every router with `ast`, print the
+ones whose signature carries no tenancy dependency, and read each.
+
+That produced false positives (`admin.py` declares `require_admin` at the router, not per
+route) and three real findings, all in `github.py`, none shaped like what the earlier pass
+was hunting:
+
+- `GET /api/github/repos` built its `connected` flag from **every** `Repo` row, so it told
+  the caller that some other organisation had connected a repository.
+- `POST /api/github/connect` returned another organisation's `repo_id`. It never reassigned
+  — the dangerous half was already right — but it handed back an identifier.
+- `POST /api/github/disconnect` clears the **deployment-wide** GitHub token and was open to
+  any authenticated member of any organisation. One click stops every other organisation's
+  pushes, PR comments and branch cleanups.
+
+The third is the interesting one. It reads nothing, so an audit hunting for *leaks* walks
+straight past it. The tenancy boundary has an availability half, and only a route-by-route
+sweep surfaces it.
+
+```
+$ backend/.venv/bin/python -m pytest -q
+371 passed, 1 warning in 41.44s
+
+$ cd frontend && npx tsc --noEmit
+(clean)
+```
+
+Also checked and found correct, so they are recorded here rather than left to be
+re-investigated: `webhooks.py`'s `select(Fix)` (signature-verified, not session-scoped by
+design), `email_actions.py` (the signed token *is* the credential), `slack_connect.py`'s
+`/status` (account-wide by design, read-only), and `counsel.py`'s conversation endpoints
+(scoped by owner, which is the right boundary for a private chat — not by org).
+
+### Still true
+
+**Nothing from this session is deployed.** The containers have been up 12 hours; they run
+`732f41c`. Every commit today is on `main` and pushed and none of it is live.
