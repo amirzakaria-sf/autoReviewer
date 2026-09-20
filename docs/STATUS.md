@@ -20,54 +20,60 @@ Two fields need care:
 
 - **As of:** 2026-09-20
 - **Last agent:** claude
-- **Commit:** `732f41c4b4956156c98b8a0dc5be5a4fc451803e` (`732f41c`) — authored by cursor;
-  this session reviewed it rather than adding code.
-- **Deployed:** `732f41c` is live. It was committed 2026-09-19 06:32 and sat **undeployed
-  for ~22 hours** (containers were still running the 2026-09-18 build). Claude built and
-  deployed both images on 2026-09-20; boot clean, `schema_sync` applied
-  `webhook_deliveries`, `repos.cloudflare_pages_project` and
-  `organizations.github_app_installation_id` automatically. All seven API surfaces 200.
+- **Commits:** `6093ea89a0c488db480d77a78357c0760267678f` (`6093ea8`) — Azure Responses +
+  `apply_patch`. `fbcc5b6539342cb3a7aebec5f7e0e3b0b596e059` (`fbcc5b6`) — the curated
+  web-research council.
+- **Deployed:** **no.** Both commits are on `main` and pushed; the running containers are
+  still the 2026-09-20 build of `732f41c`. `deploy.sh` builds from the working tree, so
+  nothing above is live until someone asks for a deploy. The new `research_findings` table
+  is created by `create_all` at boot, so the first deploy applies it with no manual step.
 
-- **Docs commit:** `0545a6ae5a8260c40bf9e006b8c7c3c9d3b81030` (`0545a6a`) — this protocol.
-- **Shipped this session (claude):** the two-agent documentation flow itself — `docs/info.md`,
-  this file, `DECISIONS.md`, `ARCHITECTURE.md`, `CHANGELOG.md`, both agent folders,
-  `CLAUDE.md` and `AGENTS.md`. No application code changed.
+- **Shipped this session (claude):**
+  - `app/azure_client.py` rewritten around `complete_turn` on the **Responses API**. Native
+    reasoning alongside tools (impossible on Chat Completions with GPT-5.x, which is why the
+    patch loop had never once thought), reasoning items replayed across ticks, flat tool
+    schemas with `strict: false` and `$defs` preserved, forced-Pydantic structured output for
+    the jury and Arbiter, `prompt_cache_key` finally sent, and usage recorded for every turn
+    with the protocol and reasoning cost. `WHIPGUARD_AZURE_API=chat` is the operator hatch.
+  - `fix_council.py` and `counsel/agent.py` no longer construct their own `AzureOpenAI`.
+    `app/embeddings.py` stays separate on purpose.
+  - `app/sandbox/apply_patch.py` — exact-anchor replace, now the preferred edit;
+    `write_file` kept for creation and genuine full replaces. Both gated by the same
+    `scope_excludes`, inside the primitive.
+  - `app/research.py` — Gatherer (`web_search`) + Curator (attribute, score, drop), findings
+    persisted to the new `research_findings` table. Wired into the PRD council via a
+    per-requirement planner, and into Counsel and the patch worker as `research_web`.
+  - Frontend: the Counsel markdown renderer now renders bare URLs as links and `_italics_`,
+    so a research citation can actually be followed.
+  - Docs: `docs/plans/2026-09-20-azure-responses-and-apply-patch.md` (with the places live
+    probing contradicted the plan marked), 8 new `DECISIONS` rows, README `Model protocol`
+    and `Web research` sections, `ARCHITECTURE.md`, `CHANGELOG.md`.
 
-- **Reviewed this session (claude):** cursor's `732f41c` (52 files, +2049/−447). Verdict:
-  relevant and correct. It closed four real defects, each of which had passed tests and
-  review before:
-  1. `/api/webhooks/github` accepted unsigned payloads from anyone — the path is public by
-     necessity and had no HMAC check. A forged `pull_request closed merged` could mark
-     fixes merged, delete branches and delete Cloudflare deployments. Now verified.
-  2. The cross-app outcome checker hardcoded `cloudflare_state = {"reachable": True}` — it
-     asserted a fact it never checked. `app/preview.py` now probes the URL.
-  3. The secret scanner put the **matched secret value** into evidence, which is copied to
-     a GitHub issue body, the dashboard and Slack. Now redacted to `path:line: label`.
-  4. Three more `settings.fixture_repo` fallbacks in `approval_graph` and `runner`.
-  Also: durable webhook dedupe, per-repo Cloudflare project, per-org GitHub App
-  installation with per-installation token caching, a global kill switch, detector command
-  discovery for non-Node repos, and `ask_human` now genuinely blocking the Fix Council.
-  It changed `deps.visible_repo_ids` to `repo_ids_for_user` — checked, the tenancy boundary
-  holds and it is more robust than what it replaced.
-
-- **Verified this session:** `pytest` 270 passed. `tsc --noEmit` clean. Deploy clean, boot
-  log free of errors. Global kill switch exercised live (paused detection → scan returned
-  409 → unpaused). Webhook dedupe exercised live (replay returned `deduped`, row written to
-  `webhook_deliveries`, test row removed afterwards). `verify_webhook_signature` exercised
-  directly: valid accepted, wrong rejected, tampered body rejected, empty header rejected.
-  `boot_checks.refuse_insecure_defaults()` checked against the live `.env` before deploying
-  — it passes, so it would not have blocked the boot.
+- **Verified this session:**
+  - `pytest -q` → **343 passed** (was 321 after the protocol slice, 270 before the session).
+  - `npx tsc --noEmit` → clean.
+  - **Live Azure probes, before writing any code:** Responses + `reasoning` + flat tools in
+    one request on `gpt-5.6-terra` and `gpt-5.6-luna`; reasoning items and `reasoning_tokens`
+    present on real prompts; `prompt_cache_key` accepted; built-in `web_search` returning
+    `['reasoning','web_search_call','message']` with `url_citation` annotations.
+  - **Live patch-loop round trip:** three real ticks against Azure replaying reasoning items,
+    `function_call` and `function_call_output` — no 400. The model chose `apply_patch` over
+    `write_file` unprompted. Three `council_runs` rows written with
+    `{"protocol": "responses", "reasoning_tokens": N}`, then removed.
+  - **Live research run:** Express 5's `app.del` removal. Two searches, one source returned,
+    four claims kept and attributed to it, rows persisted to `whipguard_test` and cleaned up.
 
 ### Needs verification
 
-- **Nothing from cursor's commit is unexercised** except the two items below, which are
-  blocked on configuration rather than on effort.
-- `GITHUB_WEBHOOK_SECRET` is **unset on both sides**, so the signature check added in
-  `732f41c` is inert — the endpoint still accepts unsigned POSTs (confirmed: HTTP 200).
-  Arming it needs a secret in `.env` **and** in the GitHub webhook config. Until then the
-  fix is correct but not protecting anything.
-- Alembic is scaffolded but not wired into `deploy.sh`; `schema_sync` remains the live
-  path. `alembic upgrade head` has never been run here.
+- **Nothing shipped this session is unexercised** — the protocol, the patch loop and the
+  research council were each run against live Azure, and the results are in
+  [`claude/changes.md`](./claude/changes.md).
+- **Not yet seen end to end:** a full Fix Council run on the fixture repo under the new
+  protocol (detect → patch → verify → propose). The loop was proved live, the graph around
+  it was not re-run. Worth one fixture run on the next deploy.
+- `GITHUB_WEBHOOK_SECRET` is **still unset on both sides**, so the signature check added in
+  `732f41c` remains inert — the endpoint still accepts unsigned POSTs.
+- Alembic is scaffolded but not wired into `deploy.sh`; `schema_sync` remains the live path.
 
 ### Open — tenancy gaps (claude, found 2026-09-20, not yet fixed)
 
@@ -89,6 +95,15 @@ signature *is* the credential.
 ### Other agent should
 
 - Pick up the three tenancy gaps above if the user asks for them — `counsel.py` first.
+  Note `counsel.py` is now more urgent than it was: Counsel holds `research_web`, so an
+  unscoped `_resolve_context` also means one org's question can spend another org's budget.
+- **Never construct an `AzureOpenAI` outside `app/azure_client.py` and `app/embeddings.py`.**
+  That rule was silently false for months in `fix_council.py` and `counsel/agent.py`, and the
+  cost was invisible: two of the most expensive call sites in the product recorded no usage
+  at all. If a new call site needs the model, it needs `complete_turn`.
+- Callers speak **Responses input items**. A tool result is `function_call_output`, a
+  function call's `arguments` is a JSON *string*, and reasoning items are replayed with `id`
+  and `summary` only. Each of those is a 400 in production and invisible against a mock.
 - Read `docs/info.md` §11 before touching the worker, the workspace layout, or anything
   that writes to GitHub.
 - **Hot files:** none. Nothing is in flight.
@@ -105,6 +120,13 @@ signature *is* the credential.
 ---
 
 ## Recent (newest first)
+
+- **2026-09-20 (claude, `0545a6a`)** — adopted the two-agent documentation protocol:
+  `docs/info.md`, this file, `DECISIONS.md`, `ARCHITECTURE.md`, `CHANGELOG.md`, both agent
+  folders, `CLAUDE.md` and `AGENTS.md`. Also deployed `732f41c`, which had sat undeployed
+  for ~22 hours, and reviewed it (verdict: relevant and correct — four real defects closed,
+  including a webhook endpoint that accepted unsigned payloads and a secret scanner that put
+  the matched secret into evidence).
 
 - **2026-09-19 (cursor, `732f41c`)** — webhook signature verification + durable delivery
   dedupe, real Cloudflare preview probe, secret redaction, remaining fixture-repo fallbacks,
