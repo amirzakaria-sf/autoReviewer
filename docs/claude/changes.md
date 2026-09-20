@@ -106,3 +106,143 @@ file is the only channel.
   `ws.py` broadcasts every activity event to every client; `human_input.py` lists all
   clarification requests. Recorded in STATUS.
 - **Hot files:** none.
+
+---
+
+## 2026-09-20 11:05 (UTC) — Azure Responses, apply_patch, and curated web research
+
+- **Agent:** claude
+- **Commits:** `6093ea89a0c488db480d77a78357c0760267678f` (`6093ea8`) — protocol + edit
+  primitive. `fbcc5b6539342cb3a7aebec5f7e0e3b0b596e059` (`fbcc5b6`) — the research council.
+- **Plan:** the user wrote one and handed it over;
+  [`../plans/2026-09-20-azure-responses-and-apply-patch.md`](../plans/2026-09-20-azure-responses-and-apply-patch.md)
+  records it along with the three places live probing contradicted it.
+- **User ask:** these Azure models are raw — no system prompts, no memory, context
+  management is ours. Move generation onto the Responses API the way `opencode` does, prefer
+  an exact-anchor edit over full-file rewrites, and take the PRD to the next level with a
+  real research flow: web research happens, the agent checks it, and it decides what to keep.
+
+### Probed live BEFORE writing anything
+
+The plan's central premise was that GPT-5.x cannot combine tools with reasoning on Chat
+Completions. That is worth believing, but it is not worth building on unverified, and two of
+the plan's own instructions turned out to be wrong.
+
+```
+probe 1  responses + reasoning, no tools          200, status=completed
+probe 3  effort=high, real prompt                 types=['reasoning','message'] reasoning_tokens=463
+probe 2  responses + reasoning + flat tool        200, function_call returned
+probe 8  tools=[{"type":"web_search"}]            types=['reasoning','web_search_call','message']
+                                                  annotation: url_citation → expressjs.com/en/guide/migrating-5/
+```
+
+A trivial prompt spends **0** reasoning tokens even at `effort=medium`, which briefly looked
+like "reasoning is inert on these deployments". It is not — a prompt with something to think
+about spends hundreds. Worth knowing before anyone reads a future log and concludes the
+feature is broken.
+
+**Deviation 1 — the SDK pin.** The plan said `openai>=1.58.1,<2.0.0`. Installed here is
+**3.13.0**:
+
+```
+$ .venv/bin/python -c "import openai; ...signature(...responses.create)..."
+openai 3.13.0
+prompt_cache_key present: True
+```
+
+The cap would have been a two-major downgrade for no gain. Shipped without an upper bound.
+
+**Deviation 2 — the web-research transport.** The plan pointed at `opencode`'s Azure AI
+Foundry agent. It is enabled, and it is broken:
+
+```
+GET  {project}/agents?api-version=v1     200  → web-research:1, model "gpt-5.2-chat",
+                                                tools: [{"type":"web_search"}]
+POST {project}/openai/v1/responses       404  DeploymentNotFound   (×4 invocation shapes)
+```
+
+Its entire definition is one `web_search` tool — the same tool that works directly on our own
+deployments. Asked the user, who chose native. No second endpoint, no second key, nothing to
+repair in a portal.
+
+### Shipped
+
+- **`app/azure_client.py`** — `complete_turn` is now the only generation entry point.
+  Responses first; `_to_chat_messages` is the only place the Chat shape exists. Reasoning
+  items replayed with `id`/`summary` only; tools sent flat with `strict: false` and `$defs`
+  intact; jury and Arbiter output is a forced Pydantic function, with the *semantics* (weights
+  sum to score, when to ask for clarification) left in the prompt where they belong. A 400
+  drops the one parameter its body names and retries once — anything else raises with the
+  body logged, because a blanket fallback is how a sibling app swallowed content-filter
+  rejections for weeks while looking healthy.
+- **`app/sandbox/apply_patch.py`** — exact-anchor replace, the preferred edit. `write_file`
+  kept for creation and genuine full replaces. Both check `scope_excludes` *inside the
+  primitive*, so a future call site cannot forget it.
+- **`app/research.py`** — Gatherer + Curator. The mechanical half of curation is the part
+  that matters: a claim whose URL was not among the sources the search actually returned is
+  dropped regardless of what the Curator said. Both keeps and rejections persist to
+  `research_findings`.
+- **Wiring** — PRD council (per-requirement planner, `research_web` findings cited in a
+  "What the web says" section), Counsel (`research_web` read tool), patch worker
+  (`research_web`, its own bounded sub-call).
+- **Frontend** — the Counsel markdown renderer gained bare-URL links and `_italics_`. A
+  citation the reader cannot click is barely a citation, and that renderer only handled
+  backticks and bold.
+
+### Verified
+
+```
+$ backend/.venv/bin/python -m pytest -q
+343 passed in 39.44s          (321 after the protocol slice; 270 at session start)
+
+$ cd frontend && npx tsc --noEmit
+(clean)
+```
+
+**Live patch-loop round trip** — the shape that is a 400 in production and invisible against
+a mock:
+
+```
+tick 0: protocol=responses reasoning_items=1 reasoning_tokens=8  calls=['read_file']
+tick 1: protocol=responses reasoning_items=1 reasoning_tokens=12 calls=['apply_patch']
+tick 2: protocol=responses reasoning_items=0 reasoning_tokens=0  calls=['finish_patch']
+
+history item kinds: ['system','user','reasoning','function_call','function_call_output',
+                     'reasoning','function_call','function_call_output',
+                     'function_call','function_call_output']
+
+council_run: ('live_probe_patch_worker','gpt-5.6-terra',603,0,29,
+              {'protocol':'responses','reasoning_tokens':8})
+probe rows removed: 3
+```
+
+The model reached for `apply_patch` rather than `write_file` without being told to, which is
+what the tool descriptions were written to achieve.
+
+**Live research run** — real question, real search, real curation:
+
+```
+queries: ['site:expressjs.com Express 5 app.del removed app.delete migration guide',
+          'site:github.com/expressjs/express app.del removed Express 5']
+sources: ['https://expressjs.com/en/guide/migrating-5/']
+KEPT   [official/current rel=100] Express 5 removes the `app.del()` alias; `app.delete()` is
+                                  the replacement...
+       (3 more, all attributed to that one source)
+persisted rows: 4 kept → then deleted
+```
+
+Both live probes ran against `whipguard_test`, **never** production — `DATABASE_URL` was
+rewritten in the probe script before `app.config` was imported, and every row written was
+removed afterwards. The one time this project ran tests against the production database, the
+fixtures appeared on the dashboard as real issues.
+
+### Not done, deliberately
+
+- **Not deployed.** `deploy.sh` builds from the working tree; the user asks.
+- **The three tenancy gaps stay open** and stay in STATUS. Folding them into this diff would
+  have made an un-reviewable PR. `counsel.py` is now slightly more urgent than it was:
+  Counsel holds `research_web`, so an unscoped `_resolve_context` also means one org's
+  question can spend another org's research budget.
+- **No fixture Fix Council run.** The patch loop was proved live; the graph around it
+  (detect → patch → verify → propose) has not been re-run end to end under the new protocol.
+  Listed under Needs verification.
