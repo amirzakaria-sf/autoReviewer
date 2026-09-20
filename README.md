@@ -101,7 +101,8 @@ BugCouncilGraph:
 
 FixCouncilGraph:
   START -> Retrieval (hybrid + graph neighbourhood)
-        -> PatchGeneration (ReAct: read_file / write_file / lookup_docs / ask_human / finish_patch)
+        -> PatchGeneration (ReAct: read_file / apply_patch / write_file / lookup_docs /
+                            research_web / ask_human / finish_patch)
         -> Verifier (the category detector, not a model)
         -> Arbiter
         -> score >= resolution threshold? propose
@@ -118,6 +119,41 @@ Detect and mechanical recheck are **not** model calls. They run in a
 throwaway Playwright image via `app/sandbox/docker_runner.py`. A flake that
 passes on rerun is dropped in code before a second model call
 (`tests/test_bug_council_graph.py`).
+
+### Model protocol
+
+Every generation call goes through `app/azure_client.py::complete_turn`, over the
+**Responses API** (`{endpoint}/openai/v1/`, `api_version="preview"`). That is what lets a
+tool-bound call carry native reasoning: on GPT-5.x, Chat Completions cannot combine the
+two, so the patch loop used to run with reasoning off. Reasoning items are replayed across
+ticks, tool schemas go out flat with `strict: false`, jury and Arbiter output is a forced
+Pydantic function rather than JSON asked for in prose, and `prompt_cache_key` carries the
+partition key `prompts.partition_key()` has always computed.
+
+A `400` drops the one optional parameter its body names and retries once; anything else
+raises with the body logged. `WHIPGUARD_AZURE_API=chat` pins the whole process to Chat
+Completions as an operator hatch. Embeddings stay on their own client.
+
+`apply_patch` is the preferred edit: an exact, unique anchor replaced in place. `write_file`
+remains for creating a file or a genuine full replace. Both refuse a path outside the
+worktree and a path outside the category's write scope. Nothing here runs a shell — the
+verifier runs the category's detector after `finish_patch`, and that result decides.
+
+### Web research
+
+`app/research.py` gives the PRD council, Counsel and the patch worker one tool for things
+the repository cannot answer — whether an API still exists, what a third-party service
+requires, what a release changed. It is two roles, not one call:
+
+- **Gatherer** runs the model's own `web_search` tool and reports claims with sources.
+- **Curator** attributes every claim to a URL the search actually returned, scores
+  relevance, recency and source authority, and drops the rest.
+
+A claim whose URL was never returned is dropped mechanically, whatever the Curator decided.
+Keeps and rejections are both written to `research_findings`, so a PRD's external claim is
+traceable to a source the same way a code claim is traceable to `path:line`. Nothing
+decides *when* to research from a keyword list — the PRD planner judges it per requirement
+and the tool is autonomous elsewhere.
 
 ### Prompt contract
 

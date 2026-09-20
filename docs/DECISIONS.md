@@ -37,8 +37,42 @@ Format: `YYYY-MM-DD` · **title** · decision · why · who.
   not tidiness: a git worktree records its link to the mirror as an absolute path, so under
   any other host name every worktree resolves only inside the container. · claude
 
-- **2026-09-14** · **One Azure call site** · Every model call goes through
+- **2026-09-14** · **One Azure call site** · Every generation call goes through
   `app/azure_client.py`. · Token and cost accounting has to happen exactly once. · claude
+  · *Reaffirmed 2026-09-20: `fix_council.py` and `counsel/agent.py` had each been building
+  their own `AzureOpenAI` and recording nothing, which made this row untrue in practice for
+  the two most expensive call sites in the product. Both now call `complete_turn`.
+  `app/embeddings.py` stays separate — a different API surface, nothing to unify.*
+
+
+- **2026-09-20** · **Responses is the generation protocol** · Every generation call uses the
+  Responses API at `{endpoint}/openai/v1/` with `api_version="preview"`. Chat Completions
+  survives as the `WHIPGUARD_AZURE_API=chat` operator hatch and the documented fallback,
+  never the default. · On GPT-5.x a tool-bound Chat Completions call cannot carry a
+  non-`none` reasoning effort, so the Fix Council's eight-tick patch loop — the one call in
+  this product that most needs to think — had reasoning switched off for its entire life.
+  Verified live on `gpt-5.6-terra` and `gpt-5.6-luna` before the rewrite, not inferred from
+  documentation. · claude
+
+- **2026-09-20** · **A 400 is not evidence the protocol is unsupported** · On
+  `BadRequestError`, drop the one optional parameter the body actually names
+  (`prompt_cache_key`, then `reasoning`) and retry once. Anything else raises with the body
+  logged. · A blanket "fall back to Chat Completions on any 400" swallowed content-filter
+  rejections and malformed tool schemas identically in a sibling app: the product looked
+  healthy and every call had quietly lost its reasoning. Losing a cache partition is
+  cheaper than losing the protocol, and both are cheaper than losing the error. · claude
+
+- **2026-09-20** · **`strict: false` on every converted tool** · Tool schemas are sent flat
+  with `strict` explicitly false. · The Responses API defaults it to true server-side,
+  which requires `additionalProperties: false` and every property in `required` — neither
+  of which our hand-written schemas guarantee. Unset, every tool-bound call 400s, not just
+  the nested ones. `$defs` is carried through for the same class of reason: Pydantic emits
+  `$ref` for nested models, and a dangling ref is rejected outright. · claude
+
+- **2026-09-20** · **The SDK is not capped below 2.0** · `openai>=1.58.1`, no upper bound.
+  · 1.58.1 is the floor where `prompt_cache_key` is a real kwarg; below it the call
+  TypeErrors client-side. The sibling project's `<2.0.0` pin would have been a two-major
+  downgrade from the 3.13.0 installed and verified here. · claude
 
 ## Product rules
 
@@ -67,6 +101,42 @@ Format: `YYYY-MM-DD` · **title** · decision · why · who.
   resolved, log and refuse. · Eight separate bugs: a Fix Council that cloned the fixture for
   every issue, a poller that polled only the fixture, a PR opened against the wrong
   repository. · claude + cursor
+
+- **2026-09-20** · **`apply_patch` is the default edit** · An exact-anchor replace is the
+  preferred write; `write_file` is for creating a file or a genuine full replace. Both are
+  gated by the same `scope_excludes`, inside the primitive rather than at the call site. ·
+  A full-file rewrite is how a green detector still ships a collateral regression: the
+  detector only checks the behaviour it was written to check, so a model that restates
+  2,000 lines to change three can drop or reword a sibling function and still pass. An
+  anchored replace can only change the bytes it names. Exact match, never fuzzy — a patcher
+  that "mostly" finds its anchor eventually applies an edit somewhere subtly wrong, and
+  nothing downstream can see that it happened. · claude
+
+- **2026-09-20** · **Web research is curated before it is used** · A Gatherer runs the
+  model's own `web_search`; a Curator then attributes every claim to a URL the search
+  actually returned, scores relevance/recency/authority, and drops the rest. A claim whose
+  URL was not among the returned sources is dropped mechanically, whatever the Curator
+  said. Both keeps and rejections are persisted in `research_findings`. · A single model
+  asked to search and summarise repeats a four-year-old blog post in the same confident
+  voice it uses for the official changelog, and will supply a plausible URL from memory when
+  it has none. Attribution to a source that was really returned is the only mechanical
+  check available. Persisting the rejections matters because "we looked and chose not to
+  use it" is a different state from "we never looked". · claude
+
+- **2026-09-20** · **The native `web_search` tool, not a Foundry agent** · Research calls
+  `{"type": "web_search"}` on our own deployments rather than the Azure AI Foundry
+  `web-research` agent the sibling `opencode` project uses. · That agent's entire definition
+  is one `web_search` tool, so the extra project endpoint, key and hop buy nothing — and as
+  of 2026-09-20 it is broken anyway: its definition names a `gpt-5.2-chat` deployment that
+  no longer exists, so every call returns 404 `DeploymentNotFound`. Checked across four
+  invocation shapes before deciding. · claude (user chose this option)
+
+- **2026-09-20** · **No keyword list decides when to research** · Every research entry
+  point is the model's own judgment: a per-requirement planner in the PRD council, and an
+  autonomous `research_web` tool in Counsel and the patch worker. · A static list of
+  technology names fails on the service someone integrates next week, and maintaining one
+  is a permanent tax. A tool with a clear description and a per-run ceiling costs nothing
+  when it is not needed. · claude (protocol taken from `opencode`'s own notes)
 
 ## Organizations and access
 

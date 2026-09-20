@@ -472,13 +472,19 @@ function JobCard({ job }: { job: Job }) {
 }
 
 /* Just enough markdown for what Counsel actually writes: paragraphs, bullets,
-   inline code and bold. A full parser would be a dependency and a bundle for
-   four constructs, and the answer streams in fragments — so this has to
-   tolerate half-finished syntax on every render, which a strict parser does
-   not. Nothing here injects HTML; every branch renders React nodes. */
+   inline code, bold, italics and bare links. A full parser would be a
+   dependency and a bundle for a handful of constructs, and the answer streams
+   in fragments — so this has to tolerate half-finished syntax on every render,
+   which a strict parser does not. Nothing here injects HTML; every branch
+   renders React nodes.
+
+   Links matter more here than they look: a PRD's research section cites the
+   source every external claim was attributed to, and a citation the reader
+   cannot follow is barely a citation. Rendered with rel="noreferrer" because
+   these URLs come from a web search, not from us. */
 function inline(text: string, keyPrefix: string) {
   const nodes: React.ReactNode[] = [];
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|_[^_\n]+_|https?:\/\/[^\s<>()]+)/g;
   let last = 0;
   let match: RegExpExecArray | null;
   let index = 0;
@@ -486,7 +492,26 @@ function inline(text: string, keyPrefix: string) {
   while ((match = pattern.exec(text)) !== null) {
     if (match.index > last) nodes.push(text.slice(last, match.index));
     const token = match[0];
-    if (token.startsWith("`")) {
+    if (token.startsWith("http")) {
+      nodes.push(
+        <a
+          key={`${keyPrefix}-l${index++}`}
+          href={token}
+          target="_blank"
+          rel="noreferrer"
+          className="underline decoration-dotted underline-offset-2 break-all"
+          style={{ color: "var(--amber)" }}
+        >
+          {token.replace(/^https?:\/\//, "")}
+        </a>,
+      );
+    } else if (token.startsWith("_")) {
+      nodes.push(
+        <em key={`${keyPrefix}-i${index++}`} className="text-lo not-italic text-[0.85em]">
+          {token.slice(1, -1)}
+        </em>,
+      );
+    } else if (token.startsWith("`")) {
       nodes.push(
         <code
           key={`${keyPrefix}-c${index++}`}

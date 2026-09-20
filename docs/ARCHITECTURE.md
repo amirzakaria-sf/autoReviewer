@@ -50,6 +50,20 @@ Categories are a registry (`app/categories.py`) plus a detector module
 (`app/detectors/<key>.py`). A new category is a config row and a detector, never new
 pipeline code. Every detector takes `(worktree_path, path_scope, base_url)`.
 
+## Model calls
+
+`app/azure_client.py::complete_turn` is the only generation client — jury, Arbiter, patch
+loop, Counsel, PRD council. It speaks the **Responses API** (`{endpoint}/openai/v1/`,
+`api_version="preview"`) so a tool-bound call can carry native reasoning, which Chat
+Completions cannot do on GPT-5.x. Callers pass Responses input items; the Chat shape exists
+only behind the `WHIPGUARD_AZURE_API=chat` hatch. `app/embeddings.py` is a separate client
+on a separate API and stays that way.
+
+`app/research.py` is the web-research council: a Gatherer running the built-in `web_search`
+tool, then a Curator that attributes each claim to a source actually returned and drops
+what it cannot. Both halves land in `research_findings`. Bound into the PRD council (via a
+per-requirement planner), Counsel and the patch worker as `research_web`.
+
 ## Data
 
 One Postgres, pgvector. Schema is built at boot by `create_all` + `app/schema_sync.py`

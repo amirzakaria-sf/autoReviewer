@@ -3,6 +3,23 @@
 Short product history. Append a dated heading when a slice lands. Detail belongs in
 `docs/<agent>/changes.md`; this is the shape of the product over time.
 
+## 2026-09-20 — Azure Responses, apply_patch, and curated web research
+
+Every generation call moved to the Responses API, so the Fix Council's patch loop can carry
+native reasoning for the first time — on GPT-5.x a tool-bound Chat Completions call cannot,
+which meant an eight-tick loop that had never thought. `fix_council.py` and
+`counsel/agent.py` stopped building their own clients; usage is recorded for every turn with
+the protocol and reasoning cost. Jury and Arbiter output became a forced Pydantic function
+instead of JSON asked for in prose, and `prompt_cache_key` is finally sent.
+
+`apply_patch` replaced `write_file` as the default edit: an exact anchor replaced in place,
+so a patch can only change the bytes it names. Full rewrites remain available for creation.
+
+New: a web-research council. A Gatherer runs the model's own search; a Curator attributes
+each claim to a source that was actually returned, scores it, and drops the rest. Kept and
+rejected findings are both persisted. The PRD council plans research per requirement and
+cites it; Counsel and the patch worker can call it themselves.
+
 ## 2026-09-20 — two-agent documentation flow
 
 `docs/info.md`, `STATUS.md`, `DECISIONS.md`, `ARCHITECTURE.md`, agent folders, `CLAUDE.md`
