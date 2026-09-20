@@ -10,6 +10,11 @@ The original design essay is [`plan.md`](./plan.md). That document is the
 *why*; this README is the *what ships today*. Where they disagree, the code
 wins, then this file.
 
+**Working on this repo?** Two agents do — Cursor and Claude — and they share a
+filesystem but not a session. Read [`docs/info.md`](./docs/info.md) before you
+start: it is the protocol, and §11 lists the traps that have each already cost a
+debugging session. The live handoff is [`docs/STATUS.md`](./docs/STATUS.md).
+
 ---
 
 ## Table of contents

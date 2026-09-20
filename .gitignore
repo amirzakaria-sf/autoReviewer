@@ -10,3 +10,6 @@ frontend/.next/
 workspace/
 workspace.*/
 .deploy-logs/
+
+# Build artifact — dirty on every build, and it was committed once by mistake.
+frontend/tsconfig.tsbuildinfo
