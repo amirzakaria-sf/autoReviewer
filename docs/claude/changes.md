@@ -246,3 +246,110 @@ fixtures appeared on the dashboard as real issues.
 - **No fixture Fix Council run.** The patch loop was proved live; the graph around it
   (detect → patch → verify → propose) has not been re-run end to end under the new protocol.
   Listed under Needs verification.
+
+---
+
+## 2026-09-20 16:40 (UTC) — The three tenancy gaps, closed
+
+- **Agent:** claude
+- **Commit:** `7dab810c57b083b7d6508ee3ef97c4f0df537dac` (`7dab810`)
+- **User ask:** take the three tenancy gaps next.
+
+### Each gap was bigger than its one-line entry
+
+STATUS listed three. Reading the files found seven, and two of them were writes rather than
+reads — which matters, because a read leak is embarrassing and a write leak lets one
+organisation steer another's automation.
+
+**`counsel.py`** — the recorded gap was `_resolve_context`: no ownership check on `repo_id`,
+and with none given a fallback of `select(Repo).first()`, an arbitrary repository from the
+whole deployment. Two more were in the same file:
+
+- `get_job` had **no ownership check at all** — `WHERE payload->>'job_id' = :job_id`. Any
+  authenticated caller could poll any job id and read its full `result`, and a `counsel_prd`
+  result is a document of another organisation's file paths, source excerpts and citations.
+  The id is a UUID, but "hard to guess" is not an access control, and it is printed in that
+  organisation's own activity events.
+- `ask` accepted another user's `conversation_id` without checking ownership, which both
+  replayed their history into the model and appended to their transcript. `get_conversation`
+  checked exactly this and `ask` did not — the guard existed, on the wrong endpoint.
+- `get_conversation` answered 403 for someone else's conversation, which confirms the id is
+  real. Now 404, per the DECISIONS row.
+
+**`ws.py`** — worse than "broadcasts across orgs". The socket had **no authentication at
+all**. `@app.middleware("http")` does not run for a websocket scope, and `/ws/activity` is
+not under `/api/` either, so nothing was checking a session. Anyone who could reach the host
+could watch every organisation's councils run, with the file paths and assertion text those
+node messages carry.
+
+**`human_input.py`** — `list_requests` returned every organisation's open questions. The
+real problem was `answer_request`: it enqueues a `fix_council` work item, so unscoped it was
+a way to steer another organisation's council run. `actor` also came from the request body,
+so the audit line on that answer could name anyone the caller chose.
+
+### How the feed got scoped
+
+47 `emit_event` call sites. Threading a repo id through all of them is how one gets missed,
+and a missed one is either a leak or a dead feed. Instead: a `contextvars` scope set once per
+run at six entry points (`run_and_persist`, `trigger_fix_council`, `resolve_approval`, both
+worker counsel handlers), with `emit_event` stamping from it. `asyncio.to_thread` copies the
+context, so graph nodes running in worker threads inherit it. The two emitters with no
+ambient run — the stuck-run sweeper, which walks several repositories in one pass, and the
+public webhook handler — name their repository explicitly.
+
+**An event with no `repo_id` reaches nobody.** The two available failure modes are
+"unattributed event is invisible" and "unattributed event goes to everyone"; only the first
+is recoverable, and the broadcaster logs each one so it is findable.
+
+### Verified the bugs were real before trusting the tests
+
+A passing test proves nothing if it would also have passed before. Put each pre-fix
+behaviour back and ran it:
+
+```
+1 broadcaster  pre-fix leaks to other org:                  True
+2 get_job      pre-fix returns another org's PRD:           True
+               post-fix returns nothing:                    True
+3 counsel      pre-fix fallback picks a repo outside [mine]: True
+```
+
+The `two_orgs` fixture names the other org's repo `aaa-theirs/…` and the caller's
+`zzz-mine/…` on purpose: a fixture where the caller's own repo happens to sort first would
+pass against the broken fallback.
+
+The websocket tests go through a **real handshake** with `TestClient`, not a hand-built fake
+socket:
+
+```
+test_a_real_handshake_with_no_cookie_is_closed                  → 4401
+test_a_real_handshake_with_a_valid_cookie_connects_and_is_scoped → frozenset({repo_id})
+test_an_expired_or_tampered_cookie_is_closed_not_accepted       → 4401
+```
+
+A fake socket proves the handler's branches and proves nothing about whether a browser's
+cookie actually arrives — which is the assumption the entire change rests on, and the one
+that would take the activity feed down for every user if it were wrong.
+
+```
+$ backend/.venv/bin/python -m pytest -q
+367 passed, 1 warning in 41.06s        (343 before this slice)
+
+$ cd frontend && npx tsc --noEmit
+(clean)
+```
+
+### Frontend
+
+Both websocket consumers now refresh once on a `4401` and reconnect, instead of retrying
+into the same rejection — otherwise any page left open past the access-token TTL sits in
+"reconnecting" until a reload. `refreshSession()` is exported from `lib/api.ts` so both go
+through the existing single-flight guard; the refresh token rotates on every use, so two
+concurrent refreshes would invalidate each other.
+
+### Not done
+
+- **Not deployed.** Policy stands; the containers still run `732f41c`.
+- **No live exercise of the new websocket auth against the real deployment**, because that
+  would require deploying. The handshake is covered by a real-server test instead. Worth
+  watching the activity feed on the first deploy — that is the one change that fails
+  visibly rather than silently.

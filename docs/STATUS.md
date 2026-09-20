@@ -22,8 +22,9 @@ Two fields need care:
 - **Last agent:** claude
 - **Commits:** `6093ea89a0c488db480d77a78357c0760267678f` (`6093ea8`) — Azure Responses +
   `apply_patch`. `fbcc5b6539342cb3a7aebec5f7e0e3b0b596e059` (`fbcc5b6`) — the curated
-  web-research council.
-- **Deployed:** **no.** Both commits are on `main` and pushed; the running containers are
+  web-research council. `7dab810c57b083b7d6508ee3ef97c4f0df537dac` (`7dab810`) — the three
+  tenancy gaps closed.
+- **Deployed:** **no.** All three commits are on `main` and pushed; the running containers are
   still the 2026-09-20 build of `732f41c`. `deploy.sh` builds from the working tree, so
   nothing above is live until someone asks for a deploy. The new `research_findings` table
   is created by `create_all` at boot, so the first deploy applies it with no manual step.
@@ -45,12 +46,37 @@ Two fields need care:
     per-requirement planner, and into Counsel and the patch worker as `research_web`.
   - Frontend: the Counsel markdown renderer now renders bare URLs as links and `_italics_`,
     so a research citation can actually be followed.
+  - **The three tenancy gaps, closed** (`7dab810`) — and each turned out to be more than
+    the one line recorded against it:
+    - `counsel.py` — `_resolve_context` now requires the repo to be visible and falls back
+      *within* the caller's set instead of `select(Repo).first()`. Two more holes were in
+      the same file: `get_job` returned any job's full result to any authenticated caller
+      (a PRD's result is another org's file paths and source excerpts), and `ask` accepted
+      another user's `conversation_id`, replaying their history into the model and
+      appending to their transcript. `get_conversation`'s 403 became a 404.
+    - `ws.py` — the socket had **no authentication at all**: `@app.middleware("http")`
+      never runs for a websocket scope and `/ws/activity` is not under `/api/` either. It
+      now authenticates its own handshake and closes `4401`; events carry a `repo_id`
+      stamped from an ambient per-run scope, and an unaddressed event reaches nobody.
+    - `human_input.py` — both endpoints scoped through issue → repo. `answer_request` was
+      the dangerous one: answering enqueues a `fix_council` work item, so unscoped it let
+      one org steer another's council run. The actor now comes from the session, not the
+      request body.
+    - Frontend: both websocket consumers refresh once on a `4401` rather than reconnecting
+      into the same rejection.
   - Docs: `docs/plans/2026-09-20-azure-responses-and-apply-patch.md` (with the places live
-    probing contradicted the plan marked), 8 new `DECISIONS` rows, README `Model protocol`
-    and `Web research` sections, `ARCHITECTURE.md`, `CHANGELOG.md`.
+    probing contradicted the plan marked), 11 new `DECISIONS` rows, README `Model protocol`
+    and `Web research` sections, `ARCHITECTURE.md`, `CHANGELOG.md`, two more `info.md` §11
+    traps.
 
 - **Verified this session:**
-  - `pytest -q` → **343 passed** (was 321 after the protocol slice, 270 before the session).
+  - `pytest -q` → **367 passed** (343 before the tenancy slice, 270 at session start).
+  - **Each tenancy fix checked against its own pre-fix behaviour**, not just against a
+    passing test: the old `broadcast` does reach the other org's socket, the old job query
+    does return their PRD markdown, the old fallback does pick a repo outside the caller's
+    set. The websocket tests run a real handshake through `TestClient` rather than a
+    hand-built fake socket, because "does the browser's cookie actually arrive here" is the
+    assumption that change rests on.
   - `npx tsc --noEmit` → clean.
   - **Live Azure probes, before writing any code:** Responses + `reasoning` + flat tools in
     one request on `gpt-5.6-terra` and `gpt-5.6-luna`; reasoning items and `reasoning_tokens`
@@ -75,28 +101,24 @@ Two fields need care:
   `732f41c` remains inert — the endpoint still accepts unsigned POSTs.
 - Alembic is scaffolded but not wired into `deploy.sh`; `schema_sync` remains the live path.
 
-### Open — tenancy gaps (claude, found 2026-09-20, not yet fixed)
+### Closed — the tenancy gaps (claude, 2026-09-20, `7dab810`)
 
-`repos.org_id` scoping was added to `routers/api.py` and `routers/fix_review.py`. Three
-routers were missed and are still unscoped. These are real cross-org reads:
-
-- **`routers/counsel.py`** — the worst. `_resolve_context` takes `repo_id` with no
-  ownership check, and with none passed falls back to `select(Repo).first()` — an arbitrary
-  repo from the whole deployment. Counsel has `read_file`, `git log` and code search, so
-  one org can read another's source through it.
-- **`routers/ws.py`** — `broadcaster.broadcast` sends every activity event to every
-  connected client, across orgs.
-- **`routers/human_input.py`** — `list_requests` returns all clarification requests
-  unscoped.
-
-`routers/email_actions.py` and `routers/webhooks.py` are fine: their signed token or
+`counsel.py`, `ws.py` and `human_input.py` are scoped. Details in **Shipped** above.
+`email_actions.py` and `webhooks.py` remain correct as they were: their signed token or
 signature *is* the credential.
+
+Two things a reader should carry forward rather than rediscover:
+
+- **`@app.middleware("http")` does not run for websockets.** Any new websocket route
+  authenticates itself or is public. There is no middleware that will catch it.
+- **An activity event with no `repo_id` reaches nobody.** A new `emit_event` added outside
+  an `activity_scope` will go missing from the feed rather than leak. The broadcaster logs
+  each one — read that log before concluding the feed is broken.
 
 ### Other agent should
 
-- Pick up the three tenancy gaps above if the user asks for them — `counsel.py` first.
-  Note `counsel.py` is now more urgent than it was: Counsel holds `research_web`, so an
-  unscoped `_resolve_context` also means one org's question can spend another org's budget.
+- **Nothing is queued.** The tenancy gaps are closed; ask the user what is next rather than
+  picking something up.
 - **Never construct an `AzureOpenAI` outside `app/azure_client.py` and `app/embeddings.py`.**
   That rule was silently false for months in `fix_council.py` and `counsel/agent.py`, and the
   cost was invisible: two of the most expensive call sites in the product recorded no usage
