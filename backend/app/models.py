@@ -816,3 +816,37 @@ class IdentityLink(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), sa.ForeignKey("users.id"), index=True)
     provider: Mapped[str] = mapped_column(sa.String)  # github | git-email | slack
     external_id: Mapped[str] = mapped_column(sa.String)
+
+
+class ResearchFinding(Base):
+    """One curated web-research claim, kept or dropped.
+
+    Both halves are written (`kept` says which), because "we looked and decided
+    not to use this" is a different state from "we never looked", and only the
+    first one tells the next reader anything. The row carries the URL the claim
+    was attributed to and the queries that found it, so a claim in a PRD can be
+    traced back to a source the same way a code claim is traced to `path:line`.
+    """
+
+    __tablename__ = "research_findings"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    repo_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("repos.id"), nullable=True, index=True
+    )
+    issue_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("issues.id"), nullable=True, index=True
+    )
+    # Who asked: prd_research, patch_worker, counsel, ...
+    role: Mapped[str] = mapped_column(sa.String, default="")
+    question: Mapped[str] = mapped_column(sa.Text)
+    claim: Mapped[str] = mapped_column(sa.Text)
+    source_url: Mapped[str] = mapped_column(sa.Text, default="")
+    source_title: Mapped[str] = mapped_column(sa.String, default="")
+    relevance: Mapped[int] = mapped_column(sa.Integer, default=0)
+    recency: Mapped[str] = mapped_column(sa.String, default="unknown")
+    authority: Mapped[str] = mapped_column(sa.String, default="unverified")
+    kept: Mapped[bool] = mapped_column(sa.Boolean, default=False)
+    reason: Mapped[str] = mapped_column(sa.Text, default="")
+    queries: Mapped[list] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())

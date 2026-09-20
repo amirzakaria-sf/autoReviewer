@@ -293,6 +293,58 @@ def test_the_prd_renders_its_own_ungrounded_list():
     assert "55/100" in markdown
 
 
+def test_the_prd_renders_what_the_web_said_with_its_sources():
+    """An external claim earns the same standard as a code claim: a reader can
+    follow it back to where it came from."""
+    from app.counsel.prd import PrdResult, _render_markdown
+
+    result = PrdResult(
+        title="Auth v2",
+        summary="Replacing the session cookie.",
+        requirements=[],
+        coverage_score=80,
+        research=[{
+            "claim": "Clerk's Backend API requires a secret key sent as a Bearer token.",
+            "source_url": "https://clerk.com/docs/reference/backend-api",
+            "authority": "official",
+            "recency": "current",
+        }],
+        research_gaps=["no source states the rate limit for the free tier"],
+    )
+    markdown = _render_markdown(result, {"missed": [], "additional_risks": []})
+    assert "What the web says" in markdown
+    assert "https://clerk.com/docs/reference/backend-api" in markdown
+    assert "official, current" in markdown
+    assert "rate limit for the free tier" in markdown
+
+
+def test_a_prd_with_no_research_renders_no_research_heading():
+    """An empty section is worse than no section: it reads as "we looked and
+    found nothing" when in fact nothing needed looking up."""
+    from app.counsel.prd import PrdResult, _render_markdown
+
+    markdown = _render_markdown(PrdResult(title="t", summary="s"), {"missed": [], "additional_risks": []})
+    assert "What the web says" not in markdown
+
+
+def test_the_research_planner_asks_for_nothing_when_the_code_can_answer():
+    """No keyword list: the planner decides per requirement, and an empty plan
+    must cost zero searches rather than one 'just in case'."""
+    from app.azure_client import ModelTurn, ToolCall
+    from app.counsel import prd
+
+    empty_plan = ModelTurn(tool_calls=[ToolCall(name="ResearchPlan", arguments={"questions": []}, id="c1")])
+    with patch("app.azure_client.complete_turn", return_value=empty_plan):
+        assert prd._plan_research(["rename the delete button"], "acme/demo") == []
+
+
+def test_a_planner_failure_costs_the_research_not_the_prd():
+    from app.counsel import prd
+
+    with patch("app.azure_client.complete_turn", side_effect=RuntimeError("upstream is down")):
+        assert prd._plan_research(["integrate Clerk"], "acme/demo") == []
+
+
 # --- scoped detector runs ----------------------------------------------------
 
 

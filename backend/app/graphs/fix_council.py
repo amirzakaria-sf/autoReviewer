@@ -102,6 +102,27 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "research_web",
+            "description": (
+                "Look something up on the live web when the repository and lookup_docs cannot "
+                "answer it: whether an API you are about to call still exists, what a recent "
+                "release changed, what an external service actually requires. Findings are "
+                "curated before you see them and carry the source URL they were attributed to. "
+                "Use it when you would otherwise be guessing at an external contract -- not for "
+                "questions about this repository's own code."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "One specific, searchable technical question."}
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ask_human",
             "description": (
                 "Ask a human a clarifying question at a genuine fork -- two materially "
@@ -298,7 +319,8 @@ def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
             role=(
                 f"You are a patch-generation worker fixing a {category} bug. Your tools are "
                 "read_file, apply_patch (preferred for any file that already exists), write_file "
-                "(new files, or a genuine full replace), lookup_docs, ask_human and finish_patch. "
+                "(new files, or a genuine full replace), lookup_docs, research_web, ask_human and "
+                "finish_patch. "
                 "Make the SMALLEST correct change. Do not claim you ran tests: you have no shell. "
                 "The verifier re-runs this category's own detector after you call finish_patch, "
                 "and that result -- not your summary -- is what decides whether the fix stands."
@@ -428,6 +450,20 @@ def patch_generation_node(state: FixCouncilState) -> FixCouncilState:
                     # to (try a different query, proceed without it) — never
                     # a reason to crash patch generation outright.
                     result = f"lookup_docs failed: {exc}" + nudge
+            elif name == "research_web":
+                # Its own bounded sub-call with its own budget, so a search
+                # cannot eat the eight ticks this loop has to actually fix
+                # something. Only curated findings come back into the history.
+                from app.research import research
+
+                outcome = research(
+                    args.get("question", ""),
+                    purpose=f"fixing a {category} bug: {state.get('bug_description', '')[:200]}",
+                    repo_id=state.get("repo_id"),
+                    issue_id=state.get("issue_id"),
+                    role="patch_worker_research",
+                )
+                result = outcome.render() + nudge
             elif name == "ask_human":
                 if not args.get("already_considered"):
                     # The symmetric policy to evidence-before-claiming-done

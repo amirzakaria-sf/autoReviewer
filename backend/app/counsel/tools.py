@@ -296,6 +296,27 @@ def issue_detail(context: ToolContext, issue_id: str) -> str:
 # was already possible through the UI.
 
 
+def research_web(context: ToolContext, question: str) -> str:
+    """Look something up on the live web, then show only what survived curation.
+
+    Deliberately not a raw search box. What comes back is the Curator's kept
+    findings with their source URLs (app/research.py), so an answer built on
+    this cites a page that was actually returned rather than a plausible URL.
+    Read-only in the sense that matters here: it changes nothing about the
+    repository, the issues or any fix -- the audit rows it writes are the
+    record of having looked.
+    """
+    from app.research import research
+
+    outcome = research(
+        question,
+        purpose=f"answering a question about {context.repo_full_name}",
+        repo_id=context.repo_id,
+        role="counsel_research",
+    )
+    return outcome.render()
+
+
 def _enqueue_job(context: ToolContext, kind: str, payload: dict) -> str:
     """Queue a long job and hand back its id so the UI can follow it."""
     import uuid as uuid_module
@@ -352,6 +373,7 @@ READ_TOOLS = {
     "prior_attempts": prior_attempts,
     "list_issues": list_issues,
     "issue_detail": issue_detail,
+    "research_web": research_web,
 }
 
 # Kept separate from READ_TOOLS so "does this surface mutate anything" stays a
@@ -375,6 +397,7 @@ TOOL_LABELS = {
     "prior_attempts": "Searching what was already tried",
     "list_issues": "Listing issues",
     "issue_detail": "Reading the issue record",
+    "research_web": "Researching this on the web",
     "draft_prd": "Convening the feasibility council",
     "investigate": "Opening an investigation",
 }
@@ -549,6 +572,34 @@ def run_tool(context: ToolContext, name: str, arguments: dict) -> str:
         logger.warning("tool %s failed: %s", name, error)
         return f"Tool {name} failed: {type(error).__name__}: {error}"
 
+
+TOOL_SCHEMAS.append(
+    {
+        "type": "function",
+        "function": {
+            "name": "research_web",
+            "description": (
+                "Look up something on the live web that this repository cannot answer: a "
+                "third-party API's current contract, whether a method was deprecated, what a "
+                "service requires, what changed in a recent release. Results are curated before "
+                "you see them -- every claim carries the source URL it was attributed to, and "
+                "anything that could not be attributed was dropped. Cite those URLs. Do not use "
+                "this for questions about this repository's own code; the code tools answer "
+                "those better and for free."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "One specific, searchable technical question.",
+                    }
+                },
+                "required": ["question"],
+            },
+        },
+    }
+)
 
 TOOL_SCHEMAS += [
     {
