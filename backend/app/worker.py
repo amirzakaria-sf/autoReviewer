@@ -224,10 +224,14 @@ async def _handle_counsel_prd(payload: dict) -> dict:
     """The PRD sub-council. Minutes and several frontier calls, which is why
     it is a work item rather than a chat turn."""
     from app.counsel import prd
-    from app.routers.ws import emit_event
+    from app.routers.ws import emit_event, set_event_repo
     from app.sandbox.worktree import ensure_mirror, ensure_read_worktree
 
     job_id = payload.get("job_id", "")
+    # Every event from this job belongs to the repository it named. The
+    # broadcaster drops anything unaddressed, so this is what keeps the live
+    # job card working, not just what keeps it scoped.
+    set_event_repo(payload.get("repo_id"))
 
     def emit(message: str) -> None:
         # Reaches the browser over the same Postgres NOTIFY bus the activity
@@ -253,11 +257,12 @@ async def _handle_counsel_investigate(payload: dict) -> dict:
     """Gather evidence for a hypothesis, then hand it to the Bug Council to
     RULE on -- Counsel never decides whether something is a bug itself."""
     from app.counsel import tools as counsel_tools
-    from app.routers.ws import emit_event
+    from app.routers.ws import emit_event, set_event_repo
     from app.sandbox.worktree import ensure_mirror, ensure_read_worktree
 
     job_id = payload.get("job_id", "")
     hypothesis = payload["hypothesis"]
+    set_event_repo(payload.get("repo_id"))
 
     def emit(message: str) -> None:
         emit_event({"type": "counsel_job", "job_id": job_id, "status": "running", "message": message})

@@ -13,13 +13,40 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_ as sa_or
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.models import HumanInputRequest
+from app.deps import current_user, visible_repo_ids
+from app.models import Fix, HumanInputRequest, Issue, User
 
 router = APIRouter(prefix="/api/human-input")
+
+
+def _within(visible: list[uuid.UUID]):
+    """The tenancy predicate for a clarification request.
+
+    These rows carry no `repo_id` of their own -- they reach one through their
+    issue, or through their fix's issue -- which is exactly why this endpoint
+    pair was never scoped: there was no column to scope by and the join is not
+    obvious. It leaked in both directions. Reading returned every
+    organisation's open questions, each carrying the question text and the
+    `already_considered` context a patch worker wrote about their code. And
+    answering was worse than a read: `POST /answer` enqueues a `fix_council`
+    work item, so one organisation could steer another's Fix Council by
+    answering a question it was never asked.
+
+    A row attached to neither an issue nor a fix belongs to nobody and is
+    returned to nobody. Fail closed.
+    """
+    owned_issue = select(Issue.id).where(Issue.repo_id.in_(visible))
+    return sa_or(
+        HumanInputRequest.issue_id.in_(owned_issue),
+        HumanInputRequest.fix_id.in_(
+            select(Fix.id).where(Fix.issue_id.in_(owned_issue))
+        ),
+    )
 
 
 def _request_dict(r: HumanInputRequest) -> dict:
@@ -41,8 +68,18 @@ def _request_dict(r: HumanInputRequest) -> dict:
 
 
 @router.get("")
-async def list_requests(status: str | None = "pending", db: AsyncSession = Depends(get_db)):
-    stmt = select(HumanInputRequest).order_by(HumanInputRequest.created_at.desc())
+async def list_requests(
+    status: str | None = "pending",
+    db: AsyncSession = Depends(get_db),
+    visible: list[uuid.UUID] = Depends(visible_repo_ids),
+):
+    if not visible:
+        return []
+    stmt = (
+        select(HumanInputRequest)
+        .where(_within(visible))
+        .order_by(HumanInputRequest.created_at.desc())
+    )
     if status:
         stmt = stmt.where(HumanInputRequest.status == status)
     rows = (await db.execute(stmt)).scalars().all()
@@ -50,15 +87,32 @@ async def list_requests(status: str | None = "pending", db: AsyncSession = Depen
 
 
 @router.post("/{request_id}/answer")
-async def answer_request(request_id: uuid.UUID, body: dict, db: AsyncSession = Depends(get_db)):
-    request = await db.get(HumanInputRequest, request_id)
+async def answer_request(
+    request_id: uuid.UUID,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+    visible: list[uuid.UUID] = Depends(visible_repo_ids),
+):
+    # 404 whether it does not exist, belongs to another organisation, or the
+    # caller belongs to no organisation at all.
+    if not visible:
+        raise HTTPException(404, "request not found")
+    request = (
+        await db.execute(
+            select(HumanInputRequest).where(HumanInputRequest.id == request_id, _within(visible))
+        )
+    ).scalars().first()
     if not request:
         raise HTTPException(404, "request not found")
     if request.status != "pending":
         return {"ok": False, "already_handled": True, "status": request.status}
 
     answer_text = body.get("answer", "")
-    actor = body.get("actor", "dashboard-user")
+    # The session decides who answered, not the request body. An answer is
+    # what resumes a council run, so "who said this" has to be something the
+    # caller cannot choose.
+    actor = user.email
 
     request.status = "answered"
     request.answer = {"text": answer_text}

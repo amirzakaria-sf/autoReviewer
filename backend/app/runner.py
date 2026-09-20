@@ -13,7 +13,7 @@ from app.db import async_session
 from app.enums import FIX_STATUS_RENDER, FixStatus, IssueStatus
 from app.integrations import email_client, slack_client
 from app.models import Fix, Issue, Repo
-from app.routers.ws import emit_event
+from app.routers.ws import emit_event, set_event_repo
 from app.sandbox.worktree import create_worktree, ensure_mirror
 
 logger = logging.getLogger("whipguard.runner")
@@ -73,6 +73,7 @@ async def trigger_fix_council(
         worktree = create_worktree(mirror, issue.github_issue_number or 0, slug)
 
         try:
+            set_event_repo(repo.id)
             emit_event({"type": "run", "kind": "fix_council", "status": "started", "message": f"Fix Council ({category}) working on: {issue.title}"})
             graph = build_fix_council_graph()
             # Blocking sync I/O throughout (Azure calls, subprocess, sandbox

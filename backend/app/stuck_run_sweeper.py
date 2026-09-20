@@ -83,6 +83,9 @@ async def _sweep_once() -> None:
             )
             emit_event({
                 "type": "run", "kind": "stuck_run_sweep", "status": "done",
+                # Explicit rather than ambient: the sweeper walks several
+                # fixes in one pass, each belonging to a different repository.
+                "repo_id": str(issue.repo_id) if issue is not None and issue.repo_id else "",
                 "message": f"Fix stuck at '{previous_status}' for over {STUCK_RUN_THRESHOLD_SECONDS}s "
                            f"({issue_title}) -- issue reopened for a fresh attempt",
             })

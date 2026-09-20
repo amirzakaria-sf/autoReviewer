@@ -162,6 +162,31 @@ Format: `YYYY-MM-DD` · **title** · decision · why · who.
   `team_id` is the only thing identifying whose workspace an inbound button click came from.
   · user
 
+
+- **2026-09-20** · **The activity feed is addressed, not broadcast** · Every event carries a
+  `repo_id`, and a connection receives only events for repositories its viewer can already
+  see. An event with **no** `repo_id` reaches nobody. · The socket was the widest hole in
+  the tenancy boundary: no authentication at all (`@app.middleware("http")` does not run for
+  a websocket scope, and `/ws/activity` is not under `/api/` either) and `broadcast` wrote
+  every event to every open connection, node messages and their file paths included. Of the
+  two available failure modes — an unattributed event is invisible, or an unattributed event
+  goes to everyone — only the first is recoverable. · claude
+
+- **2026-09-20** · **One ambient scope, not 47 threaded arguments** · `activity_scope` /
+  `set_event_repo` is set once per run at each entry point (`run_and_persist`,
+  `trigger_fix_council`, `resolve_approval`, the worker's job handlers), and `emit_event`
+  stamps from it. · There are ~47 `emit_event` call sites. Threading a repo id through all
+  of them is how one gets missed, and a missed one is either a leak or a dead feed. Six set
+  points is a number a reviewer can check. `asyncio.to_thread` copies the context, so a
+  graph node running in a worker thread still sees it. · claude
+
+- **2026-09-20** · **Answering a clarification is a write, and is scoped like one** ·
+  `POST /api/human-input/{id}/answer` checks tenancy before doing anything, and the actor is
+  taken from the session rather than the request body. · The endpoint enqueues a
+  `fix_council` work item, so unscoped it was not a read leak but a way for one organisation
+  to steer another's council run — and `actor` from the body meant the resulting audit line
+  could name anyone the caller chose. · claude
+
 ## Reliability and naming
 
 - **2026-09-15** · **Refresh-token reuse has a 60-second grace window** · A rotated token

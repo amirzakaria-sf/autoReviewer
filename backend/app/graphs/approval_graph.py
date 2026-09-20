@@ -21,7 +21,7 @@ from app.graphs.outcome_checker import check_outcome
 from app.integrations import cloudflare_client, email_client, github_client, slack_client
 from app.models import Fix, Issue, Repo
 from app.notifications import mark_notified, record_condition, should_notify
-from app.routers.ws import emit_event
+from app.routers.ws import emit_event, set_event_repo
 from app.detectors import get_detector
 from app.sandbox.worktree import repo_root
 
@@ -133,6 +133,9 @@ async def resolve_approval(
     fix.approved_via = surface
     issue = await db.get(Issue, fix.issue_id)
     repo = await db.get(Repo, issue.repo_id) if issue else None
+    # Addresses every activity event this approval emits, including the ones
+    # from the deploy and re-verify nodes running in worker threads.
+    set_event_repo(issue.repo_id if issue else None)
     # ONE channel for the whole account (app/app_settings.py). Every repo's
     # approvals land in the same place, which is what a team watching a
     # channel actually wants.

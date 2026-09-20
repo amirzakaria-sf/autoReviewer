@@ -3,6 +3,22 @@
 Short product history. Append a dated heading when a slice lands. Detail belongs in
 `docs/<agent>/changes.md`; this is the shape of the product over time.
 
+## 2026-09-20 — the tenancy boundary closed
+
+The scoping pass that taught `api.py` and `fix_review.py` to read `repos.org_id` had stopped
+there. Counsel resolved its repository with no ownership check and fell back to an arbitrary
+one from the whole deployment; its job endpoint returned any PRD's full result to any
+authenticated caller; `ask` accepted another user's conversation id. The activity websocket
+had no authentication at all and wrote every event to every connection. The clarification
+endpoints listed every organisation's questions and let anyone answer them — which enqueues
+a `fix_council` work item, so that one was a way to steer another organisation's council,
+not merely to read it.
+
+All of it is scoped now, 404 rather than 403 across the boundary. Activity events carry a
+`repo_id` stamped from an ambient per-run scope, and an unaddressed event reaches nobody.
+The websocket authenticates its own handshake, and both browser consumers refresh once on a
+4401 rather than reconnecting into the same rejection.
+
 ## 2026-09-20 — Azure Responses, apply_patch, and curated web research
 
 Every generation call moved to the Responses API, so the Fix Council's patch loop can carry
