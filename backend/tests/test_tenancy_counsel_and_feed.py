@@ -24,7 +24,7 @@ from sqlalchemy import delete, text
 from app.db import async_session
 from app.enums import IssueStatus
 from app.enums import UserRole, UserStatus
-from app.models import HumanInputRequest, Issue, Repo, User
+from app.models import HumanInputRequest, Issue, Organization, Repo, User
 from app.routers import counsel as counsel_router
 from app.routers import human_input as human_input_router
 from app.routers import ws as ws_router
@@ -45,6 +45,9 @@ async def two_orgs(tmp_path):
         )
         db.add(other)
         await db.flush()
+        their_org = Organization(name="Theirs", slug=f"theirs-{uuid.uuid4().hex[:8]}")
+        db.add(their_org)
+        await db.flush()
         mine = Repo(github_full_name=f"zzz-mine/{uuid.uuid4().hex[:8]}")
         theirs = Repo(github_full_name=f"aaa-theirs/{uuid.uuid4().hex[:8]}")
         db.add_all([mine, theirs])
@@ -63,7 +66,7 @@ async def two_orgs(tmp_path):
             "mine": mine.id, "theirs": theirs.id,
             "my_issue": my_issue.id, "their_issue": their_issue.id,
             "mine_name": mine.github_full_name, "theirs_name": theirs.github_full_name,
-            "other_user": other.id,
+            "other_user": other.id, "their_org": their_org.id,
         }
 
     yield ids
@@ -74,6 +77,7 @@ async def two_orgs(tmp_path):
         await db.execute(delete(Repo).where(Repo.id.in_([ids["mine"], ids["theirs"]])))
         await db.execute(text("DELETE FROM work_items WHERE payload->>'job_id' LIKE 'test-%'"))
         await db.execute(delete(User).where(User.id == ids["other_user"]))
+        await db.execute(delete(Organization).where(Organization.id == ids["their_org"]))
         await db.commit()
 
 
@@ -495,3 +499,95 @@ async def test_a_member_of_no_org_cannot_answer_anything(two_orgs):
                 )
     assert caught.value.status_code == 404
     enqueue.assert_not_called()
+
+
+# --- Connecting a repository -------------------------------------------------
+
+
+def _request_for(user_id):
+    class _State:
+        pass
+
+    class _Request:
+        state = _State()
+
+    request = _Request()
+    request.state.user_id = str(user_id)
+    return request
+
+
+async def test_the_connectable_repo_list_marks_only_my_orgs_repos_as_connected(two_orgs):
+    """Unscoped, this said "connected" because SOME organisation in the
+    deployment had connected it — which tells the caller something about an
+    organisation they cannot otherwise see."""
+    from app.routers import github as github_router
+
+    payload = [
+        {"full_name": two_orgs["mine_name"], "private": False, "default_branch": "main", "html_url": "x"},
+        {"full_name": two_orgs["theirs_name"], "private": True, "default_branch": "main", "html_url": "y"},
+    ]
+    response = type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: payload})()
+
+    with patch.object(github_router.settings, "github_token", "ghp_test"), \
+         patch.object(github_router.httpx, "get", return_value=response):
+        rows = await github_router.list_repos(repo_ids=[two_orgs["mine"]])
+
+    by_name = {row["full_name"]: row["connected"] for row in rows}
+    assert by_name[two_orgs["mine_name"]] is True
+    assert by_name[two_orgs["theirs_name"]] is False
+
+
+async def test_connecting_a_repo_another_org_owns_is_refused_and_never_reassigns(two_orgs):
+    """Reassigning would hand the new organisation the old one's issues, fixes
+    and findings — everything reaches its org through `repos.org_id`."""
+    from app.routers import github as github_router
+
+    org_id = uuid.uuid4()
+    async with async_session() as db:
+        theirs = await db.get(Repo, two_orgs["theirs"])
+        theirs.org_id = two_orgs["their_org"]
+        await db.commit()
+        owner_before = theirs.org_id
+
+    with patch("app.orgs.orgs_for_user", return_value=[{"id": str(org_id)}]):
+        with pytest.raises(HTTPException) as caught:
+            await github_router.connect_repo(
+                {"full_name": two_orgs["theirs_name"]}, _request_for(uuid.uuid4()),
+            )
+
+    assert caught.value.status_code == 409
+    async with async_session() as db:
+        still = await db.get(Repo, two_orgs["theirs"])
+        assert still.org_id == owner_before, "another org's repo must never change hands here"
+
+
+async def test_an_orphaned_repo_is_still_adopted(two_orgs):
+    """The pre-tenancy repos have no org at all. Refusing those would leave
+    them permanently invisible to every org-scoped query."""
+    from app.routers import github as github_router
+
+    org_id = uuid.uuid4()
+    async with async_session() as db:
+        orphan = await db.get(Repo, two_orgs["mine"])
+        orphan.org_id = None
+        await db.commit()
+
+    with patch("app.orgs.orgs_for_user", return_value=[{"id": str(org_id)}]), \
+         patch("app.orgs.assign_repo") as assign:
+        result = await github_router.connect_repo(
+            {"full_name": two_orgs["mine_name"]}, _request_for(uuid.uuid4()),
+        )
+
+    assert result["already_connected"] is True
+    assign.assert_called_once()
+
+
+def test_clearing_the_deployment_wide_github_token_is_admin_only():
+    """Not a data leak, which is why the tenancy pass did not catch it: any
+    member of any org could otherwise stop every other org's pushes, PR
+    comments and branch cleanups with one click."""
+    from app.routers import github as github_router
+
+    route = next(r for r in github_router.router.routes if getattr(r, "path", "") == "/api/github/disconnect")
+    guards = {dependency.call.__name__ for dependency in route.dependant.dependencies}
+    assert "require_admin" in guards

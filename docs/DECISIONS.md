@@ -187,6 +187,23 @@ Format: `YYYY-MM-DD` · **title** · decision · why · who.
   to steer another's council run — and `actor` from the body meant the resulting audit line
   could name anyone the caller chose. · claude
 
+
+- **2026-09-20** · **Deployment-wide credentials are platform-admin only** ·
+  `POST /api/github/disconnect` clears the single shared GitHub token, and is now gated on
+  `require_admin`. · Any member of any organisation could otherwise stop every other
+  organisation's pushes, PR comments and branch cleanups with one click. It reads nothing,
+  which is exactly why an audit looking for leaks walked past it — the tenancy boundary has
+  an availability half too. · claude
+
+- **2026-09-20** · **A repository is never reassigned between organisations** ·
+  Connecting one another organisation already owns is a 409; only a repository with no
+  `org_id` at all (pre-tenancy) is adopted. · Reassigning would hand the new organisation
+  the old one's issues, fixes, traces and findings, since all of them reach their org
+  through `repos.org_id`. The 409 does disclose that the repository is connected somewhere
+  in the deployment — unavoidable, because `github_full_name` is UNIQUE and the alternative
+  is an integrity error the caller cannot act on, and the caller already has GitHub access
+  to that repository. · claude
+
 ## Reliability and naming
 
 - **2026-09-15** · **Refresh-token reuse has a 60-second grace window** · A rotated token

@@ -20,14 +20,14 @@ import re
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 
 from app.config import settings
 from app.db import async_session
-from app.deps import current_user_id
-from app.models import Repo
+from app.deps import current_user_id, require_admin, visible_repo_ids
+from app.models import Repo, User
 from app.security import sign_state, verify_state
 
 router = APIRouter(prefix="/api/github")
@@ -120,18 +120,22 @@ async def profile():
 
 
 @router.post("/disconnect")
-async def disconnect():
+async def disconnect(_: User = Depends(require_admin)):
     """Clears the server-wide GitHub token (OAuth token or App identity --
-    whichever _headers() would have used). This is a single shared
-    credential, not per-user, so disconnecting affects every repo's GitHub
-    writes until someone reconnects -- the same scope the Connect button
-    itself already operates at."""
+    whichever _headers() would have used).
+
+    Platform admin only, because the credential is deployment-wide: any member
+    of any organisation could otherwise stop every other organisation's pushes,
+    PR comments and branch cleanups with one click. That is not a data leak,
+    which is why the tenancy pass did not catch it -- it is the availability
+    half of the same boundary.
+    """
     _persist_github_token("")
     return {"ok": True}
 
 
 @router.get("/repos")
-async def list_repos():
+async def list_repos(repo_ids: list[uuid.UUID] = Depends(visible_repo_ids)):
     if not settings.github_token:
         raise HTTPException(400, "no GitHub token configured")
     resp = httpx.get(
@@ -139,7 +143,15 @@ async def list_repos():
     )
     resp.raise_for_status()
     async with async_session() as db:
-        connected = {r.github_full_name for r in (await db.execute(select(Repo))).scalars().all()}
+        # Scoped: unscoped, this marked a repository "connected" because SOME
+        # organisation in the deployment had connected it, which tells the
+        # caller something about an organisation they cannot otherwise see.
+        # Narrow -- the repository list itself comes from the caller's own
+        # GitHub token -- but it is the same boundary, so it reads the same way.
+        connected = {
+            r.github_full_name
+            for r in (await db.execute(select(Repo).where(Repo.id.in_(repo_ids)))).scalars().all()
+        } if repo_ids else set()
     return [
         {
             "full_name": item["full_name"],
@@ -199,6 +211,22 @@ async def connect_repo(body: dict, request: Request):
             # every org-scoped query.
             if existing.org_id is None:
                 await asyncio.to_thread(orgs.assign_repo, existing.id, org_id)
+            elif str(existing.org_id) != org_id:
+                # Another organisation owns it. Never reassign -- that would
+                # hand them this organisation's issues, fixes and findings --
+                # and never return its id either.
+                #
+                # This does disclose that the repository is connected somewhere
+                # in the deployment. `repos.github_full_name` is UNIQUE, so the
+                # alternative is an integrity error the caller cannot act on,
+                # and the caller already has GitHub access to the repository in
+                # question. A named error they can take to an admin is the
+                # better of the two.
+                raise HTTPException(
+                    409,
+                    "That repository is already connected to a different organization. "
+                    "A platform admin has to move it before you can connect it here.",
+                )
             return {"ok": True, "repo_id": str(existing.id), "already_connected": True}
 
         repo = Repo(github_full_name=full_name, owner_user_id=user_id, org_id=uuid.UUID(org_id))
