@@ -62,6 +62,14 @@ Two fields need care:
       the dangerous one: answering enqueues a `fix_council` work item, so unscoped it let
       one org steer another's council run. The actor now comes from the session, not the
       request body.
+    - `github.py` — found by re-auditing every endpoint for a tenancy dependency rather
+      than by re-reading the gap list. The connectable-repo list marked a repository
+      "connected" because *some* organisation had connected it; `connect_repo` returned
+      another organisation's `repo_id`; and `POST /api/github/disconnect` let any member of
+      any organisation clear the **deployment-wide** GitHub token, stopping every other
+      organisation's pushes and PR comments. The first two are scoped; the third is platform
+      admin only. Availability, not confidentiality, which is why a leak-shaped audit missed
+      it the first time.
     - Frontend: both websocket consumers refresh once on a `4401` rather than reconnecting
       into the same rejection.
   - Docs: `docs/plans/2026-09-20-azure-responses-and-apply-patch.md` (with the places live
@@ -70,7 +78,7 @@ Two fields need care:
     traps.
 
 - **Verified this session:**
-  - `pytest -q` → **367 passed** (343 before the tenancy slice, 270 at session start).
+  - `pytest -q` → **371 passed** (343 before the tenancy slice, 270 at session start).
   - **Each tenancy fix checked against its own pre-fix behaviour**, not just against a
     passing test: the old `broadcast` does reach the other org's socket, the old job query
     does return their PRD markdown, the old fallback does pick a repo outside the caller's
