@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
+import { refreshSession } from "@/lib/api";
 
 type Step =
   | { kind: "status"; text: string }
@@ -93,26 +94,50 @@ export function CounselSidebar() {
   // Worker-side jobs narrate over the shared activity socket, because the
   // worker has no connection to this browser of its own.
   useEffect(() => {
-    const socket = new WebSocket(
-      `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/activity`,
-    );
-    socket.onmessage = (message) => {
-      try {
-        const event = JSON.parse(message.data);
-        if (event.type !== "counsel_job" || !event.job_id) return;
-        setTurns((current) =>
-          current.map((turn) => ({
-            ...turn,
-            jobs: turn.jobs.map((job) =>
-              job.id === event.job_id ? { ...job, message: event.message, status: event.status } : job,
-            ),
-          })),
-        );
-      } catch {
-        /* not ours */
-      }
+    let socket: WebSocket | null = null;
+    let closed = false;
+    let refreshed = false;
+
+    const open = () => {
+      if (closed) return;
+      socket = new WebSocket(
+        `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/activity`,
+      );
+      wire(socket);
     };
-    return () => socket.close();
+
+    const wire = (target: WebSocket) => {
+      target.onclose = async (event) => {
+        // 4401 is the socket's own auth check rejecting an expired cookie.
+        // Retried once, after a refresh: a job card that silently stops
+        // updating looks exactly like a job that hung.
+        if (closed || event.code !== 4401 || refreshed) return;
+        refreshed = true;
+        if (await refreshSession()) open();
+      };
+      target.onmessage = (message) => {
+        try {
+          const event = JSON.parse(message.data);
+          if (event.type !== "counsel_job" || !event.job_id) return;
+          setTurns((current) =>
+            current.map((turn) => ({
+              ...turn,
+              jobs: turn.jobs.map((job) =>
+                job.id === event.job_id ? { ...job, message: event.message, status: event.status } : job,
+              ),
+            })),
+          );
+        } catch {
+          /* not ours */
+        }
+      };
+    };
+
+    open();
+    return () => {
+      closed = true;
+      socket?.close();
+    };
   }, []);
 
   // Follow the stream unless the reader has scrolled up to re-read something.

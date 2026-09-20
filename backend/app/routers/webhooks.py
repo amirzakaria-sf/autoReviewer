@@ -214,6 +214,10 @@ async def _handle_pull_request(db: AsyncSession, payload: dict) -> None:
 
             emit_event({
                 "type": "run", "kind": "cleanup", "status": "done",
+                # This handler is public (GitHub's signature is the
+                # credential), so there is no ambient scope to inherit -- the
+                # repository has to be named here or the event reaches nobody.
+                "repo_id": str(issue.repo_id) if issue is not None and issue.repo_id else "",
                 "message": f"PR #{pr_number} merged — branch, preview, and worktree cleaned up",
             })
     elif fix.status not in (FixStatus.REJECTED, FixStatus.MERGED):

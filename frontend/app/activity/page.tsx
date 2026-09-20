@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "@/lib/api";
+import { api, refreshSession } from "@/lib/api";
 import { EmptyState } from "@/components/EmptyState";
 
 type FeedEvent = {
@@ -94,8 +94,20 @@ export default function ActivityPage() {
         /* a frame we don't understand is not worth breaking the feed for */
       }
     };
-    socket.onclose = () => {
+    socket.onclose = async (event) => {
       setStatus("reconnecting");
+      // 4401 means the socket's own auth check rejected the cookie, which an
+      // expired access token does on every page left open for an hour.
+      // Reconnecting without refreshing first just gets rejected again, so
+      // the feed would sit in "reconnecting" until a reload.
+      if (event.code === 4401) {
+        const refreshed = await refreshSession();
+        if (refreshed) {
+          attemptRef.current = 0;
+          retryRef.current = setTimeout(connect, 0);
+          return;
+        }
+      }
       // Backoff, capped: a redeploy takes seconds, but a backend that stays
       // down should not be hammered once a second forever.
       const delay = Math.min(1000 * 2 ** attemptRef.current, 15000);

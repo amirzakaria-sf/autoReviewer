@@ -18,7 +18,9 @@ over `pg_notify` → `routers/ws.py` → the browser.
 
 ## Request path
 
-`routers/` is the only HTTP surface.
+`routers/` is the only HTTP surface. `@app.middleware("http")` enforces the session for
+everything under `/api/` — **it does not run for websockets**, so `ws.py` authenticates its
+own handshake from the `access_token` cookie.
 
 | Router | Owns | Org-scoped? |
 |---|---|---|
@@ -29,7 +31,9 @@ over `pg_notify` → `routers/ws.py` → the browser.
 | `auth.py` | login, refresh, access requests, `/join` | public |
 | `github.py`, `slack_connect.py` | OAuth round-trips, repo connect | yes |
 | `webhooks.py` | GitHub + Slack inbound | signature-verified, not session-scoped |
-| `counsel.py`, `ws.py`, `human_input.py` | chat agent, activity stream, clarifications | **no — open gap, see STATUS** |
+| `counsel.py` | chat agent, conversations, job polling | yes (repo, and conversations by owner) |
+| `human_input.py` | clarification questions and answers | yes (through issue → repo) |
+| `ws.py` | activity stream | yes — authenticates the handshake itself, then filters per connection |
 | `email_actions.py` | one-click approve/reject from email | signed token *is* the credential |
 
 ## The councils (`app/graphs/`)

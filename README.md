@@ -458,4 +458,8 @@ Tracked as product work, not hidden:
   every membership. A person can still only *join* one org at a time.
 - `ask_human` now pauses the Fix Council, but the ReAct transcript is not
   checkpointed — resume starts a fresh attempt with the answer as feedback.
+- An activity event with no `repo_id` reaches nobody. That is the safe
+  direction, but it means a future emitter added outside an `activity_scope`
+  goes silently missing from the feed rather than failing loudly. The
+  broadcaster logs each one.
 - Do not commit `workspace/` or `workspace.*/` (PATs in `mirror/config`).

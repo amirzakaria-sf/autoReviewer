@@ -337,6 +337,20 @@ A `400` drops the one optional parameter its body names and retries once. It nev
 "the Responses API is unsupported" — treating it that way is how a sibling app swallowed
 content-filter rejections for weeks while appearing healthy.
 
+### Activity events are addressed, and the websocket checks its own session
+
+`emit_event` stamps a `repo_id` from an ambient scope (`activity_scope` /
+`set_event_repo`, set once per run at each entry point), and the broadcaster delivers an
+event only to connections allowed to see that repository. **An event with no `repo_id`
+reaches nobody** — so a new emitter added outside a scope goes missing from the feed rather
+than leaking. The broadcaster logs each one; check that log before concluding the feed is
+broken.
+
+`@app.middleware("http")` does **not** run for a websocket scope, and `/ws/activity` is not
+under `/api/` either. `ws.py` authenticates its own handshake from the `access_token`
+cookie and closes with **4401** so the browser knows to refresh before retrying. Any new
+websocket route has to do the same; there is no middleware that will do it for you.
+
 ### Anything the model writes goes through `apply_patch`, scoped
 
 `app/sandbox/apply_patch.py` holds both write primitives, and both call

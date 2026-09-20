@@ -147,6 +147,16 @@ async function tryRefresh(): Promise<RefreshOutcome> {
   return refreshInFlight;
 }
 
+/* The activity websocket authenticates in its own handler (the session
+   middleware is HTTP-only and never runs for a websocket), and closes with
+   4401 when the access-token cookie is missing or expired. A socket consumer
+   has no response to inspect and no interceptor to lean on, so it calls this
+   before reconnecting -- through the same single-flight guard, because the
+   refresh token rotates on every use. */
+export async function refreshSession(): Promise<boolean> {
+  return (await tryRefresh()) === "refreshed";
+}
+
 const PUBLIC_ROUTES = new Set(["/", "/login", "/signup", "/accept-invite"]);
 
 function forceLogout() {

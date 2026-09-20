@@ -1,10 +1,11 @@
 """Counsel's HTTP surface: one streaming endpoint, one conversation store.
 
 Server-sent events rather than a WebSocket. The activity feed's socket is a
-broadcast channel — everyone connected sees every event — and a private
-conversation must not go there. SSE is also a better fit for the shape of
-this traffic: one request in, a stream of events out, no client-to-server
-messages after the first, and it reconnects on its own.
+shared channel — one connection carries every repository its viewer can see —
+and a private conversation does not belong on it at any scope. SSE is also a
+better fit for the shape of this traffic: one request in, a stream of events
+out, no client-to-server messages after the first, and it reconnects on its
+own.
 
 The agent loop is synchronous and does blocking I/O (git, Postgres, the
 model). It runs in a worker thread and its events are handed to the event
@@ -28,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.counsel.tools import ToolContext
 from app.db import get_db
-from app.deps import current_user
+from app.deps import current_user, visible_repo_ids
 from app.models import Repo, User
 
 router = APIRouter(prefix="/api/counsel")
@@ -40,10 +41,36 @@ logger = logging.getLogger("whipguard.counsel.router")
 HISTORY_TURNS = 8
 
 
-async def _resolve_context(db: AsyncSession, user: User, repo_id: uuid.UUID | None) -> ToolContext:
+async def _resolve_context(
+    db: AsyncSession, user: User, repo_id: uuid.UUID | None, visible: list[uuid.UUID]
+) -> ToolContext:
+    """Resolve the repository Counsel will read, within the caller's tenancy.
+
+    Both halves of this were wrong. An explicit `repo_id` was passed straight
+    to `db.get` with no ownership check, and with none passed it fell back to
+    `select(Repo).first()` -- an arbitrary repository from the whole
+    deployment. Counsel holds `read_file`, `git log`, code search and now
+    `research_web`, so either path let one organisation read another's source
+    and spend its research budget.
+
+    Cross-org is 404, never 403 (DECISIONS): a 403 confirms the repository
+    exists, which is itself the answer to a question the caller may not ask.
+    """
     from sqlalchemy import select
 
-    repo = await db.get(Repo, repo_id) if repo_id else (await db.execute(select(Repo))).scalars().first()
+    if not visible:
+        raise HTTPException(400, "No repository is connected yet — connect one before asking about code.")
+
+    if repo_id is not None:
+        if repo_id not in visible:
+            raise HTTPException(404, "repository not found")
+        repo = await db.get(Repo, repo_id)
+    else:
+        repo = (
+            # Ordered so "no repo_id given" resolves to the same repository
+            # every time rather than whatever the planner happened to return.
+            await db.execute(select(Repo).where(Repo.id.in_(visible)).order_by(Repo.github_full_name))
+        ).scalars().first()
     if repo is None:
         raise HTTPException(400, "No repository is connected yet — connect one before asking about code.")
 
@@ -115,10 +142,11 @@ async def get_conversation(
             text("SELECT user_id FROM counsel_conversations WHERE id = :cid"), {"cid": str(conversation_id)}
         )
     ).scalar()
-    if owner is None:
+    # 404 for both "no such conversation" and "not yours": a 403 here confirms
+    # that someone else's conversation id is real, which is a fact the caller
+    # has no business learning by guessing.
+    if owner is None or str(owner) != str(user.id):
         raise HTTPException(404, "conversation not found")
-    if str(owner) != str(user.id):
-        raise HTTPException(403, "not your conversation")
 
     rows = (
         await db.execute(
@@ -138,16 +166,38 @@ async def get_conversation(
 
 
 @router.post("/ask")
-async def ask(body: dict, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+async def ask(
+    body: dict,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    visible: list[uuid.UUID] = Depends(visible_repo_ids),
+):
     question = str(body.get("question", "")).strip()
     if not question:
         raise HTTPException(400, "Ask a question first.")
 
-    conversation_id = uuid.UUID(body["conversation_id"]) if body.get("conversation_id") else uuid.uuid4()
-    repo_id = uuid.UUID(body["repo_id"]) if body.get("repo_id") else None
+    try:
+        conversation_id = uuid.UUID(body["conversation_id"]) if body.get("conversation_id") else uuid.uuid4()
+        repo_id = uuid.UUID(body["repo_id"]) if body.get("repo_id") else None
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(400, "conversation_id and repo_id must be UUIDs.")
 
-    context = await _resolve_context(db, user, repo_id)
-    history = await _load_history(db, conversation_id) if body.get("conversation_id") else []
+    context = await _resolve_context(db, user, repo_id, visible)
+
+    # `get_conversation` checked ownership and this did not, so passing someone
+    # else's conversation id both replayed their history into the model and
+    # appended to their transcript.
+    history: list[dict] = []
+    if body.get("conversation_id"):
+        owner = (
+            await db.execute(
+                text("SELECT user_id FROM counsel_conversations WHERE id = :cid"),
+                {"cid": str(conversation_id)},
+            )
+        ).scalar()
+        if owner is None or str(owner) != str(user.id):
+            raise HTTPException(404, "conversation not found")
+        history = await _load_history(db, conversation_id)
 
     if not body.get("conversation_id"):
         await db.execute(
@@ -229,20 +279,32 @@ async def ask(body: dict, user: User = Depends(current_user), db: AsyncSession =
 
 
 @router.get("/jobs/{job_id}")
-async def get_job(job_id: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+async def get_job(
+    job_id: str,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    visible: list[uuid.UUID] = Depends(visible_repo_ids),
+):
     """Follow a long job Counsel started.
 
     PRDs and investigations take minutes, so they are work items rather than
     chat turns. The sidebar polls this to render a live card instead of
     leaving the reader wondering whether anything is happening.
+
+    Scoped by the repository the job named. Unscoped, this returned any job's
+    full `result` to any authenticated caller -- and a PRD's result is a
+    document full of another organisation's file paths, source excerpts and
+    citations. The job id is a UUID, but "hard to guess" is not an access
+    control; it also appears in that organisation's own activity events.
     """
     row = (
         await db.execute(
             text(
                 "SELECT kind, status, result, error FROM work_items "
-                "WHERE payload->>'job_id' = :job_id ORDER BY created_at DESC LIMIT 1"
+                "WHERE payload->>'job_id' = :job_id AND payload->>'repo_id' = ANY(:repo_ids) "
+                "ORDER BY created_at DESC LIMIT 1"
             ),
-            {"job_id": job_id},
+            {"job_id": job_id, "repo_ids": [str(repo_id) for repo_id in visible]},
         )
     ).first()
     if row is None:

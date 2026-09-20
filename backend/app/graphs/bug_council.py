@@ -33,7 +33,7 @@ from app import app_settings
 from app.config import settings
 from app.detectors import get_detector
 from app.prompts import build_prefix, build_volatile_suffix, pad_to_cache_floor
-from app.routers.ws import emit_event
+from app.routers.ws import emit_event, set_event_repo
 from app.sandbox.worktree import create_worktree, ensure_mirror, remove_worktree
 from app.workspace_map import build_workspace_map
 
@@ -449,6 +449,9 @@ async def run_and_persist(db, repo, category: str = "ui") -> "Issue":
     from app.notifications import mark_notified, record_condition, should_notify
 
     threshold = assurance_threshold_for(repo, category)
+    # Everything this run emits is addressed to this repository -- the graph
+    # nodes below emit from a worker thread, which inherits this context.
+    set_event_repo(repo.id)
     emit_event({"type": "run", "kind": "bug_council", "status": "started", "message": f"Bug Council ({category}) scanning {repo.github_full_name}…"})
 
     graph = build_bug_council_graph()
