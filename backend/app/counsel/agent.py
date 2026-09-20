@@ -30,6 +30,7 @@ import re
 from collections.abc import Iterator
 from typing import Any
 
+from app import azure_client
 from app.config import settings
 from app.counsel.tools import TOOL_LABELS, TOOL_SCHEMAS, ToolContext, run_tool
 
@@ -71,16 +72,6 @@ How you write:
 - Prose in short paragraphs. Use a list only for things that are genuinely a list.
 - Name real files, functions and people from tool results — never placeholders.
 - Be concise. The reader is an engineer who wants the answer, not an essay."""
-
-
-def _client():
-    from openai import AzureOpenAI
-
-    return AzureOpenAI(
-        azure_endpoint=settings.azure_api_endpoint,
-        api_key=settings.azure_api_key,
-        api_version=settings.azure_openai_api_version,
-    )
 
 
 def _summarize_result(name: str, result: str) -> str:
@@ -130,7 +121,6 @@ def run(context: ToolContext, question: str, history: list[dict] | None = None) 
         }
     )
 
-    client = _client()
     deployment = settings.azure_worker_deployment or settings.azure_fast_deployment
     answer = ""
 
@@ -138,44 +128,38 @@ def run(context: ToolContext, question: str, history: list[dict] | None = None) 
         yield {"type": "status", "text": "Thinking about what to look at"}
 
         for round_index in range(MAX_TOOL_ROUNDS):
-            response = client.chat.completions.create(
-                model=deployment,
+            turn = azure_client.complete_turn(
+                deployment=deployment,
                 messages=messages,
                 tools=TOOL_SCHEMAS,
-                tool_choice="auto",
+                role="counsel",
+                reasoning_effort="medium",
             )
-            choice = response.choices[0].message
-            calls = choice.tool_calls or []
 
-            if not calls:
+            # Replayed in the order the API expects: reasoning ahead of the
+            # message it produced, each function_call ahead of its own output.
+            messages.extend(turn.reasoning_items)
+            if (turn.content or "").strip():
+                messages.append({"role": "assistant", "content": turn.content})
+            for call in turn.tool_calls:
+                messages.append({
+                    "type": "function_call",
+                    "call_id": call.id,
+                    "name": call.name,
+                    "arguments": json.dumps(call.arguments),
+                })
+
+            if not turn.tool_calls:
                 # The model stopped reaching for tools, which means this
                 # response IS the answer. Streaming it back rather than
                 # making a second call saves a full generation on every
                 # single turn.
-                answer = choice.content or ""
+                answer = turn.content or ""
                 break
 
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": choice.content or None,
-                    "tool_calls": [
-                        {
-                            "id": call.id,
-                            "type": "function",
-                            "function": {"name": call.function.name, "arguments": call.function.arguments},
-                        }
-                        for call in calls
-                    ],
-                }
-            )
-
-            for call in calls:
-                name = call.function.name
-                try:
-                    arguments = json.loads(call.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    arguments = {}
+            for call in turn.tool_calls:
+                name = call.name
+                arguments = call.arguments
 
                 detail = next(
                     (str(value) for value in arguments.values() if isinstance(value, str) and value.strip()),
@@ -204,7 +188,7 @@ def run(context: ToolContext, question: str, history: list[dict] | None = None) 
                     result = result[job_match.end():].lstrip()
 
                 yield {"type": "result", "tool": name, "summary": _summarize_result(name, result)}
-                messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+                messages.append({"type": "function_call_output", "call_id": call.id, "output": result})
         else:
             # Ran out of rounds still wanting tools. Ask once for an answer
             # built on what it already has, rather than truncating mid-loop
@@ -216,11 +200,9 @@ def run(context: ToolContext, question: str, history: list[dict] | None = None) 
                     "content": "Answer now with what you have, and say plainly what you could not determine.",
                 }
             )
-            answer = (
-                client.chat.completions.create(model=deployment, messages=messages)
-                .choices[0].message.content
-                or ""
-            )
+            answer = azure_client.complete_turn(
+                deployment=deployment, messages=messages, role="counsel", reasoning_effort="medium",
+            ).content or ""
 
         yield {"type": "status", "text": "Writing the answer"}
 

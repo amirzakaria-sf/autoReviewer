@@ -13,12 +13,46 @@ class Settings(BaseSettings):
 
     azure_api_endpoint: str = ""
     azure_api_key: str = ""
-    azure_openai_api_version: str = "2024-08-01-preview"
+    # Chat Completions fallback only. The Responses API path pins
+    # api_version="preview" against {endpoint}/openai/v1/ instead -- a
+    # different surface with a different versioning scheme, which is why
+    # this setting does not reach it (app/azure_client.py).
+    azure_openai_api_version: str = "2025-04-01-preview"
     azure_fast_deployment: str = ""
     azure_worker_deployment: str = ""
     azure_planner_deployment: str = ""
     azure_mechanical_deployment: str = ""
     azure_embedding_deployment: str = "text-embedding-3-small"
+
+    # Generation protocol. "responses" is the default and the only one that
+    # can carry native reasoning alongside tools on GPT-5.x. "chat" is an
+    # operator hatch: it pins every generation call to Chat Completions
+    # without counting as a protocol failure, for the case where the
+    # Responses surface is degraded and someone needs the product working
+    # more than they need the reasoning.
+    whipguard_azure_api: str = "responses"
+    azure_responses_max_output_tokens: int = 16000
+
+    # Web research (app/research.py). The Responses API's own `web_search`
+    # tool, run on our own deployments -- NOT the Azure AI Foundry agent
+    # indirection the sibling `opencode` project uses. That agent's entire
+    # definition is one `{"type": "web_search"}` tool, so the extra project
+    # endpoint, extra key and extra hop buy nothing; and as of 2026-09-20 it
+    # is broken anyway (its definition names a `gpt-5.2-chat` deployment
+    # that no longer exists, so every call 404s DeploymentNotFound).
+    web_research_enabled: bool = True
+    # Empty means "the worker deployment". Search is a reasoning task, not a
+    # cheap one: the model has to decide what to query and what the results
+    # mean, and the fast deployment answers that worse for very little less.
+    web_research_deployment: str = ""
+    web_research_max_chars: int = 6000
+    # How many findings a curator may keep from one research run. A cap here
+    # is what stops a research stage from quietly becoming the largest single
+    # contributor to a prompt's token budget.
+    web_research_max_findings: int = 8
+    # Per-run ceiling on searches, so an autonomous tool call cannot turn one
+    # PRD or one patch attempt into an unbounded crawl.
+    web_research_max_calls_per_run: int = 4
 
     cloudflare_account_id: str = ""
     cloudflare_api_token: str = ""
