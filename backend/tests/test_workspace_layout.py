@@ -109,6 +109,40 @@ def test_a_flat_legacy_tree_is_moved_rather_than_re_cloned(workspace, monkeypatc
     assert not legacy.exists()
 
 
+def test_a_failed_org_lookup_never_drags_the_tree_into_the_fallback(workspace, monkeypatch):
+    """`_org_dir` answers `_unassigned` for "no org" AND for "the lookup
+    failed", and cannot tell them apart by design -- a database hiccup must
+    not crash a council run.
+
+    Relocating on that answer is what turned a survivable miss into a
+    destructive one in production: one failed lookup moved the mirror, the
+    Counsel checkout and every open fix worktree into `_unassigned/`, and the
+    next call -- database healthy again -- moved all of it back. The tree stays
+    where it is until something can say for certain where it belongs.
+    """
+    owned = workspace / "acme" / "acme__demo"
+    (owned / "mirror").mkdir(parents=True)
+    (owned / "fixes" / "21-issue-21").mkdir(parents=True)
+    (owned / "fixes" / "21-issue-21" / "patch.txt").write_text("mid-flight")
+
+    def _explode(*_args, **_kwargs):
+        raise RuntimeError("database is down")
+
+    monkeypatch.setattr("app.sync_db.connection", _explode)
+    resolved = wt.repo_root("acme/demo")
+
+    assert resolved == owned, "a failed lookup must resolve to the tree that exists"
+    assert (owned / "fixes" / "21-issue-21" / "patch.txt").read_text() == "mid-flight"
+    assert not (workspace / "_unassigned").exists(), "nothing may be moved on a failed lookup"
+
+
+def test_a_repo_that_genuinely_has_no_org_still_gets_the_fallback_for_a_fresh_clone(workspace, monkeypatch):
+    """The fallback stays a destination for a NEW clone -- it just stops being
+    a relocation target for a tree that already exists elsewhere."""
+    _org(monkeypatch, wt._NO_ORG_DIR)
+    assert wt.repo_root("acme/demo") == workspace / "_unassigned" / "acme__demo"
+
+
 def test_a_repo_moving_between_organizations_takes_its_tree_with_it(workspace, monkeypatch):
     old = workspace / "old-org" / "acme__demo"
     (old / "mirror").mkdir(parents=True)
