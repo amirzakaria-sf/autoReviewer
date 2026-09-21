@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Icon } from "@/components/Icon";
 import { api, ReviewConflictError, type FixReview, type ReviewTurn } from "@/lib/api";
 import { DiffView } from "@/components/DiffView";
 import { ScoreRing } from "@/components/ScoreRing";
@@ -44,7 +45,7 @@ function Turn({ turn }: { turn: ReviewTurn }) {
         }}
         aria-hidden
       >
-        {human ? "🙋" : "⚖️"}
+        <Icon name={human ? "approve" : "scales"} size={16} />
       </div>
       <div className={`min-w-0 max-w-[85%] ${human ? "text-right" : ""}`}>
         <div className="flex items-center gap-2 mb-1" style={{ justifyContent: human ? "flex-end" : "flex-start" }}>

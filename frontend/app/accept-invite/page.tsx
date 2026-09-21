@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Icon } from "@/components/Icon";
 import { api } from "@/lib/api";
 
 export default function AcceptInvitePage() {
@@ -48,7 +49,7 @@ export default function AcceptInvitePage() {
     return (
       <div className="auth-shell">
         <div className="w-full max-w-sm card p-7 text-center space-y-3 animate-fade-in">
-          <div className="text-3xl">⚠️</div>
+          <div style={{ color: "var(--failed)" }}><Icon name="alert" size={30} /></div>
           <h1 className="font-semibold">Link not usable</h1>
           <p className="text-sm text-mid">{checkError}</p>
           <a href="/login" className="btn btn-ghost w-full py-2.5 text-sm mt-2">Back to sign in</a>
@@ -61,7 +62,7 @@ export default function AcceptInvitePage() {
     <div className="auth-shell">
       <form onSubmit={submit} className="auth-card card p-7 space-y-5 animate-fade-in">
         <div className="auth-mark">
-          <span className="text-xl">🛡️</span> WhipGuard
+          <Icon name="shield" size={20} className="text-accent" /> WhipGuard
         </div>
         {invitee ? (
           <p className="text-sm text-lo -mt-3">

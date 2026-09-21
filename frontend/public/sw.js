@@ -10,7 +10,7 @@
    The push half is the part with teeth -- see the comment above the push
    handler. */
 
-const CACHE_VERSION = "whipguard-shell-v1";
+const CACHE_VERSION = "whipguard-shell-v2";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -38,7 +38,7 @@ const OFFLINE_PAGE = `<!DOCTYPE html><html lang="en"><head>
 <title>Offline — WhipGuard</title></head>
 <body style="margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
 background:#08090a;color:#f2f0ed;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;text-align:center;padding:24px">
-<div style="font-size:30px">&#128737;</div>
+<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#ffb224" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2 19 6v5.6c0 4-2.9 7.6-7 8.5-4.1-.9-7-4.5-7-8.5V6z"/></svg>
 <div style="font-weight:600">You're offline</div>
 <div style="color:#a9a6a1;font-size:14px;max-width:28ch;line-height:1.5">
 WhipGuard reads live data from your repositories, so it needs a connection. It will reconnect on its own.</div>

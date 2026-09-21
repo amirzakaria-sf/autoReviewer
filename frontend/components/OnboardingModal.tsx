@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { Icon } from "@/components/Icon";
 import { api, type OrgOverview } from "@/lib/api";
 
 export function OnboardingModal({ onDone }: { onDone: () => void }) {
@@ -44,7 +45,7 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
       <div className="w-full max-w-md card p-7 space-y-5 animate-fade-in">
         <div>
-          <div className="text-3xl mb-2">👋</div>
+          <div className="mb-2" style={{ color: "var(--amber)" }}><Icon name="spark" size={28} /></div>
           <h2 className="text-lg font-semibold">
             {joined ? `You're in — ${org.name}` : "Welcome to WhipGuard"}
           </h2>
