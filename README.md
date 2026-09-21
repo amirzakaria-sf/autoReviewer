@@ -445,6 +445,30 @@ assertion against that URL.
 
 ---
 
+## Installable app and notifications
+
+WhipGuard installs to a home screen: `display: standalone`, maskable icons, an offline
+shell, and a service worker that caches the static shell and **never** `/api/` — a cached
+verdict presented as a current one is worse than no verdict.
+
+Push arrives when a bug is raised, when a fix is ready for review, and when a verification
+fails. Delivery is addressed through `repos.org_id`, so a finding reaches everyone in the
+owning organization rather than whoever happened to trigger the scan, and it sits inside the
+same `should_notify` guard as the email and Slack paths — a flapping condition that is not
+worth an email is not worth a phone buzzing.
+
+Turn it on per device in **Profile → Notifications**. The toggle requests permission itself,
+so nobody has to find it in browser settings, and "blocked" is shown as its own state
+because no browser lets a blocked site re-prompt from the page. **Send a test notification**
+is the only thing that proves the whole path: a push service's `201` proves transport, never
+delivery, and a toggle reading "enabled" proves only that permission was granted.
+
+On iOS, `PushManager` exists only for a home-screen app, never a Safari tab. The settings
+panel detects that and says to install first rather than reporting "unsupported" to someone
+holding a supported phone.
+
+Icons are generated, not checked in blind: `python3 frontend/scripts/make-icons.py`.
+
 ## Known gaps
 
 Tracked as product work, not hidden:
@@ -462,4 +486,7 @@ Tracked as product work, not hidden:
   direction, but it means a future emitter added outside an `activity_scope`
   goes silently missing from the feed rather than failing loudly. The
   broadcaster logs each one.
+- The browser's own `pushManager.subscribe()` cannot be exercised headlessly — Chromium
+  has no push service connection and fails regardless of permission — so that one hop is
+  verified on a real device via the test button, not in CI.
 - Do not commit `workspace/` or `workspace.*/` (PATs in `mirror/config`).

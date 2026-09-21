@@ -204,6 +204,41 @@ Format: `YYYY-MM-DD` · **title** · decision · why · who.
   is an integrity error the caller cannot act on, and the caller already has GitHub access
   to that repository. · claude
 
+
+- **2026-09-21** · **The public VAPID key is served from the API, not only inlined at build
+  time** · `/api/push/status` returns it; the client reads it from there. · Next inlines
+  `NEXT_PUBLIC_*` during `next build`, so a key added to `.env` afterwards is simply absent
+  from the running bundle — and the symptom is "push silently does nothing" with a checkout
+  that looks correct. A sibling project spent a session on exactly that and initially
+  reached the wrong conclusion by grepping a stale `.next/`. Reading it at runtime deletes
+  the whole class of problem. · claude
+
+- **2026-09-21** · **A push subscription is re-bound on every authenticated session** ·
+  `syncPushSubscription()` runs from the auth gate, not from the settings page, and the
+  server upserts on `endpoint`. · A subscription belongs to the ORIGIN and the service
+  worker, not to a login session: it survives logout and account switches. Bound once at
+  subscribe time, a device that subscribed as one person delivers to that person forever
+  while the settings toggle reads "enabled", because all it can see is browser state. It is
+  in the auth gate because the settings page is rarely opened, which is precisely why this
+  goes unnoticed. · claude
+
+- **2026-09-21** · **Logout drops the server row, never the browser subscription** ·
+  `releasePushBinding()` deletes the row; it does not call `subscription.unsubscribe()`. ·
+  Unsubscribing destroys the browser-level subscription and forces a fresh permission grant,
+  which iOS will not reliably re-prompt for once dismissed. Keeping it lets the next login
+  re-bind instantly. · claude
+
+- **2026-09-21** · **Push is addressed through `repos.org_id`** · `send_for_repo` resolves a
+  repository to its organization and pushes to every active member. · A finding belongs to a
+  repository, not to whoever happened to trigger the scan. Routing to the triggering user
+  would mean the only person who ever hears about a defect is the one already watching. Same
+  column that carries tenancy everywhere else. · claude
+
+- **2026-09-21** · **An unaddressed activity event and an unnotified push are both fail-closed**
+  · Push sits inside the existing `should_notify` guard at all three notification sites. · A
+  flapping condition that is not worth an email is not worth a phone buzzing. Sharing the
+  dedupe means the three channels cannot disagree about what counts as an event. · claude
+
 ## Reliability and naming
 
 - **2026-09-15** · **Refresh-token reuse has a 60-second grace window** · A rotated token

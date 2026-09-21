@@ -3,6 +3,26 @@
 Short product history. Append a dated heading when a slice lands. Detail belongs in
 `docs/<agent>/changes.md`; this is the shape of the product over time.
 
+## 2026-09-21 — installable, mobile-first, and it can reach your phone
+
+WhipGuard is a PWA: installable, standalone, with an offline shell and a service worker
+that never caches `/api/`. Push notifications land when a bug is raised, when a fix is ready
+for review, and when a verification fails — addressed through `repos.org_id` to everyone in
+the owning organization, inside the same dedupe guard the email and Slack paths already use.
+Settings carry a per-device toggle that asks for permission directly, plus a test button
+that proves the whole path rather than just the browser's permission state.
+
+Every screen was laid out for a phone for the first time. The app had no viewport meta at
+all, which meant it had never actually been rendered at that width — so this was a real
+layout pass, not a CSS tidy: a bottom tab bar (the header nav was hidden on mobile with
+nothing behind it, leaving no navigation whatsoever), tables that become cards, 16px inputs,
+44px targets and safe-area insets.
+
+Two bugs in the Fix Council surfaced from running it for real rather than reading it:
+`apply_patch` was stripping the mode and owner of every file it wrote, so the sandbox could
+not read back a correct patch; and a failed org lookup could relocate an entire repository
+tree into the `_unassigned` fallback and back again.
+
 ## 2026-09-20 — the tenancy boundary closed
 
 The scoping pass that taught `api.py` and `fix_review.py` to read `repos.org_id` had stopped
