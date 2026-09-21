@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { OfflineError, api, startSessionKeepalive, type SessionInfo } from "@/lib/api";
+import { syncPushSubscription } from "@/lib/push";
 import { OnboardingModal } from "./OnboardingModal";
 
 // The marketing landing page ("/"), login, and signup need no session at
@@ -41,6 +42,17 @@ export function AuthGate({ children }: { children: ReactNode }) {
         if (s.authenticated) {
           wasAuthed.current = true;
           setStatus("authed");
+          // Re-bind this browser's push subscription to whoever is signed in
+          // NOW. A subscription belongs to the origin and the service worker,
+          // not to a session -- it survives logout and account switches -- so
+          // without this a device that subscribed as one person keeps
+          // delivering to that person forever, while the settings toggle
+          // reports "enabled" because all it can read is browser state.
+          //
+          // Here rather than on the settings page on purpose: the settings
+          // page is rarely opened, which is exactly why this class of bug
+          // goes unnoticed. Fire-and-forget; it never throws.
+          void syncPushSubscription();
           return;
         }
         setStatus("anon");

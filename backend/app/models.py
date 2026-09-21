@@ -850,3 +850,38 @@ class ResearchFinding(Base):
     reason: Mapped[str] = mapped_column(sa.Text, default="")
     queries: Mapped[list] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+
+
+class PushSubscription(Base):
+    """One browser's Web Push endpoint, bound to one person.
+
+    Keyed on `endpoint`, which is unique, and that is what makes re-POSTing a
+    subscription transfer it rather than duplicate it. That matters more than
+    it looks: a push subscription belongs to the ORIGIN and the service worker
+    registration, not to a login session. It survives logout and account
+    switches. Bind it once at subscribe time and never again, and a device
+    that subscribed as one person keeps delivering to that person forever,
+    while the settings toggle -- which only reads browser state -- cheerfully
+    reports that notifications are on.
+
+    A sibling project lost six days of notifications on one phone to exactly
+    that. `app/routers/push.py` re-binds on every authenticated session, which
+    self-heals an already-wrong device with no migration.
+    """
+
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    endpoint: Mapped[str] = mapped_column(sa.Text, unique=True)
+    p256dh: Mapped[str] = mapped_column(sa.String)
+    auth: Mapped[str] = mapped_column(sa.String)
+    # Whose push service this is -- web.push.apple.com, fcm.googleapis.com.
+    # Derived once at write time so "which platform is failing" is a query
+    # rather than a string-parse over every row.
+    provider: Mapped[str] = mapped_column(sa.String, default="")
+    user_agent: Mapped[str] = mapped_column(sa.String, default="")
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+    last_used_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)

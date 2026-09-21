@@ -309,7 +309,7 @@ export function CounselSidebar() {
       {!open && (
         <button
           onClick={toggle}
-          className="btn btn-primary fixed bottom-5 right-5 z-40 px-4 py-2.5 shadow-glow"
+          className="btn btn-primary counsel-launcher fixed bottom-5 right-4 sm:right-5 z-40 px-4 py-2.5 shadow-glow"
           aria-label="Open Counsel (Cmd+J)"
         >
           Ask Counsel

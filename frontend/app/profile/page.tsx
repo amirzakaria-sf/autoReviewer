@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, type MyProfile, type GithubProfile } from "@/lib/api";
+import { NotificationSettings } from "@/components/NotificationSettings";
 
 export default function ProfilePage() {
   const [profile, setProfile] = useState<MyProfile | null>(null);
@@ -166,6 +167,8 @@ export default function ProfilePage() {
       {notice && (
         <div className={`badge ${notice.kind === "ok" ? "badge-green" : "badge-red"}`}>{notice.text}</div>
       )}
+
+      <NotificationSettings />
 
       <section className="card p-5">
         <h2 className="font-semibold mb-4">Connected apps</h2>

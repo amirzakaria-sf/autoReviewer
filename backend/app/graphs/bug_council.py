@@ -33,6 +33,7 @@ from app import app_settings
 from app.config import settings
 from app.detectors import get_detector
 from app.prompts import build_prefix, build_volatile_suffix, pad_to_cache_floor
+from app import push
 from app.routers.ws import emit_event, set_event_repo
 from app.sandbox.worktree import create_worktree, ensure_mirror, remove_worktree
 from app.workspace_map import build_workspace_map
@@ -657,6 +658,19 @@ async def run_and_persist(db, repo, category: str = "ui") -> "Issue":
                     notified_anything = True
                 except Exception:
                     logger.exception("bug-raised email failed for issue %s", issue.id)
+
+            try:
+                if await asyncio.to_thread(
+                    push.send_for_repo,
+                    repo.id,
+                    f"{category.title()} issue raised",
+                    f"{issue.title[:90]} — assurance {result['score']}/100",
+                    f"/issues/{issue.id}",
+                    f"bug-raised-{issue.id}",
+                ):
+                    notified_anything = True
+            except Exception:
+                logger.exception("bug-raised push failed for issue %s", issue.id)
 
             if notified_anything:
                 mark_notified(notification)

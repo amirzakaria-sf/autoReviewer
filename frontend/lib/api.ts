@@ -598,6 +598,19 @@ export const api = {
   redeployStatus: () => getJSON<{ running: boolean; succeeded?: boolean; log: string | null }>("/api/admin/redeploy/status"),
 
   githubProfile: () => getJSON<GithubProfile>("/api/github/profile"),
+
+  // Web Push. The public VAPID key comes from the API rather than only from
+  // NEXT_PUBLIC_* at build time: Next inlines those during `next build`, so a
+  // key added to .env after an image was built is simply absent from the
+  // running bundle, and the symptom is "push silently does nothing".
+  pushStatus: () =>
+    getJSON<{ configured: boolean; public_key: string; devices: number; newest_device_at: string | null }>(
+      "/api/push/status",
+    ),
+  pushSubscribe: (subscription: unknown) => postJSON<{ ok: boolean }>("/api/push/subscribe", subscription),
+  pushUnsubscribe: (endpoint: string) =>
+    postJSON<{ ok: boolean; removed: number }>("/api/push/unsubscribe", { endpoint }),
+  pushTest: () => postJSON<{ ok: boolean; delivered: number }>("/api/push/test"),
   githubRepos: () => getJSON<GithubRepo[]>("/api/github/repos"),
   connectRepo: (full_name: string) => postJSON<{ ok: boolean; repo_id: string }>("/api/github/connect", { full_name }),
   disconnectGithub: () => postJSON<{ ok: boolean }>("/api/github/disconnect"),

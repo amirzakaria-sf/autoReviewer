@@ -384,3 +384,184 @@ body {
   border: 1px solid var(--failed-dim);
   color: #ff8b84;
 }
+
+
+/* --- mobile -------------------------------------------------------------- */
+
+/* Everything below exists because this app was built desktop-first and had no
+   viewport meta at all, so none of it had ever been laid out at phone width.
+   The rules are grouped by the failure they prevent, not by element. */
+
+/* A page must never scroll sideways. One wide table or one long unbroken hash
+   otherwise drags the whole document with it, and on a phone that reads as the
+   layout being broken rather than as one element overflowing. Wide things get
+   their own scroll container (`.scroll-x` below) instead. */
+html,
+body {
+  overflow-x: hidden;
+  overscroll-behavior-y: none;
+}
+
+/* Safe areas. `viewportFit: "cover"` in layout.tsx lets the page paint under
+   the notch and the home indicator; without these it paints *behind* them and
+   the first line of every screen sits under the status bar. */
+body {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* iOS zooms the entire page when a focused input's font-size is below 16px,
+   and then never zooms back out. Every input in this app was 14px. */
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Touch targets. A 28px button is comfortable with a mouse and a coin-toss
+   with a thumb; 44px is the platform minimum on both iOS and Android. */
+@media (hover: none) and (pointer: coarse) {
+  .btn,
+  .tap-target {
+    min-height: 44px;
+  }
+}
+
+/* The one sanctioned way for something to be wider than the screen. Momentum
+   scrolling on iOS, and a hint that there is more to the right. */
+.scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+/* Tables become cards below 640px.
+   `<td>` carries its column name in `data-label`, so one markup tree serves
+   both layouts -- no duplicated mobile markup to drift out of step with the
+   desktop one, which is how a "mobile version" ends up missing the column
+   somebody added last week. */
+@media (max-width: 640px) {
+  table.responsive-table,
+  table.responsive-table tbody,
+  table.responsive-table tr,
+  table.responsive-table td {
+    display: block;
+    width: 100%;
+  }
+
+  table.responsive-table thead {
+    /* Not `display: none`: a screen reader should still reach the headers. */
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  table.responsive-table tr {
+    background: var(--ink-800);
+    border: 1px solid var(--ink-700);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+
+  table.responsive-table td {
+    border: 0 !important;
+    padding: 5px 0 !important;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 14px;
+    text-align: right;
+  }
+
+  table.responsive-table td::before {
+    content: attr(data-label);
+    color: var(--text-lo);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-align: left;
+    flex-shrink: 0;
+  }
+
+  /* A cell with no label is a full-width block -- action rows, mostly. */
+  table.responsive-table td:not([data-label]) {
+    justify-content: flex-start;
+    text-align: left;
+  }
+}
+
+/* The bottom tab bar (components/MobileNav.tsx). Phone-only: the header's own
+   nav takes over from `sm` up. */
+.mobile-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  display: flex;
+  background: color-mix(in srgb, var(--ink-800) 92%, transparent);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid var(--ink-700);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.mobile-nav a {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-height: 52px;
+  padding: 7px 2px;
+  color: var(--text-lo);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  transition: color 0.15s ease;
+}
+
+.mobile-nav a[data-active="true"] {
+  color: var(--amber);
+}
+
+.mobile-nav a svg {
+  width: 20px;
+  height: 20px;
+}
+
+@media (min-width: 640px) {
+  .mobile-nav {
+    display: none;
+  }
+}
+
+/* Counsel's launcher sits above the tab bar rather than on top of it. */
+@media (max-width: 639px) {
+  .counsel-launcher {
+    bottom: calc(68px + env(safe-area-inset-bottom)) !important;
+  }
+}
+
+/* Long identifiers -- branch names, repo slugs, hashes, emails -- are the main
+   cause of a stray horizontal scrollbar at 360px. */
+.break-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Toasts clear the bottom tab bar on a phone and sit normally above it. */
+.toast-stack {
+  bottom: 20px;
+}
+
+@media (max-width: 639px) {
+  .toast-stack {
+    bottom: calc(68px + env(safe-area-inset-bottom));
+  }
+}

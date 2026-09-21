@@ -272,14 +272,14 @@ export function FixReviewPanel({ issueId, onChanged }: { issueId: string; onChan
             <button
               disabled={busy !== null}
               onClick={() => run("approve")}
-              className="btn btn-approve flex-1 min-w-[160px] px-5 py-2.5"
+              className="btn btn-approve flex-1 w-full sm:w-auto sm:min-w-[160px] px-5 py-2.5"
             >
               {busy === "approve" ? "Working…" : "Approve & build"}
             </button>
             <button
               disabled={busy !== null || !instruction.trim() || review.revisions_left <= 0}
               onClick={() => run("revise")}
-              className="btn btn-ghost flex-1 min-w-[160px] px-5 py-2.5"
+              className="btn btn-ghost flex-1 w-full sm:w-auto sm:min-w-[160px] px-5 py-2.5"
               title={
                 review.revisions_left <= 0
                   ? "This fix has been reworked as many times as the limit allows."
@@ -291,7 +291,7 @@ export function FixReviewPanel({ issueId, onChanged }: { issueId: string; onChan
             <button
               disabled={busy !== null}
               onClick={() => (rejecting ? run("reject") : setRejecting(true))}
-              className="btn btn-reject flex-1 min-w-[120px] px-5 py-2.5"
+              className="btn btn-reject flex-1 w-full sm:w-auto sm:min-w-[120px] px-5 py-2.5"
             >
               {busy === "reject" ? "Working…" : rejecting ? "Confirm reject" : "Reject"}
             </button>

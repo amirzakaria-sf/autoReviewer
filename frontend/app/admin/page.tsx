@@ -188,7 +188,7 @@ export default function AdminOverviewPage() {
           <div className="mt-6">
             <div className="section-label mb-2">By role</div>
             <div className="border border-border rounded-lg overflow-hidden">
-              <table className="w-full text-sm">
+              <table className="responsive-table w-full text-sm">
                 <thead className="bg-white/5 text-lo text-left text-xs">
                   <tr>
                     <th className="px-3 py-2 font-medium">Role</th>
@@ -201,11 +201,11 @@ export default function AdminOverviewPage() {
                 <tbody>
                   {usage.by_role.map((r) => (
                     <tr key={r.role} className="border-t border-border">
-                      <td className="px-3 py-2 font-medium">{r.role}</td>
-                      <td className="px-3 py-2 text-mid">{r.calls}</td>
-                      <td className="px-3 py-2 text-mid">{r.input_tokens.toLocaleString()}</td>
-                      <td className="px-3 py-2 text-mid">{r.output_tokens.toLocaleString()}</td>
-                      <td className="px-3 py-2 text-mid">{Math.round(r.avg_latency_ms)}ms</td>
+                      <td data-label="Role" className="px-3 py-2 font-medium">{r.role}</td>
+                      <td data-label="Calls" className="px-3 py-2 text-mid">{r.calls}</td>
+                      <td data-label="Input tok." className="px-3 py-2 text-mid">{r.input_tokens.toLocaleString()}</td>
+                      <td data-label="Output tok." className="px-3 py-2 text-mid">{r.output_tokens.toLocaleString()}</td>
+                      <td data-label="Avg latency" className="px-3 py-2 text-mid">{Math.round(r.avg_latency_ms)}ms</td>
                     </tr>
                   ))}
                 </tbody>

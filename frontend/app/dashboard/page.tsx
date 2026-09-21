@@ -193,7 +193,7 @@ export default function OverviewPage() {
         </div>
 
         <div className="panel overflow-hidden">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm responsive-table">
             <thead className="text-left" style={{ background: "var(--ink-800)" }}>
               <tr>
                 <th className="px-3.5 py-2.5 section-label">Title</th>
@@ -207,19 +207,19 @@ export default function OverviewPage() {
             <tbody>
               {visibleIssues.map((issue) => (
                 <tr key={issue.id} className="hairline transition hover:bg-white/[0.035]">
-                  <td className="px-3.5 py-2.5">
+                  <td data-label="Title" className="px-3.5 py-2.5">
                     <Link href={`/issues/${issue.id}`} className="block hover:text-accent transition">
                       {issue.title}
                     </Link>
                   </td>
-                  <td className="px-3.5 py-2.5">
+                  <td data-label="Origin" className="px-3.5 py-2.5">
                     <span className={`badge ${issue.origin === "detected" ? "badge-violet" : "badge-gray"}`}>
                       {issue.origin === "detected" ? "AI-detected" : "Filed externally"}
                     </span>
                   </td>
-                  <td className="px-3.5 py-2.5 text-mid">{issue.category}</td>
-                  <td className="px-3.5 py-2.5 num text-mid">{issue.assurance_score ?? "—"}</td>
-                  <td className="px-3.5 py-2.5">
+                  <td data-label="Category" className="px-3.5 py-2.5 text-mid">{issue.category}</td>
+                  <td data-label="Assurance" className="px-3.5 py-2.5 num text-mid">{issue.assurance_score ?? "—"}</td>
+                  <td data-label="Status" className="px-3.5 py-2.5">
                     <StatusBadge label={issue.badge} color={issue.color} />
                   </td>
                   <td className="px-3.5 py-2.5 text-right">
