@@ -575,3 +575,19 @@ body {
     bottom: calc(126px + env(safe-area-inset-bottom));
   }
 }
+
+/* Counsel's panel is full-screen on a phone, which puts its header under the
+   status bar and its composer under the home indicator unless both insets are
+   paid.
+
+   `100dvh` rather than `100vh`: on iOS Safari `vh` is measured against the
+   viewport WITHOUT the browser chrome, so a `100vh` panel is taller than the
+   space actually available and its bottom -- here, the text input -- sits
+   below the fold. `dvh` tracks the real visible height. The `100vh` line
+   first is the fallback for anything that does not know `dvh`. */
+.counsel-panel {
+  height: 100vh;
+  height: 100dvh;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
