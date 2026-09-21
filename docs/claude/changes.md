@@ -477,3 +477,94 @@ A full **Fix Council** run under the new protocol (detect → patch → verify �
 patch loop is proved live and Counsel is proved live, but the graph around them has not been
 re-run since the protocol changed. It opens a PR on the fixture repo, so it waits for the
 user to ask.
+
+
+---
+
+## 2026-09-21 10:26 (UTC) — PWA, mobile, push, and the audit after
+
+- **Agent:** claude
+- **Commits:** `634699a` `858f8f8` `315bf11` `8c39e71` `754fea1` `17460b2`
+- **Deployed:** yes, four times through the session.
+
+### The pending Fix Council run found two bugs, which was the point
+
+The run FAILED first: a correct patch (`price * quantity`, exactly the seeded bug's fix)
+scored **0** because the verifier could not open the file —
+`EACCES: permission denied, open '/work/backend/calculate.js'`.
+
+`_atomic_write` writes through `NamedTemporaryFile` and renames. The rename is what makes it
+atomic and what loses the metadata: `NamedTemporaryFile` creates `0600` owned by the caller,
+and `Path.replace` carries the temp file's mode and owner onto the target. The worker is
+root; the sandbox runs as uid 1000.
+
+```
+-rw------- root root   what apply_patch left
+-rw-r--r-- 1000 1000   what every older fix had
+```
+
+`Path.write_text` had survived this by accident — it truncates the existing inode. Replacing
+the inode is strictly more correct against a crash and strictly more dangerous about
+metadata, and only one of those had been accounted for.
+
+Chasing it surfaced a second: the whole repository tree had been relocated from `default/`
+into `_unassigned/`. `_org_dir` returns the fallback for "no org" AND "the lookup failed" and
+cannot tell them apart by design — and `repo_root` treated that as authoritative enough to
+move a tree. The next healthy lookup would have moved it all back.
+
+Re-run after both fixes: **`AWAITING_APPROVAL`, resolution confidence 100/100, first
+attempt, no retry, no failure traces.**
+
+### Mobile was not a CSS pass
+
+There was no viewport meta, so the app had never been *rendered* at phone width — a phone
+laid it out at ~980px and scaled down. And the header nav was `hidden sm:flex` with nothing
+behind it: a phone had no navigation at all.
+
+Screenshots then found what reading could not:
+
+- **`truncate` inside a flex row does nothing without `min-w-0`.** Every issue title pushed
+  its card past the viewport while `scrollWidth === clientWidth` reported a clean page —
+  `overflow-x: hidden` was masking it, not fixing it.
+- **Counsel's launcher covered the notifications toggle** — the control the whole task
+  existed to add was unreachable behind a floating button.
+- Toasts rendered behind the tab bar.
+
+### Then I was asked if it was done, and it wasn't
+
+The previous two times that question was asked, my answer was wrong, so this time the check
+ran by a different route: which routes had I actually rendered, and which code had I actually
+tested.
+
+- **Ten of sixteen routes had never been viewed**, including `/issues/[id]`.
+- **The push router had zero tests** — `app/push.py` was covered for delivery, but ownership
+  was not, and the re-bind is the entire fix.
+
+Rendering the rest at 360px found Counsel's panel broken in three ways at once (no
+safe-area top, no safe-area bottom, and `h-screen` = the iOS `100vh` trap where `vh` ignores
+browser chrome so the composer falls below the fold), plus a console error on every public
+page that was my own regression: the sidebar's early return sits below its hooks, so the
+socket opened on the landing page and was refused 4401 once I made it require a session.
+
+```
+$ pytest -q
+401 passed                       (390 before the audit, 270 at the start of the week)
+
+live, 360x800: 16/16 routes, no element wider than the viewport except the
+landing page's decorative blur circles (absolute, clipped by design)
+public pages: console errors: none
+```
+
+### Verified live
+
+Manifest `standalone` with a maskable icon, service worker active at scope `/`, all four
+icons served, `/api/push/status` serving the key. The VAPID keypair signs a real JWT and the
+public key **derives from** the private one — a genuine pair, not two adjacent `.env` lines.
+
+### Still unverified, and why
+
+The browser's own `pushManager.subscribe()`. Headless Chromium has no push service
+connection and fails with "permission denied" regardless of permission. Everything either
+side is covered. It needs a real device — which is what the test-notification button exists
+for, since a `201` proves transport and a toggle reading "enabled" proves only that
+permission was granted.

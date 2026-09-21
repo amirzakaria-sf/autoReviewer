@@ -22,7 +22,7 @@ Two fields need care:
 - **Last agent:** claude
 - **Deployed:** **yes** — `8c39e71`, deployed 09:24 UTC and verified against the live host.
   `create_all` created `research_findings` and `push_subscriptions` at boot; no manual
-  migration either time.
+  migration either time. Latest deploy `17460b2`, 10:26 UTC.
 
 - **Shipped this session (claude):**
   - **Azure Responses + `apply_patch` + a curated web-research council** (`6093ea8`,
@@ -62,7 +62,12 @@ Two fields need care:
   not the app.
 
 - **Verified this session:**
-  - `pytest -q` → **390 passed**. `tsc --noEmit` clean. Production build clean.
+  - `pytest -q` → **401 passed**. `tsc --noEmit` clean. Production build clean.
+  - **Second audit after calling it done** (the first two times that question was asked,
+    the answer was wrong). Checked by a different route than my own notes: which routes had
+    actually been rendered, and which code had actually been tested. Ten of sixteen routes
+    had never been viewed at phone width; the push router had no tests at all. Both closed —
+    all sixteen rendered at 360px, eleven tests on subscription ownership.
   - Live: six screens at 390×844, no document overflow, no console errors. Manifest, service
     worker, all four icons and `/api/push/status` all served; the worker registers and is
     active at scope `/`.
