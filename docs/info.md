@@ -359,6 +359,35 @@ and do not check scope at a call site — that is how one call site ends up ungu
 `scope_glob` is an **exclusion** set: inverting it lets a UI patch rewrite the Playwright
 spec it is about to be judged by.
 
+### CSS that breaks the whole page
+
+Two of these shipped. Both were invisible in code review and obvious in a browser.
+
+- **Never put `overflow-x: hidden` on `html`.** CSS says that if one axis of `overflow` is
+  not `visible`, the other computes to `auto` — and `body` only propagates its overflow to
+  the viewport while `html` is `visible`. Set it on both and `body` becomes its own scroll
+  container sized to its content, so it never overflows and **the page cannot scroll at
+  all**. Use `overflow-x: clip` on `body` alone: it clips without creating a scroll
+  container. Symptom to recognise: `body.scrollHeight === body.clientHeight` on a long page.
+- **`overflow: hidden` on an ancestor kills `position: sticky`** inside it. A sticky header
+  that silently does not stick usually means a wrapper several levels up is clipping.
+- **`backdrop-filter` does nothing behind an opaque background.** If the element has a solid
+  `background`, the blur is pure cost.
+- **`truncate` inside a flex row needs `min-w-0`** — a flex item's default `min-width: auto`
+  is its content width, so long text widens its parent instead of ellipsing.
+
+### One icon set, and one URL per icon
+
+Icons are `components/Icon.tsx`, stroked in `currentColor`. Never emoji: the OS renders
+those, so the same screen differs per platform, they are full-colour against a two-colour
+palette, and they cannot inherit colour.
+
+`app/icon.png` and `app/apple-icon.png` are Next's file convention and are what produce the
+browser-tab icon — **declaring `icons` in `metadata` overrides them**, so don't. And do not
+put an `icon.png` in `public/`: it shadows `app/icon.png` at the same URL, and the tab
+silently gets the wrong file while the `<link>` tag advertises the right size. Regenerate
+every size with `python3 frontend/scripts/make-icons.py`.
+
 ### Push and PWA: four rules that fail silently
 
 Every one of these makes push stop working while everything still reports success.

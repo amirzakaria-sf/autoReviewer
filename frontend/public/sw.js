@@ -10,7 +10,7 @@
    The push half is the part with teeth -- see the comment above the push
    handler. */
 
-const CACHE_VERSION = "whipguard-shell-v2";
+const CACHE_VERSION = "whipguard-shell-v3";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -29,7 +29,7 @@ function isStaticAsset(url) {
   return (
     url.pathname.startsWith("/_next/static/") ||
     url.pathname === "/manifest.webmanifest" ||
-    /^\/(icon|icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png$/.test(url.pathname)
+    /^\/(icon|icon-192|icon-512|icon-maskable-512|apple-touch-icon|apple-icon|badge-72)\.png$/.test(url.pathname)
   );
 }
 
@@ -130,7 +130,7 @@ self.addEventListener("push", (event) => {
     self.registration.showNotification(data.title, {
       body: data.body,
       icon: data.icon || "/icon-192.png",
-      badge: "/icon.png",
+      badge: "/badge-72.png",
       // `tag` collapses repeats of the same condition into one notification
       // instead of stacking five of them for one flapping fix.
       tag: data.tag,

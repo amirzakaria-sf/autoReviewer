@@ -11,7 +11,7 @@ import { OnboardingModal } from "./OnboardingModal";
 // "/join" is here for the same reason as "/accept-invite": the person
 // holding the link has no session yet -- that is the entire point of the
 // link -- and bouncing them to /login loses the token.
-const PUBLIC_PATHS = ["/", "/login", "/signup", "/accept-invite", "/join"];
+export const PUBLIC_PATHS = ["/", "/login", "/signup", "/accept-invite", "/join"];
 
 const SessionContext = createContext<SessionInfo>({ authenticated: false });
 

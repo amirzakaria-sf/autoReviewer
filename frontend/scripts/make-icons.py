@@ -23,7 +23,14 @@ AMBER = (255, 178, 36)     # --amber
 AMBER_DEEP = (122, 85, 16)  # --amber-dim
 SS = 4                      # supersampling factor
 
-PUBLIC = Path(__file__).resolve().parent.parent / "public"
+ROOT = Path(__file__).resolve().parent.parent
+PUBLIC = ROOT / "public"
+# Next's file convention. `app/icon.png` and `app/apple-icon.png` are what
+# actually produce the browser-tab icon and the iOS home-screen icon: Next
+# emits the <link rel="icon"> tags for them, with the right sizes and type,
+# without anything being declared in `metadata`. The public/ copies stay
+# because the web manifest references them by URL.
+APP = ROOT / "app"
 
 
 def write_png(path: Path, width: int, height: int, pixels: list[tuple[int, int, int]]) -> None:
@@ -134,10 +141,22 @@ def main() -> None:
         # the mark has to sit inside the safe zone.
         ("icon-maskable-512.png", 512, True),
         ("apple-touch-icon.png", 180, True),
-        ("icon.png", 64, False),
+        # The notification badge. Named for its job rather than "icon",
+        # because `public/icon.png` would shadow Next's `app/icon.png` at the
+        # same URL -- the tab would get this 64px file while the <link> tag
+        # advertised 192px.
+        ("badge-72.png", 72, False),
     ]:
-        write_png(PUBLIC / name, size, size, render(size, padded=padded))
+        pixels = render(size, padded=padded)
+        write_png(PUBLIC / name, size, size, pixels)
         print(f"wrote public/{name} ({size}x{size})")
+        # The two Next picks up by filename.
+        if name == "icon-192.png":
+            write_png(APP / "icon.png", size, size, pixels)
+            print(f"wrote app/icon.png ({size}x{size})")
+        if name == "apple-touch-icon.png":
+            write_png(APP / "apple-icon.png", size, size, pixels)
+            print(f"wrote app/apple-icon.png ({size}x{size})")
 
 
 if __name__ == "__main__":
