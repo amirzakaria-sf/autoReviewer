@@ -541,18 +541,25 @@ body {
   }
 }
 
-/* Counsel's launcher sits above the tab bar rather than on top of it, and is
-   a circle at phone size so it covers as little of the page as possible. */
+/* Counsel's launcher is a circular icon button at every width. A floating
+   action button is a target, not a sentence: the label was taking a third of
+   a phone's width to say what the icon and the tooltip already say. */
+.counsel-launcher {
+  width: 52px;
+  height: 52px;
+  padding: 0 !important;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 @media (max-width: 639px) {
   .counsel-launcher {
+    /* Above the tab bar and its home-indicator inset. */
     bottom: calc(68px + env(safe-area-inset-bottom)) !important;
     width: 48px;
     height: 48px;
-    padding: 0 !important;
-    border-radius: 999px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
   }
 }
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Icon } from "@/components/Icon";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 
@@ -43,7 +44,7 @@ export default function LoginPage() {
     <div className="auth-shell">
       <form onSubmit={submit} className="auth-card card p-7 space-y-5 animate-fade-in">
         <div className="auth-mark">
-          <span className="text-xl">🛡️</span> WhipGuard
+          <Icon name="shield" size={20} className="text-accent" /> WhipGuard
         </div>
         <p className="text-sm text-lo -mt-3">Sign in to your bug council dashboard.</p>
 

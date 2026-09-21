@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Icon } from "@/components/Icon";
 import { api } from "@/lib/api";
 
 export default function RequestAccessPage() {
@@ -33,7 +34,7 @@ export default function RequestAccessPage() {
     return (
       <div className="auth-shell">
         <div className="w-full max-w-sm card p-7 text-center space-y-3 animate-fade-in">
-          <div className="text-3xl">✋</div>
+          <div style={{ color: "var(--amber)" }}><Icon name="hourglass" size={30} /></div>
           <h1 className="font-semibold">Request sent</h1>
           <p className="text-sm text-mid">
             An admin will review your request. If it's approved, you'll get an email at <b>{email}</b> with a link to set up your account.
@@ -48,7 +49,7 @@ export default function RequestAccessPage() {
     <div className="auth-shell">
       <form onSubmit={submit} className="auth-card card p-7 space-y-5 animate-fade-in">
         <div className="auth-mark">
-          <span className="text-xl">🛡️</span> WhipGuard
+          <Icon name="shield" size={20} className="text-accent" /> WhipGuard
         </div>
         <p className="text-sm text-lo -mt-3">
           Request access. An admin reviews every request — no account is created until it's approved.

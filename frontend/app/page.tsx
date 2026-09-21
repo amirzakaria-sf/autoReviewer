@@ -1,47 +1,48 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Icon, type IconName } from "@/components/Icon";
 
 const PIPELINE = [
   {
-    icon: "🔎",
+    icon: "search" as IconName,
     title: "Detect",
     body: "A category-specific detector (Playwright, node --test, a secret scan, a bundle-size budget, an axe-core check, a doc-vs-code drift check) runs against the repo on every push.",
   },
   {
-    icon: "⚖️",
+    icon: "scales" as IconName,
     title: "Adversarial jury",
     body: "A Skeptic and a Corroborator argue opposite sides in parallel, an Arbiter scores it against a written rubric, and a Meta-Auditor only gets called in when the two juries actually disagree.",
   },
   {
-    icon: "🙋",
+    icon: "approve" as IconName,
     title: "Human approval",
     body: "Nothing ships without a yes — from Slack, email, the dashboard, or a GitHub comment. Missing product intent, not evidence? It pauses and asks instead of guessing.",
   },
   {
-    icon: "🚀",
+    icon: "deploy" as IconName,
     title: "Deploy the branch",
     body: "The fix branch is pushed and deployed to its own live preview URL, then the same check that caught the bug is re-run against that live URL, not just in a sandbox.",
   },
   {
-    icon: "🔁",
+    icon: "loop" as IconName,
     title: "Outcome check",
     body: "GitHub, the deploy, Slack, and the dashboard are all read back independently afterward. Any disagreement between them fails the run closed, even if every step reported success.",
   },
   {
-    icon: "🧹",
+    icon: "merge" as IconName,
     title: "Merge & clean up",
     body: "Once a human merges the PR on GitHub, the dashboard syncs automatically and the fix branch is deleted — nothing lingers after the fix lands.",
   },
 ];
 
 const CATEGORIES = [
-  { label: "UI", icon: "🖥️", ring: "rgba(167,139,250,0.3)", dot: "bg-[color:var(--pending)]", detail: "Playwright-driven behavioral checks against the running app." },
-  { label: "Backend", icon: "⚙️", ring: "rgba(167,139,250,0.3)", dot: "bg-[color:var(--pending)]", detail: "node --test / pytest runs catch logic bugs at the source." },
-  { label: "Security", icon: "🔒", ring: "rgba(255,95,86,0.3)", dot: "bg-[color:var(--failed)]", detail: "Secret scanning — API keys, credentials, private key blocks." },
-  { label: "Performance", icon: "⚡", ring: "rgba(255,178,36,0.3)", dot: "bg-[color:var(--amber)]", detail: "Bundle-size budget enforcement on every change." },
-  { label: "Accessibility", icon: "♿", ring: "rgba(47,212,143,0.3)", dot: "bg-[color:var(--verified)]", detail: "axe-core WCAG checks — contrast, labels, ARIA." },
-  { label: "Documentation", icon: "📝", ring: "rgba(169,166,161,0.3)", dot: "bg-[color:var(--text-mid)]", detail: "Flags README references to functions that no longer exist." },
+  { label: "UI", icon: "monitor" as IconName, ring: "rgba(167,139,250,0.3)", dot: "bg-[color:var(--pending)]", detail: "Playwright-driven behavioral checks against the running app." },
+  { label: "Backend", icon: "server" as IconName, ring: "rgba(167,139,250,0.3)", dot: "bg-[color:var(--pending)]", detail: "node --test / pytest runs catch logic bugs at the source." },
+  { label: "Security", icon: "lock" as IconName, ring: "rgba(255,95,86,0.3)", dot: "bg-[color:var(--failed)]", detail: "Secret scanning — API keys, credentials, private key blocks." },
+  { label: "Performance", icon: "bolt" as IconName, ring: "rgba(255,178,36,0.3)", dot: "bg-[color:var(--amber)]", detail: "Bundle-size budget enforcement on every change." },
+  { label: "Accessibility", icon: "accessibility" as IconName, ring: "rgba(47,212,143,0.3)", dot: "bg-[color:var(--verified)]", detail: "axe-core WCAG checks — contrast, labels, ARIA." },
+  { label: "Documentation", icon: "document" as IconName, ring: "rgba(169,166,161,0.3)", dot: "bg-[color:var(--text-mid)]", detail: "Flags README references to functions that no longer exist." },
 ];
 
 type Health = "checking" | "up" | "down";
@@ -71,7 +72,7 @@ export default function LandingPage() {
       <nav className="border-b border-border bg-[color:var(--ink-800)] backdrop-blur-md sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
           <span className="flex items-center gap-2 font-semibold tracking-tight">
-            <span className="text-lg">🛡️</span> WhipGuard
+            <Icon name="shield" size={18} className="text-accent" /> WhipGuard
           </span>
           <div className="flex items-center gap-3 text-sm">
             <span className={`badge hidden sm:inline-flex ${health === "up" ? "badge-green" : health === "down" ? "badge-red" : "badge-gray"}`}>
@@ -122,8 +123,15 @@ export default function LandingPage() {
             {PIPELINE.map((p, i) => (
               <div key={p.title} className="card card-hover p-5 relative">
                 <div className="flex items-center gap-3 mb-2.5">
-                  <div className="w-9 h-9 rounded-lg bg-white/5 border border-border flex items-center justify-center text-base shrink-0">
-                    {p.icon}
+                  <div
+                    className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+                    style={{
+                      background: "rgba(255,178,36,0.09)",
+                      border: "1px solid var(--amber-dim)",
+                      color: "var(--amber)",
+                    }}
+                  >
+                    <Icon name={p.icon} size={18} />
                   </div>
                   <div className="text-xs text-lo font-mono">{String(i + 1).padStart(2, "0")}</div>
                   <div className="font-semibold">{p.title}</div>
@@ -154,7 +162,7 @@ export default function LandingPage() {
               style={{ boxShadow: `inset 0 0 0 1px ${c.ring}` }}
             >
               <div className="flex items-center gap-2.5 mb-1.5">
-                <span className="text-base">{c.icon}</span>
+                <Icon name={c.icon} size={17} className="shrink-0" />
                 <span className="font-semibold text-sm">{c.label}</span>
                 <span className={`dot ${c.dot} ml-auto`} />
               </div>
@@ -171,7 +179,7 @@ export default function LandingPage() {
         </div>
         <div className="grid sm:grid-cols-2 gap-5">
           <div className="card p-5">
-            <div className="text-2xl mb-3">🧭</div>
+            <div className="mb-3" style={{ color: "var(--amber)" }}><Icon name="compass" size={24} /></div>
             <div className="font-semibold text-white mb-1.5">Retrieval, not guesswork</div>
             <p className="text-sm text-mid leading-relaxed">
               A pgvector similarity search over code chunks and past issues, plus a real
@@ -180,7 +188,7 @@ export default function LandingPage() {
             </p>
           </div>
           <div className="card p-5">
-            <div className="text-2xl mb-3">✅</div>
+            <div className="mb-3" style={{ color: "var(--verified)" }}><Icon name="check" size={24} /></div>
             <div className="font-semibold text-white mb-1.5">Verified, not assumed</div>
             <p className="text-sm text-mid leading-relaxed">
               Every fix is re-run against the same check it was raised with — once in a sandbox,
@@ -188,7 +196,7 @@ export default function LandingPage() {
             </p>
           </div>
           <div className="card p-5">
-            <div className="text-2xl mb-3">🛑</div>
+            <div className="mb-3" style={{ color: "var(--failed)" }}><Icon name="halt" size={24} /></div>
             <div className="font-semibold text-white mb-1.5">A kill switch that means it</div>
             <p className="text-sm text-mid leading-relaxed">
               Pause detection or fix proposals per repo in one click. A runaway detector has to
@@ -196,7 +204,7 @@ export default function LandingPage() {
             </p>
           </div>
           <div className="card p-5">
-            <div className="text-2xl mb-3">📊</div>
+            <div className="mb-3" style={{ color: "var(--pending)" }}><Icon name="chart" size={24} /></div>
             <div className="font-semibold text-white mb-1.5">Every confidence score, traceable</div>
             <p className="text-sm text-mid leading-relaxed">
               Real token counts, latency, and cost tracked per model call — never a number on

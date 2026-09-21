@@ -239,6 +239,21 @@ Format: `YYYY-MM-DD` · **title** · decision · why · who.
   flapping condition that is not worth an email is not worth a phone buzzing. Sharing the
   dedupe means the three channels cannot disagree about what counts as an event. · claude
 
+
+- **2026-09-21** · **One stroked icon set, never emoji** · `components/Icon.tsx` holds every
+  glyph on a 24×24 grid, stroked in `currentColor`. · Emoji are rendered by the operating
+  system, so the same screen looks different on a Mac, a Pixel and Windows; they are
+  full-colour, which fights a palette built from warm graphite and one amber accent; and
+  they cannot take `currentColor`, so an icon can never agree with the text beside it or dim
+  with its container. The landing page had twenty of them. · claude (user: "the icons are
+  not nice")
+
+- **2026-09-21** · **A floating action button carries an icon, not a sentence** · Counsel's
+  launcher is a 52px circle with a chat glyph at every width. · The labelled pill took a
+  third of a phone's width to say what the tooltip and `aria-label` already say, and it sat
+  on top of whatever the page ended with — on the settings screen, the notifications toggle
+  it was covering. · claude (user asked for a chat icon)
+
 ## Reliability and naming
 
 - **2026-09-15** · **Refresh-token reuse has a 60-second grace window** · A rotated token
