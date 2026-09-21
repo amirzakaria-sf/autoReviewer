@@ -239,11 +239,29 @@ def repo_root(github_full_name: str) -> Path:
     polled one repo), and both were invisible until something was run for
     real. One function, one layout.
     """
-    current = WORKSPACE_ROOT / _org_dir(github_full_name) / repo_slug(github_full_name)
+    org_dir = _org_dir(github_full_name)
+    current = WORKSPACE_ROOT / org_dir / repo_slug(github_full_name)
     if _is_dir(current):
         return current
 
     for legacy in _legacy_candidates(github_full_name, current):
+        # Never relocate INTO the fallback. `_org_dir` answers `_unassigned`
+        # both when a repo genuinely has no org and when the lookup failed --
+        # and it cannot tell those apart, by design, because a transient
+        # database hiccup must not crash a council run.
+        #
+        # Relocating on that answer is what turns a survivable miss into a
+        # destructive one. It happened: one lookup returned the fallback, the
+        # whole tree -- mirror, counsel checkout, every open fix worktree --
+        # was moved into `_unassigned/`, and the next call, with the database
+        # answering normally again, moved all of it back. A tree that big
+        # should not be shuttled around by a query that is allowed to fail.
+        #
+        # So the fallback is a destination for a FRESH clone only. When a tree
+        # already exists somewhere and all we have is the fallback, use it
+        # where it is and let a later call with a real answer move it.
+        if org_dir == _NO_ORG_DIR:
+            return legacy
         # The web process mounts the workspace READ-ONLY by design
         # (plan.md §15), so it can find the old tree but must not move it.
         # The worker, which does have write access, performs the move on its
