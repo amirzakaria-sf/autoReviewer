@@ -281,7 +281,7 @@ export function IdentityPanel({ members, isAdmin }: { members: OrgMember[]; isAd
               <div className="min-w-0 text-sm">
                 <span className="num text-mid">{link.external_id}</span>
                 <span className="text-lo mx-2">→</span>
-                <span className="truncate">{link.email}</span>
+                <span className="truncate min-w-0">{link.email}</span>
               </div>
               {isAdmin && (
                 <button onClick={() => unlink(link.id)} className="btn btn-ghost px-2.5 py-1 text-xs shrink-0">

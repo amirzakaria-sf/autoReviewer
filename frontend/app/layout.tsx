@@ -56,7 +56,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <CounselSidebar />
             {/* pb-24 on small screens clears the bottom tab bar; the safe-area
                 inset below it clears the home indicator on top of that. */}
-            <main className="max-w-6xl mx-auto px-4 py-5 pb-24 sm:py-7 sm:pb-7">{children}</main>
+            <main className="max-w-6xl mx-auto px-4 py-5 pb-36 sm:py-7 sm:pb-7">{children}</main>
             <MobileNav />
           </AuthGate>
         </ToastProvider>

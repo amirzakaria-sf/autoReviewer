@@ -309,10 +309,30 @@ export function CounselSidebar() {
       {!open && (
         <button
           onClick={toggle}
-          className="btn btn-primary counsel-launcher fixed bottom-5 right-4 sm:right-5 z-40 px-4 py-2.5 shadow-glow"
-          aria-label="Open Counsel (Cmd+J)"
+          className="btn btn-primary counsel-launcher fixed bottom-5 right-4 sm:right-5 z-40 shadow-glow"
+          aria-label="Ask Counsel"
+          title="Ask Counsel (⌘J)"
         >
-          Ask Counsel
+          {/* A full-width pill at phone size sat on top of whatever was at the
+              bottom of the page -- on the settings screen that was the
+              notifications toggle, which it covered completely. A 48px circle
+              overlaps far less, and the label is not what anyone is reading
+              at that size anyway. */}
+          <span className="hidden sm:inline">Ask Counsel</span>
+          <svg
+            className="sm:hidden"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.6-.7L3 21l1.9-5.1A8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5z" />
+          </svg>
         </button>
       )}
 

@@ -541,10 +541,18 @@ body {
   }
 }
 
-/* Counsel's launcher sits above the tab bar rather than on top of it. */
+/* Counsel's launcher sits above the tab bar rather than on top of it, and is
+   a circle at phone size so it covers as little of the page as possible. */
 @media (max-width: 639px) {
   .counsel-launcher {
     bottom: calc(68px + env(safe-area-inset-bottom)) !important;
+    width: 48px;
+    height: 48px;
+    padding: 0 !important;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 }
 
@@ -562,6 +570,8 @@ body {
 
 @media (max-width: 639px) {
   .toast-stack {
-    bottom: calc(68px + env(safe-area-inset-bottom));
+    /* Above the tab bar AND above Counsel's launcher, which shares that
+       corner. */
+    bottom: calc(126px + env(safe-area-inset-bottom));
   }
 }

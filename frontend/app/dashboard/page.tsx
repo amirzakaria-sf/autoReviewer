@@ -155,10 +155,12 @@ export default function OverviewPage() {
               <Link
                 key={issue.id}
                 href={`/issues/${issue.id}`}
-                className="card card-hover p-3.5 flex items-center justify-between gap-3"
+                className="card card-hover p-3.5 flex items-center justify-between gap-3 min-w-0"
               >
-                <span className="truncate text-sm">{issue.title}</span>
-                <StatusBadge label={issue.badge} color={issue.color} />
+                <span className="truncate text-sm min-w-0">{issue.title}</span>
+                <span className="shrink-0">
+                  <StatusBadge label={issue.badge} color={issue.color} />
+                </span>
               </Link>
             ))}
           </div>

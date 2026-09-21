@@ -65,7 +65,7 @@ export default function ReposPage() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="dot" style={{ background: paused ? "var(--amber)" : "var(--verified)" }} />
-                  <span className="font-medium text-sm truncate">{repo.github_full_name}</span>
+                  <span className="font-medium text-sm truncate min-w-0">{repo.github_full_name}</span>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   <span className="badge badge-gray num">{repo.default_branch}</span>
