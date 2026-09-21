@@ -126,7 +126,7 @@ export function CommandPalette() {
               className="w-full text-left px-4 py-2.5 flex items-center justify-between gap-3 transition"
               style={{ background: index === cursor ? "rgba(255,178,36,0.09)" : "transparent" }}
             >
-              <span className="text-sm truncate text-hi">{command.label}</span>
+              <span className="text-sm truncate text-hi min-w-0">{command.label}</span>
               {command.hint && <span className="text-[11px] text-lo shrink-0">{command.hint}</span>}
             </button>
           ))}
