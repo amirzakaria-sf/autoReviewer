@@ -94,3 +94,65 @@ def test_write_file_creates_a_new_file_inside_the_scope(worktree):
     result = write_file(worktree, "ui", "helper.js", "export const x = 1;\n")
     assert result == "wrote helper.js"
     assert (worktree / "helper.js").read_text() == "export const x = 1;\n"
+
+
+# --- permissions -------------------------------------------------------------
+#
+# These exist because a live Fix Council run produced a CORRECT patch that
+# scored 0. `NamedTemporaryFile` creates 0600, `Path.replace` carries the temp
+# file's mode onto the target, and the detector then runs the patched tree in a
+# sandbox container under a different uid and dies on EACCES before reading a
+# line of the fix. Nothing in the unit tests noticed, because a single process
+# writing and reading as one user never trips it.
+
+
+def test_a_patched_file_keeps_the_mode_it_had(worktree):
+    import os
+    import stat
+
+    target = worktree / "app.js"
+    os.chmod(target, 0o644)
+
+    apply_patch(worktree, "ui", "app.js", "function a() { return 1; }", "function a() { return 2; }")
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644, (
+        "the atomic replace must not hand the target the temp file's 0600 -- "
+        "the detector runs the patched tree as a different user"
+    )
+
+
+def test_an_unusual_mode_is_preserved_rather_than_normalised(worktree):
+    """Preserve what was there, don't impose a house style: an executable
+    script that comes back non-executable is a different kind of broken."""
+    import os
+    import stat
+
+    target = worktree / "app.js"
+    os.chmod(target, 0o755)
+
+    apply_patch(worktree, "ui", "app.js", "function a() { return 1; }", "function a() { return 2; }")
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
+
+
+def test_write_file_replacing_an_existing_file_keeps_its_mode(worktree):
+    import os
+    import stat
+
+    target = worktree / "app.js"
+    os.chmod(target, 0o644)
+
+    write_file(worktree, "ui", "app.js", "// replaced\n")
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+def test_a_newly_created_file_is_readable_not_owner_only(worktree):
+    import stat
+
+    write_file(worktree, "ui", "helper.js", "export const x = 1;\n")
+
+    mode = stat.S_IMODE((worktree / "helper.js").stat().st_mode)
+    assert mode & stat.S_IRGRP and mode & stat.S_IROTH, (
+        f"a new file at {oct(mode)} cannot be read by the sandbox's user"
+    )
