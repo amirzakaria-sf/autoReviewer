@@ -486,6 +486,10 @@ Tracked as product work, not hidden:
   direction, but it means a future emitter added outside an `activity_scope`
   goes silently missing from the feed rather than failing loudly. The
   broadcaster logs each one.
+- The service worker's cache name is static, so entries from old deploys are
+  never evicted explicitly. Harmless in practice — `/_next/static/` filenames
+  are content-hashed, and browsers evict under storage pressure — but there is
+  no bound of our own.
 - The browser's own `pushManager.subscribe()` cannot be exercised headlessly — Chromium
   has no push service connection and fails regardless of permission — so that one hop is
   verified on a real device via the test button, not in CI.

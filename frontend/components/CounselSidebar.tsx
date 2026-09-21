@@ -59,6 +59,7 @@ export function CounselSidebar() {
   const conversationId = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pathname = usePathname();
+  const isPublicRoute = ["/login", "/signup", "/accept-invite", "/join", "/"].includes(pathname);
 
   useEffect(() => {
     try {
@@ -94,6 +95,13 @@ export function CounselSidebar() {
   // Worker-side jobs narrate over the shared activity socket, because the
   // worker has no connection to this browser of its own.
   useEffect(() => {
+    // The early return that hides this component sits below the hooks, so
+    // without this check the socket still opens on the landing and auth
+    // pages -- where there is no session, the handshake is refused with
+    // 4401, and the only visible result is a console error on every public
+    // page load. Harmless before the socket required a session; not after.
+    if (isPublicRoute) return;
+
     let socket: WebSocket | null = null;
     let closed = false;
     let refreshed = false;
@@ -138,7 +146,7 @@ export function CounselSidebar() {
       closed = true;
       socket?.close();
     };
-  }, []);
+  }, [isPublicRoute]);
 
   // Follow the stream unless the reader has scrolled up to re-read something.
   useEffect(() => {
@@ -302,7 +310,7 @@ export function CounselSidebar() {
     }
   }
 
-  if (["/login", "/signup", "/accept-invite", "/"].includes(pathname)) return null;
+  if (isPublicRoute) return null;
 
   return (
     <>
@@ -337,7 +345,7 @@ export function CounselSidebar() {
       )}
 
       <aside
-        className="fixed top-0 right-0 h-screen z-40 flex flex-col transition-transform duration-300"
+        className="counsel-panel fixed top-0 right-0 z-40 flex flex-col transition-transform duration-300"
         style={{
           width: "min(440px, 100vw)",
           transform: open ? "translateX(0)" : "translateX(100%)",
