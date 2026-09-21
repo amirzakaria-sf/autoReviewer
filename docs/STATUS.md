@@ -20,108 +20,74 @@ Two fields need care:
 
 - **As of:** 2026-09-21
 - **Last agent:** claude
-- **Commits:** `6093ea89a0c488db480d77a78357c0760267678f` (`6093ea8`) — Azure Responses +
-  `apply_patch`. `fbcc5b6539342cb3a7aebec5f7e0e3b0b596e059` (`fbcc5b6`) — the curated
-  web-research council. `7dab810c57b083b7d6508ee3ef97c4f0df537dac` (`7dab810`) — the three
-  tenancy gaps closed. `355359e849946f48f667c92a744a3366fc81ba53` (`355359e`) — three more
-  found by re-auditing, in `github.py`.
-- **Deployed:** **yes**, 2026-09-21 05:05 UTC. `eb4bf2f` (working tree = `main`, clean) is
-  live. `create_all` created `research_findings` at boot with all 15 columns — no manual
-  migration. Backend, frontend and worker all recreated; postgres untouched.
+- **Deployed:** **yes** — `8c39e71`, deployed 09:24 UTC and verified against the live host.
+  `create_all` created `research_findings` and `push_subscriptions` at boot; no manual
+  migration either time.
 
 - **Shipped this session (claude):**
-  - `app/azure_client.py` rewritten around `complete_turn` on the **Responses API**. Native
-    reasoning alongside tools (impossible on Chat Completions with GPT-5.x, which is why the
-    patch loop had never once thought), reasoning items replayed across ticks, flat tool
-    schemas with `strict: false` and `$defs` preserved, forced-Pydantic structured output for
-    the jury and Arbiter, `prompt_cache_key` finally sent, and usage recorded for every turn
-    with the protocol and reasoning cost. `WHIPGUARD_AZURE_API=chat` is the operator hatch.
-  - `fix_council.py` and `counsel/agent.py` no longer construct their own `AzureOpenAI`.
-    `app/embeddings.py` stays separate on purpose.
-  - `app/sandbox/apply_patch.py` — exact-anchor replace, now the preferred edit;
-    `write_file` kept for creation and genuine full replaces. Both gated by the same
-    `scope_excludes`, inside the primitive.
-  - `app/research.py` — Gatherer (`web_search`) + Curator (attribute, score, drop), findings
-    persisted to the new `research_findings` table. Wired into the PRD council via a
-    per-requirement planner, and into Counsel and the patch worker as `research_web`.
-  - Frontend: the Counsel markdown renderer now renders bare URLs as links and `_italics_`,
-    so a research citation can actually be followed.
-  - **The three tenancy gaps, closed** (`7dab810`) — and each turned out to be more than
-    the one line recorded against it:
-    - `counsel.py` — `_resolve_context` now requires the repo to be visible and falls back
-      *within* the caller's set instead of `select(Repo).first()`. Two more holes were in
-      the same file: `get_job` returned any job's full result to any authenticated caller
-      (a PRD's result is another org's file paths and source excerpts), and `ask` accepted
-      another user's `conversation_id`, replaying their history into the model and
-      appending to their transcript. `get_conversation`'s 403 became a 404.
-    - `ws.py` — the socket had **no authentication at all**: `@app.middleware("http")`
-      never runs for a websocket scope and `/ws/activity` is not under `/api/` either. It
-      now authenticates its own handshake and closes `4401`; events carry a `repo_id`
-      stamped from an ambient per-run scope, and an unaddressed event reaches nobody.
-    - `human_input.py` — both endpoints scoped through issue → repo. `answer_request` was
-      the dangerous one: answering enqueues a `fix_council` work item, so unscoped it let
-      one org steer another's council run. The actor now comes from the session, not the
-      request body.
-    - `github.py` — found by re-auditing every endpoint for a tenancy dependency rather
-      than by re-reading the gap list. The connectable-repo list marked a repository
-      "connected" because *some* organisation had connected it; `connect_repo` returned
-      another organisation's `repo_id`; and `POST /api/github/disconnect` let any member of
-      any organisation clear the **deployment-wide** GitHub token, stopping every other
-      organisation's pushes and PR comments. The first two are scoped; the third is platform
-      admin only. Availability, not confidentiality, which is why a leak-shaped audit missed
-      it the first time.
-    - Frontend: both websocket consumers refresh once on a `4401` rather than reconnecting
-      into the same rejection.
-  - Docs: `docs/plans/2026-09-20-azure-responses-and-apply-patch.md` (with the places live
-    probing contradicted the plan marked), 11 new `DECISIONS` rows, README `Model protocol`
-    and `Web research` sections, `ARCHITECTURE.md`, `CHANGELOG.md`, two more `info.md` §11
-    traps.
+  - **Azure Responses + `apply_patch` + a curated web-research council** (`6093ea8`,
+    `fbcc5b6`). Generation moved to the Responses API so a tool-bound call can carry native
+    reasoning, which Chat Completions cannot do on GPT-5.x — the patch loop had never
+    thought. `apply_patch` replaced `write_file` as the default edit. Research is a Gatherer
+    plus a Curator that attributes every claim to a source the search actually returned.
+  - **The tenancy boundary closed** (`7dab810`, `355359e`). Counsel, the activity websocket,
+    the clarification endpoints and the GitHub connect surface. Seven holes, two of them
+    writes rather than reads.
+  - **`apply_patch` permissions** (`634699a`). It was stripping the mode and owner of every
+    file it wrote, so the sandbox could not read back a correct patch. Found by running a
+    real Fix Council, not by reading the code.
+  - **Workspace relocation** (`858f8f8`). A failed org lookup could move an entire
+    repository tree into `_unassigned` and the next call would move it back.
+  - **PWA + mobile + push** (`8c39e71`). See below.
+
+- **The Fix Council ran end to end under the new protocol** — issue #21, the seeded
+  backend total-calculation bug. `AWAITING_APPROVAL`, **resolution confidence 100/100**,
+  first attempt, no retry, no failure traces. Three patch ticks plus an Arbiter, every turn
+  `protocol: responses` with reasoning spent and the prompt cache hitting (3.9k cached
+  tokens by tick two). The Arbiter's rubric names the actual change. **That fix is waiting
+  for a human — it is the one thing on the dashboard asking for a decision.**
+
+- **Mobile and PWA:** every screen laid out for a phone for the first time. The app had no
+  viewport meta at all, so nothing had ever been *rendered* at that width. Bottom tab bar
+  (the header nav was `hidden sm:flex` with nothing behind it — a phone had no navigation),
+  tables that become cards, 16px inputs, 44px targets, safe-area insets. Installable:
+  standalone manifest, maskable icons, offline shell, a service worker that never caches
+  `/api/`.
+
+- **Push notifications:** `pywebpush` behind `app/push.py`, subscriptions keyed on endpoint
+  and re-bound to the current account on every authenticated session. Wired into the three
+  existing notification sites inside the same `should_notify` guard. Per-device toggle in
+  Profile → Notifications that requests permission itself, plus a test button. Uses the same
+  VAPID keypair as the sibling `opencode` deployment — a VAPID key identifies the sender,
+  not the app.
 
 - **Verified this session:**
-  - `pytest -q` → **371 passed** (343 before the tenancy slice, 270 at session start).
-  - **Post-deploy, against the live host** — every claim in this file re-checked on the real
-    deployment rather than on a test double:
-    - Nine API surfaces 200, including the three whose scoping changed
-      (`/api/human-input`, `/api/github/repos`, `/api/counsel/jobs/{id}`).
-    - **The websocket contract, end to end through nginx and the NOTIFY relay**: no cookie
-      refused; valid cookie connects; an event for the caller's own repo arrives; an event
-      for another repo does **not**; an unaddressed event does **not**. This was the one
-      change that fails visibly, and it is the one now proved live.
-    - **Counsel answered a real question** — `app.js:22` cited correctly — and both turns
-      recorded `{"protocol": "responses", "reasoning_tokens": 15}`. The second turn shows
-      `cached_input_tokens: 1207`. Native reasoning and the provider prompt cache are both
-      working in production, neither of which was ever true before today.
-  - **Each tenancy fix checked against its own pre-fix behaviour**, not just against a
-    passing test: the old `broadcast` does reach the other org's socket, the old job query
-    does return their PRD markdown, the old fallback does pick a repo outside the caller's
-    set. The websocket tests run a real handshake through `TestClient` rather than a
-    hand-built fake socket, because "does the browser's cookie actually arrive here" is the
-    assumption that change rests on.
-  - `npx tsc --noEmit` → clean.
-  - **Live Azure probes, before writing any code:** Responses + `reasoning` + flat tools in
-    one request on `gpt-5.6-terra` and `gpt-5.6-luna`; reasoning items and `reasoning_tokens`
-    present on real prompts; `prompt_cache_key` accepted; built-in `web_search` returning
-    `['reasoning','web_search_call','message']` with `url_citation` annotations.
-  - **Live patch-loop round trip:** three real ticks against Azure replaying reasoning items,
-    `function_call` and `function_call_output` — no 400. The model chose `apply_patch` over
-    `write_file` unprompted. Three `council_runs` rows written with
-    `{"protocol": "responses", "reasoning_tokens": N}`, then removed.
-  - **Live research run:** Express 5's `app.del` removal. Two searches, one source returned,
-    four claims kept and attributed to it, rows persisted to `whipguard_test` and cleaned up.
+  - `pytest -q` → **390 passed**. `tsc --noEmit` clean. Production build clean.
+  - Live: six screens at 390×844, no document overflow, no console errors. Manifest, service
+    worker, all four icons and `/api/push/status` all served; the worker registers and is
+    active at scope `/`.
+  - The VAPID keypair signs a real JWT, and **the public key derives from the private one** —
+    a genuine pair, not two values that happen to sit next to each other in `.env`.
+  - Counsel answered live with a correct `app.js:22` citation; both turns recorded
+    `protocol: responses`, with 1,207 cached input tokens on the second.
+  - The websocket contract end to end through nginx and the NOTIFY relay: no cookie refused,
+    valid cookie connects, own-repo event arrives, other-org event does not, unaddressed
+    event does not.
 
 ### Needs verification
 
-- **A full fixture Fix Council run under the new protocol** — detect → patch → verify →
-  propose. The patch loop is proved live (three ticks against Azure, reasoning replayed, no
-  400) and Counsel is proved live end to end, but the Fix Council graph has not been re-run
-  since the protocol change. It opens a PR on the fixture repo, so it needs the user to ask.
-- `GITHUB_WEBHOOK_SECRET` is **unset on both sides** — absent from `.env`, and GitHub's own
-  hook (id `678747728`) reports `"secret_set": false`. The signature check shipped in
-  `732f41c` is inert: the endpoint accepts unsigned POSTs from anyone who knows the URL, and
-  a forged `pull_request closed merged` marks fixes merged, deletes branches and deletes
-  Cloudflare deployments. **The highest-priority item on the user's side.**
-- Alembic is scaffolded but not wired into `deploy.sh`; `schema_sync` + `create_all` remain
-  the live path, and they handled today's new table without a manual step.
+- **The browser's own `pushManager.subscribe()`.** Headless Chromium has no push service
+  connection and fails with "permission denied" regardless of permission, so this one hop
+  cannot be exercised here. Everything either side of it is verified. It needs a real
+  device: install to a home screen, Profile → Notifications → enable → **Send a test
+  notification**. If that arrives, the whole path works.
+- `GITHUB_WEBHOOK_SECRET` is **unset on both sides** — absent from `.env`, and GitHub's hook
+  (id `678747728`) reports `"secret_set": false`. The endpoint accepts unsigned POSTs from
+  anyone who knows the URL, and a forged `pull_request closed merged` marks fixes merged,
+  deletes branches and deletes Cloudflare deployments. **Still the highest-priority item on
+  the user's side.**
+- Alembic is scaffolded but not wired into `deploy.sh`; `create_all` + `schema_sync` remain
+  the live path and have now handled two new tables without a manual step.
 
 ### Closed — the tenancy gaps (claude, 2026-09-20, `7dab810`)
 

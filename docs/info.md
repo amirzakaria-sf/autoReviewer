@@ -359,6 +359,36 @@ and do not check scope at a call site — that is how one call site ends up ungu
 `scope_glob` is an **exclusion** set: inverting it lets a UI patch rewrite the Playwright
 spec it is about to be judged by.
 
+### Push and PWA: four rules that fail silently
+
+Every one of these makes push stop working while everything still reports success.
+
+- **The VAPID `sub` claim must be `mailto:` or `https:`**, and must not be double-prefixed.
+  Apple answers 403 `BadJwtToken` and says nothing else.
+- **A fresh claims dict per send.** `pywebpush` mutates what it is handed, injecting `aud`
+  and `exp`; a shared dict carries the first push service's audience into every later send.
+- **Log the response BODY on failure.** The status says "rejected"; the body says which of
+  `BadJwtToken` / `MismatchSenderId` / `UNREGISTERED` it was.
+- **Every service-worker `push` path must end in `showNotification`.** iOS revokes the
+  subscription otherwise, with no server-side signal at all — Apple keeps returning 201 for
+  the dead token until it expires.
+
+A **201 proves transport, never delivery**, and a toggle that reads "enabled" proves only
+that the browser granted permission. The one thing that proves the whole path is the test
+notification button on the settings page.
+
+### Mobile is not a CSS pass
+
+There was no viewport meta on this app for its entire life, so nothing had ever been laid
+out at phone width. Two traps follow from that:
+
+- **`body { overflow-x: hidden }` hides overflow, it does not fix it.** `scrollWidth ==
+  clientWidth` will report a clean page while text runs off the screen. Look at a
+  screenshot.
+- **`truncate` inside a flex row needs `min-w-0`.** A flex item's default `min-width: auto`
+  is its content width, so long text widens its parent instead of ellipsing. This is the
+  single most common cause of a "mobile is broken" report in this codebase.
+
 ### Web content is untrusted, exactly like repository content
 
 `app/research.py` reads the live web. A page can contain text shaped like an instruction; it
