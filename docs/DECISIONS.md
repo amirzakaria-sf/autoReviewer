@@ -254,6 +254,24 @@ Format: `YYYY-MM-DD` · **title** · decision · why · who.
   on top of whatever the page ended with — on the settings screen, the notifications toggle
   it was covering. · claude (user asked for a chat icon)
 
+
+- **2026-09-21** · **`overflow-x: clip` on `body`, never `hidden` on `html`** · The
+  horizontal-overflow backstop is `body { overflow-x: clip }` and nothing is set on `html`.
+  · `overflow-x: hidden` forces the other axis to `auto`, and once `html` is a scroll
+  container `body` becomes one too, sized to its own content — it then has nothing to
+  overflow and the entire site cannot scroll vertically. That shipped. `clip` clips without
+  creating a scroll container. The real overflows are fixed at source; this is only a
+  backstop. · claude
+
+- **2026-09-21** · **The landing page is evidence, not only claims** ·
+  `components/landing/RunReplay.tsx` replays a real run — including the attempt the verifier
+  rejected. · Everything else on that page is an assertion about a multi-agent system, which
+  reads like any other marketing copy. The gates are the part of this product that is not a
+  chat window, so watching one catch something IS the argument; a demo where every step
+  passes is the one a reader discounts. A replay rather than a live feed because the page is
+  served signed-out, where a live widget is either empty or somebody else's repository. ·
+  claude (shape taken from the sibling `opencode` project's own landing demo)
+
 ## Reliability and naming
 
 - **2026-09-15** · **Refresh-token reuse has a 60-second grace window** · A rotated token

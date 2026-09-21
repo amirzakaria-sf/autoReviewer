@@ -392,14 +392,31 @@ body {
    viewport meta at all, so none of it had ever been laid out at phone width.
    The rules are grouped by the failure they prevent, not by element. */
 
-/* A page must never scroll sideways. One wide table or one long unbroken hash
-   otherwise drags the whole document with it, and on a phone that reads as the
-   layout being broken rather than as one element overflowing. Wide things get
-   their own scroll container (`.scroll-x` below) instead. */
-html,
+/* A page must never scroll sideways -- but this is NOT the place to enforce it
+   with `overflow-x: hidden`, and doing so broke vertical scrolling on every
+   page of the site.
+
+   Two rules combine. First, CSS says that if one axis of `overflow` is not
+   `visible`, the other computes to `auto` -- so `overflow-x: hidden` silently
+   makes `overflow-y: auto`. Second, `body` only propagates its overflow to the
+   viewport while `html` is `visible`; once `html` is a scroll container itself,
+   `body` becomes one too, sized to its own content. It then has nothing to
+   overflow, so the page cannot scroll at all:
+
+       html overflow = [hidden, auto]
+       body scrollHeight 2728 === body clientHeight 2728   <- never scrolls
+
+   `overflow-x: clip` is the answer to exactly this: it clips without creating
+   a scroll container and without touching the other axis. Where it is not
+   supported it degrades to no clipping, which is harmless -- the real
+   overflows were fixed at source (`min-w-0` on flex children), and this is
+   only a backstop. It is on `body` alone; `html` is left `visible`.
+
+   `overscroll-behavior-y: contain` stops a scroll at the end of the page from
+   chaining into the browser's own UI, without killing the rubber-band. */
 body {
-  overflow-x: hidden;
-  overscroll-behavior-y: none;
+  overflow-x: clip;
+  overscroll-behavior-y: contain;
 }
 
 /* Safe areas. `viewportFit: "cover"` in layout.tsx lets the page paint under

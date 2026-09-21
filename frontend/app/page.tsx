@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Icon, type IconName } from "@/components/Icon";
+import { InteractiveBackdrop } from "@/components/landing/InteractiveBackdrop";
+import { RunReplay } from "@/components/landing/RunReplay";
 
 const PIPELINE = [
   {
@@ -61,16 +63,29 @@ export default function LandingPage() {
   }, []);
 
   return (
-    <div className="min-h-screen relative overflow-hidden">
-      {/* Ambient glow orbs -- fixed, behind everything, decorative only */}
-      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-        <div className="absolute -top-32 left-1/4 w-[36rem] h-[36rem] rounded-full bg-[rgba(255,178,36,0.1)] blur-3xl" />
-        <div className="absolute top-1/3 -right-40 w-[28rem] h-[28rem] rounded-full bg-[rgba(167,139,250,0.08)] blur-3xl" />
-        <div className="absolute bottom-0 left-1/3 w-[24rem] h-[24rem] rounded-full bg-[rgba(47,212,143,0.06)] blur-3xl" />
+    <div className="min-h-screen relative">
+      {/* The measurement grid. One amber wash stays behind it so the page
+          still has warmth where the grid is at rest. */}
+      <div className="pointer-events-none fixed inset-0 -z-20 overflow-hidden">
+        <div className="absolute -top-40 left-1/4 w-[40rem] h-[40rem] rounded-full bg-[rgba(255,178,36,0.07)] blur-3xl" />
+        <div className="absolute top-1/2 -right-40 w-[30rem] h-[30rem] rounded-full bg-[rgba(167,139,250,0.055)] blur-3xl" />
       </div>
+      <InteractiveBackdrop />
 
-      <nav className="border-b border-border bg-[color:var(--ink-800)] backdrop-blur-md sticky top-0 z-10">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+      {/* Translucent, so `backdrop-blur` has something to do -- it was sitting
+          on an opaque `--ink-800`, which meant the blur was pure cost and the
+          bar read as a flat rectangle laid over the glow behind it. */}
+      <nav
+        className="sticky top-0 z-30 border-b"
+        style={{
+          background: "color-mix(in srgb, var(--ink-900) 72%, transparent)",
+          borderColor: "color-mix(in srgb, var(--ink-700) 70%, transparent)",
+          backdropFilter: "blur(14px) saturate(140%)",
+          WebkitBackdropFilter: "blur(14px) saturate(140%)",
+          paddingTop: "env(safe-area-inset-top)",
+        }}
+      >
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
           <span className="flex items-center gap-2 font-semibold tracking-tight">
             <Icon name="shield" size={18} className="text-accent" /> WhipGuard
           </span>
@@ -110,6 +125,18 @@ export default function LandingPage() {
           </a>
         </div>
       </header>
+
+      {/* The evidence, immediately under the claim. Everything above this is
+          an assertion about a multi-agent system, which reads like any other
+          marketing sentence; this is the shape of a real run, including the
+          attempt that was rejected. */}
+      <section className="max-w-2xl mx-auto px-4 pb-16 -mt-4">
+        <RunReplay />
+        <p className="mt-3 text-center text-xs text-lo leading-relaxed">
+          A replay of a real run, not a live feed. The rejected attempt is in it on purpose —
+          the gates are the part that is not a chat window.
+        </p>
+      </section>
 
       <section className="max-w-5xl mx-auto px-4 py-14">
         <div className="text-center mb-10">
