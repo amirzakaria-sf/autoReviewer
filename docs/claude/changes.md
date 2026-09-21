@@ -401,3 +401,79 @@ design), `email_actions.py` (the signed token *is* the credential), `slack_conne
 
 **Nothing from this session is deployed.** The containers have been up 12 hours; they run
 `732f41c`. Every commit today is on `main` and pushed and none of it is live.
+
+---
+
+## 2026-09-21 05:05 (UTC) — Deployed, and verified against the live host
+
+- **Agent:** claude
+- **Deployed:** `eb4bf2f` (working tree = `main`, clean). `./deploy.sh` → OK at 05:05:12Z.
+- **User ask:** deploy it.
+
+Everything this session shipped had been verified against Azure or against tests. None of it
+had been verified *as deployed*, which is a different claim — and the one this project has
+been burned by before (`732f41c` sat undeployed for 22 hours while STATUS implied it was
+live).
+
+### Boot
+
+`create_all` created `research_findings` with all 15 columns on its own. No manual
+migration, no `schema_sync` column patching needed — it is a new table, which is the case
+`create_all` has always handled. Boot log clean, `Application startup complete`, postgres
+untouched (the `--no-deps` on every `up` in `deploy.sh` is what keeps a backend recreate
+from cascading into the database).
+
+### Nine API surfaces, over HTTPS
+
+```
+200  /api/overview          200  /api/admin/overview
+200  /api/issues            200  /api/admin/orgs
+200  /api/repos             200  /api/github/repos        ← scoping changed today
+200  /api/org               200  /api/counsel/jobs/{id}   ← scoping changed today
+200  /api/human-input                                     ← scoping changed today
+```
+
+One thing worth recording for whoever tests this next: hitting `http://127.0.0.1:8300`
+directly returns **401 on every authenticated route even with a good login**, because the
+session cookie is `Secure` and a plain-HTTP client never sends it back. That is correct
+behaviour, and it looks exactly like a broken deploy for about a minute. Test through
+`https://whip-guard.zakarias.in`.
+
+### The websocket, end to end through nginx and the NOTIFY relay
+
+This was the one change that fails visibly rather than silently, so it got the real test —
+a live socket, with synthetic events pushed through `pg_notify` exactly as the worker does:
+
+```
+1 no cookie      : refused (InvalidStatus)
+2 valid cookie   : connected
+3 my repo event  : received
+4 other org event: NOT received (correct)
+5 unaddressed    : NOT received (correct)
+```
+
+Four assertions, not one. "It connects" would have passed with the filtering broken.
+
+### Counsel, on the real deployment
+
+```
+answer:   The delete handler removes the item at the clicked button's index
+          from `items` and re-renders the list (`app.js:22-25`).
+citations: ['app.js:22']
+
+council_run: ('counsel','gpt-5.6-terra',1210,   0,38,{'protocol':'responses','reasoning_tokens':15})
+council_run: ('counsel','gpt-5.6-terra',3695,1207,34,{'protocol':'responses','reasoning_tokens': 0})
+```
+
+Three things are true in production for the first time, and all three are visible in that
+second row: the generation protocol is **Responses**, native **reasoning** is actually being
+spent, and the provider **prompt cache is hitting** — 1,207 cached input tokens on the
+second turn. Before today the patch worker and Counsel were both non-thinking Chat
+Completions loops recording no usage at all.
+
+### Still unverified
+
+A full **Fix Council** run under the new protocol (detect → patch → verify → propose). The
+patch loop is proved live and Counsel is proved live, but the graph around them has not been
+re-run since the protocol changed. It opens a PR on the fixture repo, so it waits for the
+user to ask.
