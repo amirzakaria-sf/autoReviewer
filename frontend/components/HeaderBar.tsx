@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { api, type GithubProfile } from "@/lib/api";
+import { releasePushBinding } from "@/lib/push";
 import { useSession } from "./AuthGate";
 
 const NAV_LINKS = [
@@ -50,16 +51,28 @@ export function HeaderBar() {
   if (HIDDEN_ON.includes(pathname)) return null;
 
   async function logout() {
+    // Drop the SERVER row for this device first, so it stops receiving the
+    // account being signed out of. Deliberately not a browser-level
+    // unsubscribe: that would destroy the subscription and force a fresh
+    // permission grant, which iOS will not reliably re-prompt for once
+    // dismissed. Keeping it lets the next login re-bind instantly.
+    await releasePushBinding();
     await api.logout();
     router.push("/login");
   }
 
   return (
-    <div className="border-b border-border bg-[color:var(--ink-800)] backdrop-blur-md sticky top-0 z-20">
-      <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-6">
+    <div
+      className="border-b border-border bg-[color:var(--ink-800)] backdrop-blur-md sticky top-0 z-20"
+      // Painting under the notch is what `viewportFit: "cover"` asks for; this
+      // is the half that keeps the title out from under the status bar.
+      style={{ paddingTop: "env(safe-area-inset-top)" }}
+    >
+      <div className="max-w-6xl mx-auto px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between gap-3 sm:gap-4">
+        <div className="flex items-center gap-4 sm:gap-6 min-w-0">
           <a href="/dashboard" className="flex items-center gap-2 font-semibold tracking-tight shrink-0">
-            <span className="text-lg">🛡️</span> WhipGuard
+            <span className="text-lg">🛡️</span>
+            <span className="truncate">WhipGuard</span>
           </a>
           <nav className="hidden sm:flex items-center gap-1 text-sm">
             {NAV_LINKS.map((link) => (
@@ -115,7 +128,7 @@ export function HeaderBar() {
           <div className="relative">
             <button
               onClick={() => setMenuOpen((v) => !v)}
-              className="w-7 h-7 rounded-full text-xs font-semibold flex items-center justify-center transition num"
+              className="w-9 h-9 sm:w-7 sm:h-7 rounded-full text-xs font-semibold flex items-center justify-center transition num shrink-0"
               style={{ background: "rgba(255,178,36,0.14)", border: "1px solid var(--amber-dim)", color: "var(--amber)" }}
               aria-label="Account menu"
             >
@@ -131,13 +144,31 @@ export function HeaderBar() {
                   </div>
                   <a
                     href="/profile"
-                    className="block w-full text-left px-2.5 py-1.5 rounded-md text-sm text-mid hover:bg-white/5 hover:text-hi transition"
+                    className="block w-full text-left px-2.5 py-1.5 rounded-md text-sm text-mid hover:bg-white/5 hover:text-hi transition tap-target flex items-center"
                   >
                     Profile
                   </a>
+                  {/* The bottom tab bar holds five destinations and these are
+                      not among them, so on a phone this menu is the only way
+                      to reach either. Hidden from `sm` up, where the header's
+                      own nav already carries them. */}
+                  <a
+                    href="/connect"
+                    className="sm:hidden w-full text-left px-2.5 py-1.5 rounded-md text-sm text-mid hover:bg-white/5 hover:text-hi transition tap-target flex items-center"
+                  >
+                    Connect a repo
+                  </a>
+                  {session.role === "admin" && (
+                    <a
+                      href="/admin"
+                      className="sm:hidden w-full text-left px-2.5 py-1.5 rounded-md text-sm text-mid hover:bg-white/5 hover:text-hi transition tap-target flex items-center"
+                    >
+                      Admin
+                    </a>
+                  )}
                   <button
                     onClick={logout}
-                    className="w-full text-left px-2.5 py-1.5 rounded-md text-sm text-mid hover:bg-white/5 hover:text-hi transition"
+                    className="w-full text-left px-2.5 py-1.5 rounded-md text-sm text-mid hover:bg-white/5 hover:text-hi transition tap-target flex items-center"
                   >
                     Sign out
                   </button>

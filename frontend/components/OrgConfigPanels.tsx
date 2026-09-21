@@ -103,7 +103,7 @@ export function DesignationsPanel({
             value={name}
             onChange={(event) => setName(event.target.value)}
             placeholder="Machine Learning"
-            className="rounded-lg px-3 py-2 text-sm flex-1 min-w-[200px]"
+            className="rounded-lg px-3 py-2 text-sm flex-1 w-full sm:w-auto sm:min-w-[200px]"
             style={FIELD}
           />
           <button disabled={busy || !name.trim()} className="btn btn-ghost px-4 py-2 text-sm">
@@ -156,7 +156,7 @@ export function RoutingPanel({
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="responsive-table w-full text-sm">
           <thead>
             <tr className="text-left" style={{ borderBottom: "1px solid var(--ink-700)" }}>
               <th className="py-2 pr-3 section-label">Category</th>
@@ -168,8 +168,8 @@ export function RoutingPanel({
           <tbody>
             {rules.map((rule) => (
               <tr key={rule.category} className="hairline">
-                <td className="py-2.5 pr-3 num">{rule.category}</td>
-                <td className="py-2.5 pr-3">
+                <td data-label="Category" className="py-2.5 pr-3 num">{rule.category}</td>
+                <td data-label="Goes to" className="py-2.5 pr-3">
                   <select
                     id={`route-${rule.category}`}
                     value={rule.designation_key}
@@ -184,7 +184,7 @@ export function RoutingPanel({
                     ))}
                   </select>
                 </td>
-                <td className="py-2.5 pr-3">
+                <td data-label="Escalates at" className="py-2.5 pr-3">
                   <select
                     id={`severity-${rule.category}`}
                     value={rule.escalate_at_severity}
@@ -199,7 +199,7 @@ export function RoutingPanel({
                     ))}
                   </select>
                 </td>
-                <td className="py-2.5">
+                <td data-label="Minimum level" className="py-2.5">
                   <select
                     id={`floor-${rule.category}`}
                     value={rule.min_seniority}
@@ -351,7 +351,7 @@ export function IdentityPanel({ members, isAdmin }: { members: OrgMember[]; isAd
             value={manual}
             onChange={(event) => setManual(event.target.value)}
             placeholder="another@address.com"
-            className="rounded-lg px-3 py-2 text-sm flex-1 min-w-[200px]"
+            className="rounded-lg px-3 py-2 text-sm flex-1 w-full sm:w-auto sm:min-w-[200px]"
             style={FIELD}
           />
           <select

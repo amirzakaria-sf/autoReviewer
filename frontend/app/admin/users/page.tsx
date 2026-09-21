@@ -178,7 +178,7 @@ export default function AdminUsersPage() {
         <section>
           <h2 className="section-label mb-3">Past requests</h2>
           <div className="border border-border rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
+            <table className="responsive-table w-full text-sm">
               <thead className="bg-white/5 text-lo text-left text-xs">
                 <tr>
                   <th className="px-3 py-2 font-medium">Name</th>
@@ -190,13 +190,13 @@ export default function AdminUsersPage() {
               <tbody>
                 {decided.map((r) => (
                   <tr key={r.id} className="border-t border-border">
-                    <td className="px-3 py-2">{r.name}</td>
-                    <td className="px-3 py-2 text-mid">{r.email}</td>
-                    <td className="px-3 py-2">
+                    <td data-label="Name" className="px-3 py-2">{r.name}</td>
+                    <td data-label="Email" className="px-3 py-2 text-mid">{r.email}</td>
+                    <td data-label="Status" className="px-3 py-2">
                       <span className={`badge ${r.status === "approved" ? "badge-green" : "badge-red"}`}>{r.status}</span>
                       {r.decision_reason && <span className="text-xs text-lo ml-2">{r.decision_reason}</span>}
                     </td>
-                    <td className="px-3 py-2 text-lo text-xs">{r.decided_at ? new Date(r.decided_at).toLocaleString() : ""}</td>
+                    <td data-label="Decided" className="px-3 py-2 text-lo text-xs">{r.decided_at ? new Date(r.decided_at).toLocaleString() : ""}</td>
                   </tr>
                 ))}
               </tbody>
@@ -208,7 +208,7 @@ export default function AdminUsersPage() {
       <section>
         <h2 className="section-label mb-3">Accounts</h2>
         <div className="border border-border rounded-lg overflow-hidden">
-          <table className="w-full text-sm">
+          <table className="responsive-table w-full text-sm">
             <thead className="bg-white/5 text-lo text-left text-xs">
               <tr>
                 <th className="px-3 py-2 font-medium">Email</th>
@@ -221,14 +221,14 @@ export default function AdminUsersPage() {
             <tbody>
               {users.map((u) => (
                 <tr key={u.id} className="border-t border-border">
-                  <td className="px-3 py-2">{u.email}</td>
-                  <td className="px-3 py-2">
+                  <td data-label="Email" className="px-3 py-2">{u.email}</td>
+                  <td data-label="Role" className="px-3 py-2">
                     <span className={`badge ${u.role === "admin" ? "badge-accent" : "badge-gray"}`}>{u.role}</span>
                   </td>
-                  <td className="px-3 py-2">
+                  <td data-label="Status" className="px-3 py-2">
                     <span className={`badge ${u.status === "active" ? "badge-green" : "badge-gray"}`}>{u.status}</span>
                   </td>
-                  <td className="px-3 py-2 text-lo text-xs">
+                  <td data-label="Last login" className="px-3 py-2 text-lo text-xs">
                     {u.last_login_at ? new Date(u.last_login_at).toLocaleString() : "never"}
                   </td>
                   <td className="px-3 py-2 text-right space-x-2">

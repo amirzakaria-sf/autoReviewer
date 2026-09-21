@@ -11,6 +11,7 @@ import uuid
 
 from app.db import async_session
 from app.enums import FIX_STATUS_RENDER, FixStatus, IssueStatus
+from app import push
 from app.integrations import email_client, slack_client
 from app.models import Fix, Issue, Repo
 from app.routers.ws import emit_event, set_event_repo
@@ -162,6 +163,21 @@ async def trigger_fix_council(
                         await asyncio.to_thread(email_client.send_email, settings.notify_email, subject, html, text)
                     except Exception:
                         logger.exception("fix-proposed email failed for fix %s", fix.id)
+
+                # Push goes to the REPOSITORY's organization, not to whoever
+                # happened to trigger the run -- a proposal is addressed to
+                # whoever can approve it, and most of them were not watching.
+                try:
+                    await asyncio.to_thread(
+                        push.send_for_repo,
+                        issue.repo_id,
+                        "Fix ready for review",
+                        f"{issue.title[:90]} — resolution confidence {result.get('score', 0)}/100",
+                        f"/issues/{issue.id}",
+                        f"fix-proposed-{fix.id}",
+                    )
+                except Exception:
+                    logger.exception("fix-proposed push failed for fix %s", fix.id)
 
             await db.commit()
             logger.info("fix council finished for issue %s: score=%s proposed=%s", issue_id, result.get("score"), proposed)

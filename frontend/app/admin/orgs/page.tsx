@@ -163,7 +163,7 @@ export default function AdminOrgsPage() {
 
       {orgs && orgs.length > 0 && (
         <section className="card overflow-hidden">
-          <table className="w-full text-sm">
+          <table className="responsive-table w-full text-sm">
             <thead>
               <tr className="text-left" style={{ borderBottom: "1px solid var(--ink-700)" }}>
                 <th className="px-3.5 py-2.5 section-label">Organization</th>
@@ -176,11 +176,11 @@ export default function AdminOrgsPage() {
             <tbody>
               {orgs.map((org) => (
                 <tr key={org.id} className="hairline">
-                  <td className="px-3.5 py-2.5 font-medium">{org.name}</td>
-                  <td className="px-3.5 py-2.5 num text-mid">{org.slug}</td>
-                  <td className="px-3.5 py-2.5 num">{org.member_count}</td>
-                  <td className="px-3.5 py-2.5 num text-mid">{org.repo_count}</td>
-                  <td className="px-3.5 py-2.5 num text-mid">
+                  <td data-label="Organization" className="px-3.5 py-2.5 font-medium">{org.name}</td>
+                  <td data-label="Slug" className="px-3.5 py-2.5 num text-mid">{org.slug}</td>
+                  <td data-label="Members" className="px-3.5 py-2.5 num">{org.member_count}</td>
+                  <td data-label="Repos" className="px-3.5 py-2.5 num text-mid">{org.repo_count}</td>
+                  <td data-label="Pending invites" className="px-3.5 py-2.5 num text-mid">
                     {org.pending_invites || <span className="text-lo">—</span>}
                   </td>
                 </tr>
@@ -209,7 +209,7 @@ export default function AdminOrgsPage() {
               value={rescue[org.id] ?? ""}
               onChange={(event) => setRescue((current) => ({ ...current, [org.id]: event.target.value }))}
               placeholder="admin@company.com"
-              className="rounded-lg px-3 py-2 text-sm flex-1 min-w-[220px]"
+              className="rounded-lg px-3 py-2 text-sm flex-1 w-full sm:w-auto sm:min-w-[220px]"
               style={{ background: "var(--ink-900)", border: "1px solid var(--ink-700)", color: "var(--text-hi)" }}
             />
             <button disabled={!(rescue[org.id] ?? "").trim()} className="btn btn-primary px-4 py-2 text-sm">

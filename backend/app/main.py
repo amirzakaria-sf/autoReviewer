@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import Base, async_session, engine
 from app.enums import UserRole, UserStatus
 from app.models import User
-from app.routers import admin, api, auth, counsel, org, email_actions, fix_review, github, human_input, me, slack_connect, webhooks, ws
+from app.routers import admin, api, auth, counsel, org, email_actions, fix_review, github, human_input, me, push, slack_connect, webhooks, ws
 from app.schema_sync import sync_additive_columns, sync_enum_labels
 from app.security import decode_access_token, hash_password
 
@@ -119,6 +119,7 @@ app.include_router(fix_review.router)
 app.include_router(me.router)
 app.include_router(slack_connect.router)
 app.include_router(webhooks.router)
+app.include_router(push.router)
 app.include_router(ws.router)
 
 

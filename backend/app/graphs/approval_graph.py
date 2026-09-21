@@ -20,6 +20,7 @@ from app.enums import FIX_STATUS_RENDER, FixStatus, IssueStatus
 from app.graphs.outcome_checker import check_outcome
 from app.integrations import cloudflare_client, email_client, github_client, slack_client
 from app.models import Fix, Issue, Repo
+from app import push
 from app.notifications import mark_notified, record_condition, should_notify
 from app.routers.ws import emit_event, set_event_repo
 from app.detectors import get_detector
@@ -385,6 +386,22 @@ async def resolve_approval(
                     notified_anything = True
                 except Exception:
                     logger.exception("verification-failed email failed for fix %s", fix.id)
+
+            try:
+                # Inside the same should_notify guard as the other two
+                # channels: a flapping condition that is not worth an email is
+                # not worth a phone buzzing either.
+                if await asyncio.to_thread(
+                    push.send_for_repo,
+                    issue.repo_id if issue else None,
+                    "Verification failed",
+                    f"{(issue.title if issue else 'A fix')[:90]} — the live preview did not pass.",
+                    f"/issues/{issue.id}" if issue else "/dashboard",
+                    f"verification-failed-{fix.id}",
+                ):
+                    notified_anything = True
+            except Exception:
+                logger.exception("verification-failed push failed for fix %s", fix.id)
 
             if notified_anything:
                 mark_notified(notification)

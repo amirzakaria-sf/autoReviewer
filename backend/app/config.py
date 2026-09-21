@@ -180,6 +180,21 @@ class Settings(BaseSettings):
     # Negative-trace memory (app/memory_traces.py).
     memory_traces_enabled: bool = True
 
+    # Web Push (app/push.py). Same VAPID keypair as the sibling `opencode`
+    # deployment on this host -- a VAPID key identifies the SENDER, not the
+    # app, so sharing one is legitimate and saves rotating two.
+    #
+    # The public key is a base64url P-256 point (87 chars, starts with "B");
+    # the private key is the raw 43-char scalar, NOT a PEM. Getting that
+    # wrong produces a 403 BadJwtToken from Apple and nothing else.
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    # Must be a mailto: or https: URI by the time it reaches the push service.
+    # app/push.py normalises it, because a value that already carries the
+    # scheme would otherwise become `mailto:mailto:...` -- which Apple rejects
+    # with no symptom other than pushes never arriving.
+    vapid_admin_email: str = ""
+
     # Exact-match LLM response cache (plan.md §13.2, app/llm_cache.py).
     llm_cache_enabled: bool = True
     llm_cache_ttl_seconds: int = 24 * 3600
