@@ -18,17 +18,16 @@ Two fields need care:
 
 ## Current
 
-- **As of:** 2026-09-20
+- **As of:** 2026-09-21
 - **Last agent:** claude
 - **Commits:** `6093ea89a0c488db480d77a78357c0760267678f` (`6093ea8`) — Azure Responses +
   `apply_patch`. `fbcc5b6539342cb3a7aebec5f7e0e3b0b596e059` (`fbcc5b6`) — the curated
   web-research council. `7dab810c57b083b7d6508ee3ef97c4f0df537dac` (`7dab810`) — the three
   tenancy gaps closed. `355359e849946f48f667c92a744a3366fc81ba53` (`355359e`) — three more
   found by re-auditing, in `github.py`.
-- **Deployed:** **no.** All three commits are on `main` and pushed; the running containers are
-  still the 2026-09-20 build of `732f41c`. `deploy.sh` builds from the working tree, so
-  nothing above is live until someone asks for a deploy. The new `research_findings` table
-  is created by `create_all` at boot, so the first deploy applies it with no manual step.
+- **Deployed:** **yes**, 2026-09-21 05:05 UTC. `eb4bf2f` (working tree = `main`, clean) is
+  live. `create_all` created `research_findings` at boot with all 15 columns — no manual
+  migration. Backend, frontend and worker all recreated; postgres untouched.
 
 - **Shipped this session (claude):**
   - `app/azure_client.py` rewritten around `complete_turn` on the **Responses API**. Native
@@ -80,6 +79,18 @@ Two fields need care:
 
 - **Verified this session:**
   - `pytest -q` → **371 passed** (343 before the tenancy slice, 270 at session start).
+  - **Post-deploy, against the live host** — every claim in this file re-checked on the real
+    deployment rather than on a test double:
+    - Nine API surfaces 200, including the three whose scoping changed
+      (`/api/human-input`, `/api/github/repos`, `/api/counsel/jobs/{id}`).
+    - **The websocket contract, end to end through nginx and the NOTIFY relay**: no cookie
+      refused; valid cookie connects; an event for the caller's own repo arrives; an event
+      for another repo does **not**; an unaddressed event does **not**. This was the one
+      change that fails visibly, and it is the one now proved live.
+    - **Counsel answered a real question** — `app.js:22` cited correctly — and both turns
+      recorded `{"protocol": "responses", "reasoning_tokens": 15}`. The second turn shows
+      `cached_input_tokens: 1207`. Native reasoning and the provider prompt cache are both
+      working in production, neither of which was ever true before today.
   - **Each tenancy fix checked against its own pre-fix behaviour**, not just against a
     passing test: the old `broadcast` does reach the other org's socket, the old job query
     does return their PRD markdown, the old fallback does pick a repo outside the caller's
@@ -100,15 +111,17 @@ Two fields need care:
 
 ### Needs verification
 
-- **Nothing shipped this session is unexercised** — the protocol, the patch loop and the
-  research council were each run against live Azure, and the results are in
-  [`claude/changes.md`](./claude/changes.md).
-- **Not yet seen end to end:** a full Fix Council run on the fixture repo under the new
-  protocol (detect → patch → verify → propose). The loop was proved live, the graph around
-  it was not re-run. Worth one fixture run on the next deploy.
-- `GITHUB_WEBHOOK_SECRET` is **still unset on both sides**, so the signature check added in
-  `732f41c` remains inert — the endpoint still accepts unsigned POSTs.
-- Alembic is scaffolded but not wired into `deploy.sh`; `schema_sync` remains the live path.
+- **A full fixture Fix Council run under the new protocol** — detect → patch → verify →
+  propose. The patch loop is proved live (three ticks against Azure, reasoning replayed, no
+  400) and Counsel is proved live end to end, but the Fix Council graph has not been re-run
+  since the protocol change. It opens a PR on the fixture repo, so it needs the user to ask.
+- `GITHUB_WEBHOOK_SECRET` is **unset on both sides** — absent from `.env`, and GitHub's own
+  hook (id `678747728`) reports `"secret_set": false`. The signature check shipped in
+  `732f41c` is inert: the endpoint accepts unsigned POSTs from anyone who knows the URL, and
+  a forged `pull_request closed merged` marks fixes merged, deletes branches and deletes
+  Cloudflare deployments. **The highest-priority item on the user's side.**
+- Alembic is scaffolded but not wired into `deploy.sh`; `schema_sync` + `create_all` remain
+  the live path, and they handled today's new table without a manual step.
 
 ### Closed — the tenancy gaps (claude, 2026-09-20, `7dab810`)
 
