@@ -39,7 +39,8 @@ A connected repo is scanned per enabled category. A finding that clears that
 category's assurance threshold becomes a real GitHub issue. A Fix Council
 turns that issue into a patch, scored by a second jury that **re-runs the
 same detector** against the patched worktree. A human approves from the
-dashboard, Slack, or a signed email magic link. On approval WhipGuard pushes
+dashboard, Slack, a signed email magic link, or a GitHub comment (`/reject`,
+`/revise`). On approval WhipGuard pushes
 the **exact approved patch** (never regenerated), opens a draft PR, deploys
 the branch to Cloudflare Pages, and re-runs the same check against the live
 preview URL. A final **cross-app outcome checker** reads GitHub, Cloudflare,
@@ -200,27 +201,44 @@ Context7 (`lookup_docs`) is an optional library-docs tool on the ReAct loop.
 ### Human in the loop
 
 `resolve_approval(fix_id, approved, actor, surface)` is the **one** function
-the dashboard, Slack buttons, and email magic links call. First surface
-wins; a second call returns `already_handled`.
+the dashboard, Slack buttons, email magic links, and GitHub `/reject`
+comments call. First surface wins; a second call returns `already_handled`.
+GitHub `/revise <instruction>` is `request_revision`, not `resolve_approval`.
 
 Fix review (`fix_review.py`) is a thread: approve, reject, or ask for a
 different approach. Revisions run on the worker.
 
 Arbiter `needs_clarification` holds the issue as `awaiting-clarification`
-until a human answers. The Fix Council `ask_human` tool currently **records**
-a request but does **not** pause the ReAct loop.
+until a human answers (`/api/human-input/...`). The Fix Council `ask_human`
+tool **pauses**: the ReAct loop writes `needs_human`, routes to END instead of
+the verifier, and the runner records a `HumanInputRequest` without proposing a
+fix. Resume is a **fresh attempt** with the answer as feedback — the ReAct
+transcript is not checkpointed.
 
 ### Outcome checker
 
 `graphs/outcome_checker.py` is four reads and a comparison, no model:
 
 - GitHub: issue exists, PR open, `Closes #N`, **not merged**
-- Cloudflare: the post-deploy assertion result (`reachable` is still
-  hardcoded `True` — the Playwright re-check is the real gate)
+- Cloudflare: `probe_preview_url` (GET, treat `< 500` as reachable) plus the
+  post-deploy assertion result. Playwright (or the category detector against
+  `PLAYWRIGHT_BASE_URL`) is still the real gate — a 200 does not mean the bug
+  is gone.
 - Slack: thread text mentions current status, **if Slack is configured**
 - Dashboard: `Fix.status`
 
 Any mismatch → `outcome-check-failed`.
+
+### Calibration and Ask Mode
+
+Outcomes never go back into a prompt. `calibration.py` records a mechanical
+event (`rejected_by_human`, `verification_failed`, `reopened`, …) and a
+periodic `run_calibration_pass` (worker lifespan, 30 min) nudges
+`Repo.thresholds` a few points when a `(repo, category)` sample is large
+enough. `ask_mode.py` (`learn_ask_mode_pass`, called from that same pass)
+only moves `Repo.ask_mode` between `balanced` and `verbose` after enough
+`HumanInputRequest` rows exist. **Autonomous is a human choice** — the
+learning loop will not select it.
 
 ### Externally filed bugs
 
@@ -257,7 +275,7 @@ an app.
 
 | App | What it does |
 |-----|----------------|
-| **GitHub** | Labeled issue, draft PR (`Closes #N`), comments, branch push/delete. GitHub **App** installation token is preferred when `GITHUB_APP_*` is set (per-org install id on the org, else process-wide); otherwise PAT / OAuth token on `GITHUB_TOKEN`. Webhooks: `push`, `pull_request`, `issues`, `issue_comment`. HMAC via `X-Hub-Signature-256` when `GITHUB_WEBHOOK_SECRET` is set. Delivery ids live in `webhook_deliveries` plus an in-memory set. Issue lookups are `(repo, number)`. |
+| **GitHub** | Labeled issue, draft PR (`Closes #N`), comments, branch push/delete. GitHub **App** installation token is preferred when `GITHUB_APP_*` is set (per-org install id on the org, else process-wide); otherwise PAT / OAuth token on `GITHUB_TOKEN`. Webhooks: `push`, `pull_request`, `issues`, `issue_comment`. HMAC via `X-Hub-Signature-256` when `GITHUB_WEBHOOK_SECRET` is set. Delivery ids live in `webhook_deliveries` plus an in-memory set. Issue lookups are `(repo, number)`. Comment commands on the issue thread: **`/reject [reason]`** (approval surface `github-comment`) and **`/revise <instruction>`** (the only free-text surface besides the dashboard that carries the third verb). |
 | **Cloudflare Pages** | `wrangler pages deploy --branch` → per-branch preview URL. Per-repo project name, falling back to `CLOUDFLARE_PAGES_PROJECT`. Reachability is a GET `< 500`; Playwright (or the category detector) is still the real gate. |
 | **Slack** | Block Kit Approve / Reject; HMAC-SHA256 on interactions (5-minute replay window). Channel picked via Slack OAuth. Manifest in `slack/app-manifest.yaml` declares Events API (`app_uninstalled`, `tokens_revoked`) and history scopes. |
 | **Email** | SMTP (Brevo-shaped) for invites, fix-proposed, and signed approve/reject links (`/api/email/action`). |
@@ -268,6 +286,10 @@ an app.
 
 Cookie session (`access_token` / rotating `refresh_token`). Nginx proxies
 `/api/` and `/ws/` to the backend and `/` to Next — **no HTTP Basic Auth**.
+⌘K / Ctrl+K opens a command palette (`CommandPalette.tsx`) that jumps to
+dashboard routes and searches issue titles (fetched once on first open, not
+per keystroke). First login is gated by `GET/PATCH /api/me` plus
+`OnboardingModal.tsx` (`onboarding_completed_at`).
 
 | Route | What it is |
 |-------|------------|
@@ -283,7 +305,12 @@ Cookie session (`access_token` / rotating `refresh_token`). Nginx proxies
 | `/admin`, `/admin/users`, `/admin/orgs` | Platform admin, including the global detection/proposals kill switch |
 
 Counsel lives in the sidebar (`/api/counsel/ask` SSE; heavy jobs on the
-worker).
+worker). Chat is the read-only analyst. A **PRD sub-council**
+(`counsel/prd.py`) is a worker job: Drafter maps each requirement onto real
+code, Feasibility Skeptic hunts gaps, Completeness Arbiter scores
+**coverage** (not quality) and lists ungrounded claims. An investigation
+job is the sibling path. Both take minutes; the sidebar shows coverage and
+the document, not a streaming token dump.
 
 ---
 
@@ -294,11 +321,15 @@ backend/
   app/
     graphs/           bug, fix, approval, outcome_checker
     detectors/        one module per CATEGORY_REGISTRY key
-    counsel/          read-only analyst + PRD/investigate jobs
+    counsel/          read-only analyst + PRD/investigate jobs (`prd.py`)
     integrations/     github (+ App auth), slack, cloudflare, email, context7
     sandbox/          bare mirror + worktrees, docker_runner
-    routers/          REST, webhooks, WS, auth, org, counsel, fix_review
+    routers/          REST, webhooks, WS, auth, org, counsel, fix_review,
+                      me, human_input, push
     worker.py         privileged queue consumer
+    eval_harness.py   BROKEN vs FIXED detector eval (optional jury)
+    calibration.py    post-ship threshold nudges (never prompt-injected)
+    ask_mode.py       balanced/verbose from clarification rate (never autonomous)
     hybrid_retrieval.py, graph_index.py, embeddings.py, memory_traces.py
     prompts.py, prompt_compiler.py, azure_client.py
     enums.py          the one Issue/Fix status machine every surface renders
@@ -387,9 +418,11 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest tests/ -v
 ```
 
-270 tests across 33 modules. Graph tests mock Azure and detectors; mechanical
+38 pytest modules under `backend/tests/`. Last recorded live collect
+(`pytest -q`, 2026-09-21) was **401 passed**. Graph tests mock Azure and detectors; mechanical
 invariants (no merge method, outcome-check fail-closed, poller idempotency,
-org isolation, prefix byte-identity, webhook HMAC, Fix Council retry) are asserted directly.
+org isolation, prefix byte-identity, webhook HMAC, Fix Council retry, GitHub
+`/reject`/`/revise`, `ask_human` pause) are asserted directly.
 
 ---
 
@@ -411,6 +444,13 @@ org isolation, prefix byte-identity, webhook HMAC, Fix Council retry) are assert
 8. **Poller is idempotent per `(repo_id, issue number)`** and swallows one
    GitHub error without killing the loop.
 9. **Write-scope** is enforced in `write_file`, not in a prompt.
+10. **Eval harness** (`eval_harness.py`) runs each category detector against a
+    throwaway worktree in a **BROKEN** state (must fail) and a **FIXED** state
+    (must pass). Default is detection-only — zero model calls, cost reported
+    separately, never a blended score. `run_jury_eval()` is the slower full
+    Bug Council pass. UI's broken leg is a synthetic off-by-one because that
+    seed was already merged; other categories still use live-on-main bugs.
+    Never touches `main`, never pushes.
 
 A seeded UI bug in the fixture repo (`app.js` delete handler) has been run
 live: real GitHub issue, real draft PR, real Pages preview, same Playwright
@@ -480,8 +520,9 @@ Tracked as product work, not hidden:
   are still not automated.
 - Org admin UI still opens `orgs_for_user()[0]`; dashboard reads now union
   every membership. A person can still only *join* one org at a time.
-- `ask_human` now pauses the Fix Council, but the ReAct transcript is not
-  checkpointed — resume starts a fresh attempt with the answer as feedback.
+- `ask_human` pauses the Fix Council (`needs_human` → END, no proposed fix),
+  but the ReAct transcript is not checkpointed — resume starts a fresh
+  attempt with the answer as feedback.
 - An activity event with no `repo_id` reaches nobody. That is the safe
   direction, but it means a future emitter added outside an `activity_scope`
   goes silently missing from the feed rather than failing loudly. The
