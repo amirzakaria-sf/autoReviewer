@@ -20,7 +20,7 @@ Two fields need care:
 
 - **As of:** 2026-10-22
 - **Last agent:** claude
-- **Commit:** pending
+- **Commit:** `3b58fdce679c39dc186b4994bf2b8864e80e2c3a` (`3b58fdc`)
 - **Deployed:** **yes**, on a **new host**. `https://whip-guard.zakarias.in` now points at
   the shared AWS VM `13.60.61.135` (eu-north-1). The old Azure VM (`172.206.16.54`) was
   unreachable and its database was **not** migrated: this host started empty, with one

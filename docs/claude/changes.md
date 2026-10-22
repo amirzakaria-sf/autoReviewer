@@ -11,7 +11,7 @@ file is the only channel.
 ## 2026-10-22 18:00 (UTC) — Move to the AWS host, Bedrock models, interactive landing
 
 - **Agent:** claude
-- **Commit:** pending
+- **Commit:** `3b58fdce679c39dc186b4994bf2b8864e80e2c3a` (`3b58fdc`)
 - **User ask:** set WhipGuard up end to end on this VM, make it work with the AWS model
   setup in `~/ai/aws-model-integrations.md`, and replace the landing page with something
   like jevSec's: highly interactive and informative.
