@@ -14,13 +14,15 @@ Requires-Dist: playwright>=1.48
 Requires-Dist: python-dotenv>=1.0
 Requires-Dist: pydantic-settings>=2.5
 Requires-Dist: pydantic>=2.9
-Requires-Dist: openai>=1.50
+Requires-Dist: openai>=1.58.1
 Requires-Dist: psycopg[binary,pool]>=3.2
 Requires-Dist: itsdangerous>=2.2
 Requires-Dist: pgvector>=0.3
 Requires-Dist: bcrypt>=4.2
 Requires-Dist: pyjwt[crypto]>=2.9
 Requires-Dist: tiktoken>=0.8
+Requires-Dist: pywebpush>=2.0
+Requires-Dist: boto3>=1.35
 Provides-Extra: dev
 Requires-Dist: pytest>=8.3; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.24; extra == "dev"

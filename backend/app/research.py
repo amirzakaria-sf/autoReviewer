@@ -135,6 +135,14 @@ def _deployment() -> str:
     return settings.web_research_deployment or settings.azure_worker_deployment or settings.azure_fast_deployment
 
 
+def web_research_available() -> bool:
+    """Enabled, and the provider can actually search. Bedrock mantle has no
+    server-side `web_search` tool; without this gate the Gatherer would answer
+    from memory and the Curator would correctly keep none of it -- two paid
+    calls to learn nothing."""
+    return settings.web_research_enabled and azure_client.supports_web_search()
+
+
 def research(
     question: str,
     *,
@@ -152,6 +160,8 @@ def research(
         return ResearchResult(question="", error="no question was given")
     if not settings.web_research_enabled:
         return ResearchResult(question=question, error="web research is disabled on this deployment")
+    if not web_research_available():
+        return ResearchResult(question=question, error="web research is not available with this model provider")
 
     result = ResearchResult(question=question)
     try:

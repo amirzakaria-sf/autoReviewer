@@ -27,6 +27,9 @@ dependencies = [
   "pyjwt[crypto]>=2.9",
   "tiktoken>=0.8",
   "pywebpush>=2.0",
+  # SigV4 signing for Amazon Bedrock (LLM_PROVIDER=bedrock). No key: requests
+  # are signed with the host's IAM role.
+  "boto3>=1.35",
 ]
 
 [project.optional-dependencies]

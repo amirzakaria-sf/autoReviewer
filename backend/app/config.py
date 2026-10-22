@@ -1,13 +1,14 @@
 from pathlib import Path
 
 from dotenv import load_dotenv
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=None, extra="ignore")
+    model_config = SettingsConfigDict(env_file=None, extra="ignore", populate_by_name=True)
 
     database_url: str = "postgresql+asyncpg://whipguard:whipguard@localhost:5432/whipguard"
 
@@ -18,11 +19,32 @@ class Settings(BaseSettings):
     # different surface with a different versioning scheme, which is why
     # this setting does not reach it (app/azure_client.py).
     azure_openai_api_version: str = "2025-04-01-preview"
-    azure_fast_deployment: str = ""
-    azure_worker_deployment: str = ""
-    azure_planner_deployment: str = ""
-    azure_mechanical_deployment: str = ""
+    # Which provider app/azure_client.py calls. "azure" is the original
+    # deployment; "bedrock" is Amazon Bedrock's OpenAI-compatible "mantle"
+    # endpoint, SigV4-signed with the host's IAM role (no key in .env).
+    llm_provider: str = "azure"
+    bedrock_region: str = "eu-north-1"
+
+    # Per-role model routing (plan.md §12). An Azure deployment name or a
+    # Bedrock model id, depending on llm_provider. The LLM_*_MODEL names are
+    # provider-neutral; the AZURE_*_DEPLOYMENT names they replace still work.
+    azure_fast_deployment: str = Field("", validation_alias=AliasChoices("LLM_FAST_MODEL", "AZURE_FAST_DEPLOYMENT"))
+    azure_worker_deployment: str = Field(
+        "", validation_alias=AliasChoices("LLM_WORKER_MODEL", "AZURE_WORKER_DEPLOYMENT")
+    )
+    azure_planner_deployment: str = Field(
+        "", validation_alias=AliasChoices("LLM_PLANNER_MODEL", "AZURE_PLANNER_DEPLOYMENT")
+    )
+    azure_mechanical_deployment: str = Field(
+        "", validation_alias=AliasChoices("LLM_MECHANICAL_MODEL", "AZURE_MECHANICAL_DEPLOYMENT")
+    )
     azure_embedding_deployment: str = "text-embedding-3-small"
+    # "azure", or "none" to switch dense retrieval off. Empty follows
+    # llm_provider: Bedrock mantle serves no embeddings model, and Bedrock's
+    # own embedding models are not usable while the account's on-demand
+    # quotas are 0 -- so on Bedrock the councils retrieve by BM25 and the
+    # symbol graph alone (app/hybrid_retrieval.py) until a source exists.
+    embeddings_provider: str = ""
 
     # Generation protocol. "responses" is the default and the only one that
     # can carry native reasoning alongside tools on GPT-5.x. "chat" is an

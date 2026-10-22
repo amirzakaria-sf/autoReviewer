@@ -123,7 +123,22 @@ passes on rerun is dropped in code before a second model call
 
 ### Model protocol
 
-Every generation call goes through `app/azure_client.py::complete_turn`, over the
+Every generation call goes through `app/azure_client.py::complete_turn`. The module name is
+historical: `LLM_PROVIDER` picks the provider behind it, and callers never change.
+
+**`LLM_PROVIDER=bedrock` (production since 2026-10-22).** Amazon Bedrock's OpenAI-compatible
+"mantle" endpoint in `BEDROCK_REGION` (`eu-north-1`), Chat Completions, every request
+SigV4-signed with the host's IAM role. There is no model API key anywhere. Callers still
+pass Responses input items; they are converted at the boundary, with an assistant's text
+and its tool calls merged into one message (open-weight models reject two assistant turns
+in a row). Mantle accepts a forced function and `reasoning_effort` alongside tools, so
+structured jury/Arbiter output is a forced function here too. A model that ignores the
+force gets one retry with a generated JSON-Schema envelope. A 400 that names
+`reasoning_effort` drops it for that model only. Mantle's own Responses surface was probed
+and rejected: GLM-5 does not support it, and gpt-oss returned `status=failed` on a forced
+function.
+
+**`LLM_PROVIDER=azure`** is the original path: the
 **Responses API** (`{endpoint}/openai/v1/`, `api_version="preview"`). That is what lets a
 tool-bound call carry native reasoning: on GPT-5.x, Chat Completions cannot combine the
 two, so the patch loop used to run with reasoning off. Reasoning items are replayed across
@@ -135,6 +150,11 @@ A `400` drops the one optional parameter its body names and retries once; anythi
 raises with the body logged. `WHIPGUARD_AZURE_API=chat` pins the whole process to Chat
 Completions as an operator hatch. Embeddings stay on their own client.
 
+The jury and Arbiter schemas carry their scale in the schema itself
+(`confidence`/`score`: 0-100, whole numbers), because the forced function is the one part
+of a prompt every provider reads. GLM-5 answered `0.78` before that, and the rubric that
+was meant to say "0-100" had never been wired to a call site.
+
 `apply_patch` is the preferred edit: an exact, unique anchor replaced in place. `write_file`
 remains for creating a file or a genuine full replace. Both refuse a path outside the
 worktree and a path outside the category's write scope. Nothing here runs a shell — the
@@ -145,6 +165,10 @@ verifier runs the category's detector after `finish_patch`, and that result deci
 `app/research.py` gives the PRD council, Counsel and the patch worker one tool for things
 the repository cannot answer — whether an API still exists, what a third-party service
 requires, what a release changed. It is two roles, not one call:
+
+**Azure only.** Mantle has no server-side `web_search` tool, so on Bedrock
+`research.web_research_available()` is false and every caller gets "not available with this
+model provider" before a model call is spent. Bringing it back needs a search API.
 
 - **Gatherer** runs the model's own `web_search` tool and reports claims with sources.
 - **Curator** attributes every claim to a URL the search actually returned, scores
@@ -174,12 +198,17 @@ deterministic jury calls.
 
 ### Model routing
 
-| Role | Deployment |
-|------|------------|
-| Skeptic / Corroborator | `AZURE_FAST_DEPLOYMENT` |
-| Patch generation | `AZURE_WORKER_DEPLOYMENT` |
-| Arbiter / Meta-auditor | `AZURE_PLANNER_DEPLOYMENT` |
-| Embeddings | `AZURE_EMBEDDING_DEPLOYMENT` |
+| Role | Setting | Production (Bedrock) |
+|------|---------|----------------------|
+| Skeptic / Corroborator | `LLM_FAST_MODEL` | `moonshotai.kimi-k2.5` |
+| Patch generation, Counsel | `LLM_WORKER_MODEL` | `zai.glm-5` |
+| Arbiter / Meta-auditor | `LLM_PLANNER_MODEL` | `zai.glm-5` |
+| Embeddings | `EMBEDDINGS_PROVIDER` | `none` (see Retrieval) |
+
+The `LLM_*_MODEL` names are aliases; the old `AZURE_*_DEPLOYMENT` names still work. The
+model choice follows the account benchmark in `~/ai/aws-model-integrations.md` §6 (GLM-5 tied
+best on judgement, fastest, zero errors). GPT-5.x/6.x and Claude are refused on this AWS
+account today.
 
 The Arbiter returns a Pydantic `ArbiterVerdict`: score, `{factor, weight,
 note}` line items, verdict, optional `needs_clarification`. The dashboard
@@ -189,7 +218,10 @@ rubric is those rows in `CouncilRun`, not parsed prose.
 
 Fix Council retrieval is **hybrid**:
 
-- dense chunks in **pgvector** (`retrieval.py` / `embeddings.py`)
+- dense chunks in **pgvector** (`retrieval.py` / `embeddings.py`). **Off on Bedrock:**
+  mantle serves no embeddings model and Bedrock's own are at a 0 quota on this account, so
+  `embeddings.available()` is false and the dense channel returns nothing, quietly, without
+  a network call. The other channels carry retrieval.
 - BM25 lexical index (`lexical_index.py`)
 - one-hop import / dependent graph in Postgres (`graph_index.py`)
 - fused in `hybrid_retrieval.py`
@@ -266,12 +298,21 @@ the worker on a stale image.
 
 Host ports: frontend `3300`, API `8300`, Postgres `127.0.0.1:5433`.
 
+**The host** (since 2026-10-22): an AWS EC2 instance, `13.60.61.135`, `eu-north-1`, shared
+with a dozen sibling sites. Containers reach Bedrock with the instance role, so nothing about
+AWS is in `.env`. Host nginx terminates TLS with
+[`nginx/whip-guard.conf`](./nginx/whip-guard.conf) installed as
+`/etc/nginx/conf.d/whip-guard.zakarias.in.conf`; certbot renews it on the host's timer. The
+workspace is `/srv/workspace` on the root disk; there is no separate data disk on this host.
+The old Azure VM (`172.206.16.54`) is gone, and its database was not migrated: this host
+started empty.
+
 ---
 
 ## External apps
 
-These are the surfaces WhipGuard **writes**. Azure OpenAI is the model, not
-an app.
+These are the surfaces WhipGuard **writes**. The model provider (Bedrock, or Azure OpenAI)
+is not an app.
 
 | App | What it does |
 |-----|----------------|
@@ -293,7 +334,7 @@ per keystroke). First login is gated by `GET/PATCH /api/me` plus
 
 | Route | What it is |
 |-------|------------|
-| `/` | Marketing landing |
+| `/` | Landing: a client-side simulator, jury lab and guardrail demos built on the real thresholds (`components/landing/sim-data.ts`) |
 | `/login`, `/signup`, `/accept-invite`, `/join` | Auth and org invites |
 | `/dashboard` | Overview, clarifications, scan |
 | `/issues/[id]` | Rubric, evidence, fix-review thread |
@@ -352,8 +393,8 @@ PATs before.
 ### Prerequisites
 
 - Docker + Docker Compose
-- Azure OpenAI: fast / worker / planner deployments, plus an embedding
-  deployment
+- Models: an AWS IAM role with `bedrock-mantle:CreateInference` (production), **or** Azure
+  OpenAI fast / worker / planner deployments plus an embedding deployment
 - GitHub: a PAT **or** (preferred) a GitHub App (`contents`, `issues`,
   `pull_requests`) plus optional OAuth App for “Connect”
 - Cloudflare Pages project + API token (`Account / Cloudflare Pages / Edit`)
@@ -365,13 +406,12 @@ PATs before.
 Copy [`.env.example`](./.env.example) to `.env`. Required for a real run:
 
 ```
-AZURE_API_ENDPOINT=
-AZURE_API_KEY=
-AZURE_OPENAI_API_VERSION=2025-04-01-preview
-AZURE_FAST_DEPLOYMENT=
-AZURE_WORKER_DEPLOYMENT=
-AZURE_PLANNER_DEPLOYMENT=
-AZURE_EMBEDDING_DEPLOYMENT=text-embedding-3-small
+LLM_PROVIDER=bedrock   # or azure, with AZURE_API_ENDPOINT / AZURE_API_KEY
+BEDROCK_REGION=eu-north-1
+LLM_FAST_MODEL=moonshotai.kimi-k2.5
+LLM_WORKER_MODEL=zai.glm-5
+LLM_PLANNER_MODEL=zai.glm-5
+EMBEDDINGS_PROVIDER=none
 
 CLOUDFLARE_ACCOUNT_ID=
 CLOUDFLARE_API_TOKEN=
@@ -419,7 +459,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 ```
 
 38 pytest modules under `backend/tests/`. Last recorded live collect
-(`pytest -q`, 2026-09-21) was **401 passed**. Graph tests mock Azure and detectors; mechanical
+(`pytest -q`, 2026-10-22) was **412 passed**. Graph tests mock the model and detectors; mechanical
 invariants (no merge method, outcome-check fail-closed, poller idempotency,
 org isolation, prefix byte-identity, webhook HMAC, Fix Council retry, GitHub
 `/reject`/`/revise`, `ask_human` pause) are asserted directly.

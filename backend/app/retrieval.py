@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from app import sync_db
+from app import embeddings, sync_db
 from app.config import settings
 from app.embeddings import chunk_file, embed_text
 
@@ -44,6 +44,10 @@ def index_repo_files(repo_id, worktree_path: str) -> int:
     """(Re-)embeds every indexable file in the worktree, upserting by
     (repo_id, file_path, symbol_name) identity -- a re-index after a push
     updates existing chunks' embeddings rather than accumulating duplicates."""
+    if not embeddings.available():
+        # One line per index run, not one logged exception per chunk.
+        logger.info("dense index skipped for repo %s: no embeddings provider configured", repo_id)
+        return 0
     root = Path(worktree_path)
     count = 0
 
@@ -96,6 +100,8 @@ def similar_code_chunks(repo_id, query_text: str, k: int = 5) -> list[dict]:
     scoped to one repo. Returns [] on any failure rather than raising -- a
     retrieval miss degrades the Fix Council back to the one-hop static scan
     alone, never crashes the run over an unrelated API hiccup."""
+    if not embeddings.available():
+        return []
     try:
         query_embedding = embed_text(query_text)
     except Exception:
@@ -134,6 +140,8 @@ def find_similar_past_issue(repo_id, issue_text: str, distance_threshold: float 
     ANNOTATES a new finding; it never suppresses it -- a repeat detection of a
     real, still-unfixed bug is legitimate, and deciding what to do about a
     repeat is a human/calibration-loop judgment, not a silent auto-dedupe."""
+    if not embeddings.available():
+        return None
     try:
         query_embedding = embed_text(issue_text)
     except Exception:
@@ -164,6 +172,8 @@ def find_similar_past_issue(repo_id, issue_text: str, distance_threshold: float 
 
 
 def store_issue_embedding(issue_id, text: str) -> None:
+    if not embeddings.available():
+        return
     try:
         embedding = embed_text(text)
     except Exception:

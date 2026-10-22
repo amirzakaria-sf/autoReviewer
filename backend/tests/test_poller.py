@@ -38,8 +38,14 @@ async def test_poll_once_creates_issue_for_new_labeled_github_issue():
     become an Issue row with origin=filed-externally, and should trigger the
     Fix Council as a background task."""
     await _cleanup_issue(NEW_ISSUE_NUMBER)
+    async with async_session() as db:
+        await _get_or_create_repo(db)
+        await db.commit()
     try:
         with (
+            # _poll_once returns early without a GitHub identity; these tests
+            # used to pass only because the real .env happened to carry one.
+            patch.object(settings, "github_token", "test-token"),
             patch("app.poller.github_client.list_issues_with_label") as mock_list,
             patch("app.poller.enqueue", new_callable=AsyncMock) as mock_trigger,
         ):
@@ -88,6 +94,9 @@ async def test_poll_once_does_not_duplicate_or_retrigger_an_already_tracked_issu
 
     try:
         with (
+            # _poll_once returns early without a GitHub identity; these tests
+            # used to pass only because the real .env happened to carry one.
+            patch.object(settings, "github_token", "test-token"),
             patch("app.poller.github_client.list_issues_with_label") as mock_list,
             patch("app.poller.enqueue", new_callable=AsyncMock) as mock_trigger,
         ):
@@ -129,6 +138,9 @@ async def test_poll_once_reads_category_from_the_whipguard_label():
     await _cleanup_issue(number)
     try:
         with (
+            # _poll_once returns early without a GitHub identity; these tests
+            # used to pass only because the real .env happened to carry one.
+            patch.object(settings, "github_token", "test-token"),
             patch("app.poller.github_client.list_issues_with_label") as mock_list,
             patch("app.poller.enqueue", new_callable=AsyncMock),
         ):

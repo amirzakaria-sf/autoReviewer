@@ -3,6 +3,27 @@
 Short product history. Append a dated heading when a slice lands. Detail belongs in
 `docs/<agent>/changes.md`; this is the shape of the product over time.
 
+## 2026-10-22 — moved to AWS, models on Bedrock, a landing page you can use
+
+WhipGuard now runs on the shared AWS VM, and its models are on Amazon Bedrock: Kimi K2.5
+for the jury, GLM-5 for the Arbiter and the patch loop, signed with the instance role, so
+no model key exists anywhere. The one-client rule held: Bedrock is a provider inside
+`azure_client.py`, and the Azure path still works behind a setting. Two things Bedrock
+cannot do here are switched off openly rather than faked: web research (no search tool)
+and dense retrieval (no embeddings model). The full detection eval passes on the new host,
+all six categories, recall and precision both 1.0.
+
+Moving host found three bugs a long-lived server had been hiding: a fresh database could
+not boot (the pgvector extension had only ever been created by hand), the jury's 0-100
+scale had never reached any model (GPT guessed it and GLM didn't), and `deploy.sh` could
+declare success before the new backend existed.
+
+The landing page was rebuilt around things to do rather than read: a simulator where you
+pick a bug, choose what goes wrong and make the approval call yourself; a jury lab running
+the real disagreement and threshold rules; and three attempts to trick it (plant an
+instruction, leak a secret, edit the test that judges the fix), each answered by the
+product's own rule.
+
 ## 2026-09-21 — installable, mobile-first, and it can reach your phone
 
 WhipGuard is a PWA: installable, standalone, with an offline shell and a service worker

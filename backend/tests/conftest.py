@@ -26,6 +26,11 @@ os.environ["DATABASE_URL"] = _LIVE_DATABASE_URL.rsplit("/", 1)[0] + "/" + _TEST_
 # deployment, and they import the Settings object before any fixture can
 # override it, so this has to be set here.
 os.environ.setdefault("ALLOW_INSECURE_DEFAULTS", "true")
+# The suite is written against the Azure protocol; config.py also loads the
+# real .env, which on a Bedrock host says otherwise. Forced, not defaulted:
+# load_dotenv never overrides a variable that is already set.
+os.environ["LLM_PROVIDER"] = "azure"
+os.environ["EMBEDDINGS_PROVIDER"] = ""
 
 import psycopg
 import pytest

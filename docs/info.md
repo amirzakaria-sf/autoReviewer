@@ -313,9 +313,24 @@ real.
 Every one of these cost a real debugging session. They are here so the second agent does
 not pay for them again.
 
-### One Azure client, and it speaks Responses
+### One model client, two providers
 
-`app/azure_client.py::complete_turn` is the only place a generation call is made.
+`app/azure_client.py::complete_turn` is the only place a generation call is made. Despite
+the name, production runs `LLM_PROVIDER=bedrock` (Amazon Bedrock mantle, Chat Completions,
+SigV4 with the instance role, no key). Callers still speak Responses input items; the
+Bedrock path converts them at the boundary. Three Bedrock-specific traps, each found live:
+
+- **No Responses API, no `web_search`, no embeddings on mantle.** Research and dense
+  retrieval are gated off (`web_research_available()`, `embeddings.available()`), not
+  attempted and failed.
+- **Open-weight models guess scales.** GLM-5 returned `confidence: 0.78` for a 0-100 field.
+  Put the meaning in the schema (`Field(description=...)`), since the forced function is
+  the one thing every provider reads.
+- **Never run botocore at DEBUG.** It logs signed requests. `azure_client.py` pins those
+  loggers to WARNING; keep it that way.
+
+The Azure path below is intact and still tested; `conftest.py` forces
+`LLM_PROVIDER=azure` because `config.py` loads the real `.env`.
 `app/embeddings.py` is the one exception — a different API on a different client.
 
 Constructing your own `AzureOpenAI` anywhere else is the trap, and it is not hypothetical:
@@ -516,12 +531,18 @@ detector that republishes the credential is worse than none.
   `app.config` is imported, and drops/recreates that database each session. Tests used to
   run against production and left fixture rows showing on the dashboard as real issues.
 - Run them with `backend/.venv/bin/python -m pytest -q` from `backend/`.
+- **`config.py` loads the real `.env` into every test run.** A test that passes only because
+  the host's `.env` happens to set something (two poller tests relied on `GITHUB_TOKEN`) breaks
+  on the next host. Pin what a test needs inside the test.
 - `CREATE DATABASE … TEMPLATE template0` — this server's `template1` has a glibc collation
   mismatch.
 
 ### Ports
 
 Postgres `127.0.0.1:5433`, backend `127.0.0.1:8300`, frontend `127.0.0.1:3300`, all bound
-to loopback with TLS terminating at the host nginx (`whip-guard.zakarias.in`). The host
-nginx config is shared with two sibling products — see `DECISIONS.md` on the single `map`
-directive before touching it.
+to loopback with TLS terminating at the host nginx (`whip-guard.zakarias.in`). The host is
+the AWS VM `13.60.61.135`, shared with a dozen sibling sites, and every `server_name` must
+be unique: the `showcase` project (`~/demoStuff/demoApps`) once generated a vhost for this
+hostname, now disabled and commented out of its `deploy/vhosts.tsv`. `$connection_upgrade`
+is declared once, in `conf.d/zakarias.in.conf`. Always `sudo nginx -t` before a reload: a
+broken config takes every site on the host down.

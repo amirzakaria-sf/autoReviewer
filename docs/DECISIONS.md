@@ -74,6 +74,29 @@ Format: `YYYY-MM-DD` · **title** · decision · why · who.
   TypeErrors client-side. The sibling project's `<2.0.0` pin would have been a two-major
   downgrade from the 3.13.0 installed and verified here. · claude
 
+- **2026-10-22** · **Bedrock mantle, through the one client** · Production runs
+  `LLM_PROVIDER=bedrock`: Amazon Bedrock's OpenAI-compatible mantle endpoint in `eu-north-1`,
+  Chat Completions, SigV4 with the instance role. It is added inside
+  `app/azure_client.py` rather than as a second client, and the Azure path stays intact
+  behind `LLM_PROVIDER=azure`. · The host moved to AWS and the account cannot reach Azure,
+  GPT-5.x/6.x or Claude. Mantle's Responses surface was probed first and rejected (GLM-5
+  unsupported; gpt-oss `status=failed` on a forced function). A second client would split
+  the usage accounting the one-client rule exists to protect. Models: Kimi K2.5 for the
+  jury, GLM-5 for Arbiter and patch loop, per the account benchmark. · claude
+
+- **2026-10-22** · **On Bedrock, research and dense retrieval are off, not faked** ·
+  `embeddings.available()` and `research.web_research_available()` return false on Bedrock
+  and every caller degrades before a network call. · Mantle has neither an embeddings model
+  nor a `web_search` tool, and Bedrock's own embedding models are at a 0 quota on this
+  account. A local embedding model was ruled out on memory (≈1 GB free on a shared host).
+  Answering research from model memory would be a citation nobody can check. Either
+  returns when a source exists: a search API key, or a lifted Bedrock quota. · claude
+
+- **2026-10-22** · **Hosted on the shared AWS VM; the old database was not migrated** ·
+  `whip-guard.zakarias.in` points at `13.60.61.135`. The showcase project's vhost for the
+  same name is disabled. This host started with an empty database. · The old Azure VM is
+  unreachable, so there was nothing to migrate from. · claude
+
 ## Product rules
 
 - **2026-09-13** · **WhipGuard never merges a PR** · No merge capability exists and none

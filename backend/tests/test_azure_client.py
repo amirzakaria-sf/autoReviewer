@@ -97,7 +97,9 @@ def _isolated(monkeypatch):
     monkeypatch.setattr("app.llm_cache.get", lambda key: None)
     monkeypatch.setattr("app.llm_cache.put", lambda *args, **kwargs: None)
     monkeypatch.setattr(settings, "whipguard_azure_api", "responses")
+    monkeypatch.setattr(settings, "llm_provider", "azure")
     azure_client._UNSUPPORTED_RESPONSES_PARAMS.clear()
+    azure_client._UNSUPPORTED_BEDROCK_PARAMS.clear()
     yield
     azure_client._UNSUPPORTED_RESPONSES_PARAMS.clear()
 
@@ -461,3 +463,124 @@ def test_an_incomplete_response_is_logged_and_still_returns_what_exists(caplog):
 def test_a_model_turn_defaults_to_an_empty_but_usable_shape():
     turn = ModelTurn()
     assert turn.tool_calls == [] and turn.reasoning_items == [] and turn.citations == []
+
+
+# --------------------------------------------------------------------------- #
+# Bedrock (mantle): the same input items, Chat Completions on the wire
+# --------------------------------------------------------------------------- #
+
+
+def _chat_call(name: str, arguments: str, call_id: str = "call_1"):
+    return SimpleNamespace(id=call_id, function=SimpleNamespace(name=name, arguments=arguments))
+
+
+@pytest.fixture
+def bedrock(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "bedrock")
+    chat = MagicMock()
+    responses = MagicMock()
+    with patch.object(azure_client, "_chat_client", return_value=chat), \
+         patch.object(azure_client, "_responses_client", return_value=responses):
+        yield chat, responses
+
+
+def test_bedrock_never_touches_the_responses_surface(bedrock):
+    chat, responses = bedrock
+    chat.chat.completions.create.return_value = _chat_response("from mantle")
+    turn = complete_turn(deployment="zai.glm-5", messages=[{"role": "user", "content": "q"}])
+    assert turn.content == "from mantle"
+    assert turn.protocol == "bedrock"
+    responses.responses.create.assert_not_called()
+
+
+def test_bedrock_sends_reasoning_and_an_output_ceiling_with_tools(bedrock):
+    chat, _ = bedrock
+    chat.chat.completions.create.return_value = _chat_response("x")
+    tools = [{"type": "function", "function": {"name": "read_file", "parameters": {}}}]
+    complete_turn(deployment="m", messages=[{"role": "user", "content": "q"}], tools=tools, reasoning_effort="medium")
+    kwargs = chat.chat.completions.create.call_args.kwargs
+    assert kwargs["reasoning_effort"] == "medium"
+    assert kwargs["max_tokens"] == settings.azure_responses_max_output_tokens
+    assert kwargs["tool_choice"] == "auto"
+    # Azure Chat's plan-sentence workaround is not needed when reasoning is native.
+    assert "describing your plan" not in kwargs["messages"][-1]["content"]
+
+
+def test_bedrock_structured_output_is_a_forced_function(bedrock):
+    chat, _ = bedrock
+    chat.chat.completions.create.return_value = _chat_response(
+        tool_calls=[_chat_call("JurorOpinion", json.dumps({"confidence": 80, "transcript": "t"}))]
+    )
+    opinion = call_skeptic_opinion("p", "s")
+    assert opinion == JurorOpinion(confidence=80, transcript="t")
+    kwargs = chat.chat.completions.create.call_args.kwargs
+    assert kwargs["tool_choice"] == {"type": "function", "function": {"name": "JurorOpinion"}}
+    assert chat.chat.completions.create.call_count == 1
+
+
+def test_bedrock_retries_once_with_the_json_envelope_when_a_forced_function_is_ignored(bedrock):
+    chat, _ = bedrock
+    chat.chat.completions.create.side_effect = [
+        _chat_response("I think it is a bug."),
+        _chat_response(json.dumps({"confidence": 40, "transcript": "t"})),
+    ]
+    assert call_skeptic_opinion("p", "s").confidence == 40
+    retry = chat.chat.completions.create.call_args_list[1].kwargs
+    assert "tools" not in retry and "tool_choice" not in retry
+    assert "JSON Schema" in retry["messages"][-1]["content"]
+
+
+def test_bedrock_drops_a_rejected_reasoning_effort_for_that_model_only(bedrock):
+    chat, _ = bedrock
+    chat.chat.completions.create.side_effect = [
+        _bad_request("Unsupported parameter: reasoning_effort"),
+        _chat_response("ok"),
+        _chat_response("other model"),
+    ]
+    complete_turn(deployment="a", messages=[{"role": "user", "content": "q"}], reasoning_effort="low")
+    assert "reasoning_effort" not in chat.chat.completions.create.call_args.kwargs
+    complete_turn(deployment="b", messages=[{"role": "user", "content": "q"}], reasoning_effort="low")
+    assert chat.chat.completions.create.call_args.kwargs["reasoning_effort"] == "low"
+
+
+def test_bedrock_fails_closed_on_a_400_that_names_nothing_droppable(bedrock):
+    chat, _ = bedrock
+    chat.chat.completions.create.side_effect = _bad_request("content filter")
+    with pytest.raises(BadRequestError):
+        complete_turn(deployment="m", messages=[{"role": "user", "content": "q"}])
+
+
+def test_an_assistant_message_and_its_calls_replay_as_one_chat_message():
+    items = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "reading first"},
+        {"type": "function_call", "call_id": "c1", "name": "read_file", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "c1", "output": "contents"},
+    ]
+    converted = azure_client._to_chat_messages(items)
+    assert [m["role"] for m in converted] == ["user", "assistant", "tool"]
+    assert converted[1]["content"] == "reading first"
+    assert converted[1]["tool_calls"][0]["id"] == "c1"
+
+
+def test_web_search_is_only_offered_where_a_search_tool_exists(monkeypatch):
+    assert azure_client.supports_web_search()
+    monkeypatch.setattr(settings, "llm_provider", "bedrock")
+    assert not azure_client.supports_web_search()
+
+
+def test_the_sigv4_flow_replaces_the_placeholder_key_with_a_signature(monkeypatch):
+    import httpx
+
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIDEXAMPLE")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY")
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", "/dev/null")
+    monkeypatch.setenv("AWS_CONFIG_FILE", "/dev/null")
+    request = httpx.Request(
+        "POST", "https://bedrock-mantle.eu-north-1.api.aws/v1/chat/completions",
+        headers={"Authorization": "Bearer sigv4", "Content-Type": "application/json"}, content=b"{}",
+    )
+    signed = next(azure_client._BedrockSigV4("eu-north-1").auth_flow(request))
+    assert signed.headers["Authorization"].startswith("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
+    assert "/eu-north-1/bedrock-mantle/aws4_request" in signed.headers["Authorization"]
+    assert "x-amz-date" in signed.headers

@@ -2,79 +2,138 @@
 
 import { useEffect, useState } from "react";
 import { Icon, type IconName } from "@/components/Icon";
+import { BeforeAfter } from "@/components/landing/BeforeAfter";
 import { InteractiveBackdrop } from "@/components/landing/InteractiveBackdrop";
+import { JuryLab } from "@/components/landing/JuryLab";
+import { PipelineSteps } from "@/components/landing/PipelineSteps";
 import { RunReplay } from "@/components/landing/RunReplay";
+import { CATEGORIES } from "@/components/landing/sim-data";
+import { Simulator } from "@/components/landing/Simulator";
+import { TrickIt } from "@/components/landing/TrickIt";
 
-const PIPELINE = [
-  {
-    icon: "search" as IconName,
-    title: "Detect",
-    body: "A category-specific detector (Playwright, node --test, a secret scan, a bundle-size budget, an axe-core check, a doc-vs-code drift check) runs against the repo on every push.",
-  },
-  {
-    icon: "scales" as IconName,
-    title: "Adversarial jury",
-    body: "A Skeptic and a Corroborator argue opposite sides in parallel, an Arbiter scores it against a written rubric, and a Meta-Auditor only gets called in when the two juries actually disagree.",
-  },
-  {
-    icon: "approve" as IconName,
-    title: "Human approval",
-    body: "Nothing ships without a yes — from Slack, email, the dashboard, or a GitHub comment. Missing product intent, not evidence? It pauses and asks instead of guessing.",
-  },
-  {
-    icon: "deploy" as IconName,
-    title: "Deploy the branch",
-    body: "The fix branch is pushed and deployed to its own live preview URL, then the same check that caught the bug is re-run against that live URL, not just in a sandbox.",
-  },
-  {
-    icon: "loop" as IconName,
-    title: "Outcome check",
-    body: "GitHub, the deploy, Slack, and the dashboard are all read back independently afterward. Any disagreement between them fails the run closed, even if every step reported success.",
-  },
-  {
-    icon: "merge" as IconName,
-    title: "Merge & clean up",
-    body: "Once a human merges the PR on GitHub, the dashboard syncs automatically and the fix branch is deleted — nothing lingers after the fix lands.",
-  },
+const SECTIONS = [
+  { id: "how", label: "How it works" },
+  { id: "simulator", label: "Simulator" },
+  { id: "jury", label: "The jury" },
+  { id: "coverage", label: "Coverage" },
+  { id: "guardrails", label: "Guardrails" },
+  { id: "faq", label: "FAQ" },
 ];
 
-const CATEGORIES = [
-  { label: "UI", icon: "monitor" as IconName, ring: "rgba(167,139,250,0.3)", dot: "bg-[color:var(--pending)]", detail: "Playwright-driven behavioral checks against the running app." },
-  { label: "Backend", icon: "server" as IconName, ring: "rgba(167,139,250,0.3)", dot: "bg-[color:var(--pending)]", detail: "node --test / pytest runs catch logic bugs at the source." },
-  { label: "Security", icon: "lock" as IconName, ring: "rgba(255,95,86,0.3)", dot: "bg-[color:var(--failed)]", detail: "Secret scanning — API keys, credentials, private key blocks." },
-  { label: "Performance", icon: "bolt" as IconName, ring: "rgba(255,178,36,0.3)", dot: "bg-[color:var(--amber)]", detail: "Bundle-size budget enforcement on every change." },
-  { label: "Accessibility", icon: "accessibility" as IconName, ring: "rgba(47,212,143,0.3)", dot: "bg-[color:var(--verified)]", detail: "axe-core WCAG checks — contrast, labels, ARIA." },
-  { label: "Documentation", icon: "document" as IconName, ring: "rgba(169,166,161,0.3)", dot: "bg-[color:var(--text-mid)]", detail: "Flags README references to functions that no longer exist." },
+const MARQUEE = [
+  "Wrong cart totals", "Rows that won't delete", "Committed credentials", "Blown bundle budgets", "Contrast failures",
+  "Stale READMEs", "An adversarial jury", "Verified twice", "Live preview re-checks", "Three verbs, never a merge",
+];
+
+const RAILS: { icon: IconName; title: string; body: string }[] = [
+  { icon: "merge", title: "It never merges", body: "There is no merge capability in the codebase, and there must not be one. A merged pull request is always a person's act." },
+  { icon: "lock", title: "Nothing leaves before a yes", body: "A proposal is a stored diff in the dashboard. No branch, no pull request and no comment reaches GitHub until a person approves." },
+  { icon: "chat", title: "Three verbs, not two", body: "Approve, ask for changes, or reject. Asking for changes runs another attempt with your note, and rejecting leaves the repository untouched." },
+  { icon: "key", title: "Secrets stay secret", body: "The scanner names the file, the line and the kind of credential. The value is never copied into a finding, a log or a message." },
+  { icon: "eye", title: "Repository text is data", body: "Code, comments and test output are evidence for the models, never instructions. The same goes for anything a model wrote." },
+  { icon: "server", title: "Untrusted code runs elsewhere", body: "The process that renders model output has no Docker socket. Cloning, patching, sandboxing and deploys run in a separate worker with no inbound port." },
+  { icon: "halt", title: "A kill switch that means it", body: "Pause detection or fix proposals per repository, or everywhere at once. Stopping it is one click, not a config change." },
+  { icon: "team", title: "Tenancy is one boundary", body: "Every read and every action is scoped through one function. Another organisation's repository is a 404, never a 403." },
+];
+
+const CHANNELS: { icon: IconName; title: string; body: string }[] = [
+  { icon: "monitor", title: "Dashboard", body: "The diff, the evidence, every juror's argument and the weighted factors behind each score." },
+  { icon: "chat", title: "Slack", body: "A card in the repository's channel, with the decision one tap away." },
+  { icon: "mail", title: "Email", body: "A signed, expiring link per decision. Whichever surface acts first, a decision is only made once." },
+  { icon: "phone", title: "Push", body: "Install it to your home screen and a fix that needs you buzzes your phone." },
+];
+
+const FAQ: { q: string; a: string }[] = [
+  { q: "Will it change my repository without asking?", a: "No. Detection and fixing happen in WhipGuard's own sandbox. The proposal is stored as a diff for review, and nothing reaches GitHub (no branch, no pull request, no comment) until a person approves it. Even then it stops at an open pull request: WhipGuard cannot merge." },
+  { q: "What if the bug isn't real?", a: "That is what the jury is for. A Skeptic argues against every finding, the detector is re-run on a clean checkout, and an Arbiter scores the result against the category's bar. A close split calls a Meta-Auditor. A finding that cannot clear its bar is held, and you are never paged for it." },
+  { q: "What if the fix is wrong?", a: "The same check that caught the bug has to pass on the patched branch before you are asked, and a second skeptic looks for regressions. After approval the check runs once more against the live preview. If GitHub, the deploy, Slack and the dashboard disagree about what happened, the run fails closed." },
+  { q: "What if it can't tell whether something is a bug?", a: "When the answer depends on product intent nobody documented, like a hard-coded value that might be deliberate, the Arbiter asks you a specific question instead of inventing a confident number. Your answer is recorded, so the same finding is not raised again." },
+  { q: "Can someone manipulate it through a pull request?", a: "Repository content goes to the models labelled as untrusted data, and the tools a patch worker holds can only read and edit files inside its category's scope. Approving, pushing and merging are not tools it has. Approval is a person, and merging is not a capability at all." },
+  { q: "Which models does it use, and where?", a: "Open-weight models served by Amazon Bedrock in the EU (Stockholm), signed with the server's own AWS role, so there are no model API keys to leak. Different roles use different models: a fast one for the jury, a stronger one for the Arbiter and the patch loop." },
+  { q: "What does it cover today?", a: "Six categories, each one a detector plus a written rubric: UI behaviour (Playwright), backend logic (node --test or pytest), committed secrets, bundle-size budgets, accessibility (axe-core) and documentation drift. A new category is a registry row and a detector, never new pipeline code." },
+  { q: "How do I stop it?", a: "The kill switch pauses detection or fix proposals for one repository or for everything, immediately." },
 ];
 
 type Health = "checking" | "up" | "down";
 
 export default function LandingPage() {
   const [health, setHealth] = useState<Health>("checking");
+  const [progress, setProgress] = useState(0);
+  const [current, setCurrent] = useState("");
+  const [openCard, setOpenCard] = useState<string | null>(null);
 
   useEffect(() => {
-    // /api/auth/session is reachable pre-login (see main.py's _PUBLIC_PATHS)
-    // and, unlike /healthz, is actually routed here -- nginx only proxies
-    // /api/ and /ws/ to the backend; a bare /healthz falls through to the
-    // frontend's own catch-all route and 404s even when the backend is fine.
+    // /api/auth/session is reachable signed out and, unlike /healthz, is
+    // routed to the backend by nginx.
     fetch("/api/auth/session", { cache: "no-store", credentials: "include" })
       .then((r) => setHealth(r.ok ? "up" : "down"))
       .catch(() => setHealth("down"));
   }, []);
 
+  // Scroll progress, read on the next frame rather than on every event.
+  useEffect(() => {
+    let frame = 0;
+    const onScroll = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const max = document.documentElement.scrollHeight - window.innerHeight;
+        setProgress(max > 0 ? Math.min(1, window.scrollY / max) : 0);
+      });
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
+  // Section highlighting and reveal-on-scroll. Reveal is progressive: the
+  // content is visible without JavaScript, and only gains its entrance once
+  // the observer is attached (the `lp-js` class).
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
+    document.documentElement.classList.add("lp-js");
+    const reveal = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("in");
+            reveal.unobserve(entry.target);
+          }
+        }
+      },
+      { threshold: 0.12 },
+    );
+    document.querySelectorAll(".lp-reveal").forEach((node) => reveal.observe(node));
+    const spy = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) if (entry.isIntersecting) setCurrent(entry.target.id);
+      },
+      { rootMargin: "-45% 0px -50% 0px" },
+    );
+    SECTIONS.forEach((s) => {
+      const node = document.getElementById(s.id);
+      if (node) spy.observe(node);
+    });
+    return () => {
+      reveal.disconnect();
+      spy.disconnect();
+      document.documentElement.classList.remove("lp-js");
+    };
+  }, []);
+
   return (
-    <div className="min-h-screen relative">
-      {/* The measurement grid. One amber wash stays behind it so the page
-          still has warmth where the grid is at rest. */}
+    <div className="min-h-screen relative lp">
+      <div className="lp-progress" aria-hidden>
+        <span style={{ transform: `scaleX(${progress})` }} />
+      </div>
       <div className="pointer-events-none fixed inset-0 -z-20 overflow-hidden">
         <div className="absolute -top-40 left-1/4 w-[40rem] h-[40rem] rounded-full bg-[rgba(255,178,36,0.07)] blur-3xl" />
         <div className="absolute top-1/2 -right-40 w-[30rem] h-[30rem] rounded-full bg-[rgba(167,139,250,0.055)] blur-3xl" />
       </div>
       <InteractiveBackdrop />
 
-      {/* Translucent, so `backdrop-blur` has something to do -- it was sitting
-          on an opaque `--ink-800`, which meant the blur was pure cost and the
-          bar read as a flat rectangle laid over the glow behind it. */}
       <nav
         className="sticky top-0 z-30 border-b"
         style={{
@@ -85,178 +144,243 @@ export default function LandingPage() {
           paddingTop: "env(safe-area-inset-top)",
         }}
       >
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
-          <span className="flex items-center gap-2 font-semibold tracking-tight">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
+          <a href="#top" className="flex items-center gap-2 font-semibold tracking-tight shrink-0">
             <Icon name="shield" size={18} className="text-accent" /> WhipGuard
-          </span>
-          <div className="flex items-center gap-3 text-sm">
+          </a>
+          <div className="hidden lg:flex items-center gap-1 text-[13px]">
+            {SECTIONS.map((s) => (
+              <a key={s.id} href={`#${s.id}`} className={`lp-navlink ${current === s.id ? "on" : ""}`}>
+                {s.label}
+              </a>
+            ))}
+          </div>
+          <div className="flex items-center gap-3 text-sm shrink-0">
             <span className={`badge hidden sm:inline-flex ${health === "up" ? "badge-green" : health === "down" ? "badge-red" : "badge-gray"}`}>
               <span className={`dot ${health === "up" ? "bg-[color:var(--verified)] animate-pulse-dot" : health === "down" ? "bg-[color:var(--failed)]" : "bg-[color:var(--ink-600)]"}`} />
               {health === "checking" ? "checking…" : health === "up" ? "council running" : "unreachable"}
             </span>
-            <a href="/signup" className="text-mid hover:text-hi transition hidden sm:inline">Request access</a>
             <a href="/login" className="btn btn-ghost px-4 py-1.5 font-medium">Sign in</a>
           </div>
         </div>
       </nav>
 
-      <header className="max-w-4xl mx-auto px-4 pt-20 pb-16 text-center relative">
-        <div className="inline-flex items-center gap-2 badge badge-accent mb-6">
-          <span className="dot bg-accent-soft" /> Multi-agent bug council, not a linter
-        </div>
-        <h1 className="text-4xl sm:text-6xl font-semibold tracking-tight leading-[1.08]">
-          A bug council that
-          <br />
-          <span className="bg-gradient-to-r from-accent-soft via-accent to-violet-400 bg-clip-text text-transparent">
-            watches your repo
-          </span>
-        </h1>
-        <p className="mt-6 text-lg text-mid max-w-2xl mx-auto leading-relaxed">
-          WhipGuard detects real bugs, argues both sides of whether they matter, proposes a
-          verified fix, deploys it to a live preview, and waits for a human yes before anything
-          touches <code className="text-sm bg-white/5 px-1.5 py-0.5 rounded border border-border">main</code>.
-        </p>
-        <div className="mt-9 flex items-center justify-center gap-3 flex-wrap">
-          <a href="/login" className="btn btn-primary px-6 py-3 text-sm shadow-glow">
-            Open the dashboard
-          </a>
-          <a href="/signup" className="btn btn-ghost px-6 py-3 text-sm">
-            Request access
-          </a>
-        </div>
-      </header>
+      <main id="top">
+        {/* ============ HERO ============ */}
+        <header className="max-w-6xl mx-auto px-4 sm:px-6 pt-14 sm:pt-20 pb-10 lp-hero">
+          <div className="min-w-0">
+            <div className="inline-flex items-center gap-2 badge badge-accent mb-6 lp-reveal">
+              <span className="dot bg-accent-soft animate-pulse-dot" /> An AI bug council, not a linter
+            </div>
+            <h1 className="text-4xl sm:text-6xl font-semibold tracking-tight leading-[1.06] lp-reveal">
+              Bugs found, argued,
+              <br />
+              fixed and <span className="lp-grad">proven.</span>
+            </h1>
+            <p className="mt-6 text-lg text-mid max-w-xl leading-relaxed lp-reveal">
+              WhipGuard watches your repository, puts every finding in front of a jury that tries to
+              dismiss it, writes a fix that has to pass the same check that caught the bug, and then
+              waits for <strong className="text-hi font-medium">your yes</strong> before anything reaches GitHub.
+            </p>
+            <div className="mt-8 flex items-center gap-3 flex-wrap lp-reveal">
+              <a href="#simulator" className="btn btn-primary px-6 py-3 text-sm shadow-glow">
+                <Icon name="play" size={15} /> Run the simulator
+              </a>
+              <a href="/login" className="btn btn-ghost px-6 py-3 text-sm">Open the dashboard</a>
+            </div>
+            <ul className="lp-stats lp-reveal" aria-label="Highlights">
+              <li><b>6</b><span>categories, each with its own detector and bar</span></li>
+              <li><b>2×</b><span>verified: in a sandbox, then on a live preview</span></li>
+              <li><b>0</b><span>merges. It has no merge button at all</span></li>
+            </ul>
+          </div>
+          <div className="min-w-0 lp-reveal">
+            <RunReplay />
+            <p className="mt-3 text-center text-xs text-lo leading-relaxed">
+              A replay of a real run, rejected attempt included. The gates are the product.
+            </p>
+          </div>
+        </header>
 
-      {/* The evidence, immediately under the claim. Everything above this is
-          an assertion about a multi-agent system, which reads like any other
-          marketing sentence; this is the shape of a real run, including the
-          attempt that was rejected. */}
-      <section className="max-w-2xl mx-auto px-4 pb-16 -mt-4">
-        <RunReplay />
-        <p className="mt-3 text-center text-xs text-lo leading-relaxed">
-          A replay of a real run, not a live feed. The rejected attempt is in it on purpose —
-          the gates are the part that is not a chat window.
-        </p>
-      </section>
-
-      <section className="max-w-5xl mx-auto px-4 py-14">
-        <div className="text-center mb-10">
-          <div className="section-label">The pipeline</div>
-          <h2 className="text-2xl font-semibold mt-2">How a bug moves end to end</h2>
-        </div>
-        <div className="relative">
-          {/* Connecting line, desktop only */}
-          <div className="hidden lg:block absolute top-[38px] left-[8%] right-[8%] h-px bg-gradient-to-r from-transparent via-border2 to-transparent" />
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
-            {PIPELINE.map((p, i) => (
-              <div key={p.title} className="card card-hover p-5 relative">
-                <div className="flex items-center gap-3 mb-2.5">
-                  <div
-                    className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
-                    style={{
-                      background: "rgba(255,178,36,0.09)",
-                      border: "1px solid var(--amber-dim)",
-                      color: "var(--amber)",
-                    }}
-                  >
-                    <Icon name={p.icon} size={18} />
-                  </div>
-                  <div className="text-xs text-lo font-mono">{String(i + 1).padStart(2, "0")}</div>
-                  <div className="font-semibold">{p.title}</div>
-                </div>
-                <p className="text-sm text-mid leading-relaxed">{p.body}</p>
-              </div>
+        <div className="lp-marquee" aria-hidden>
+          <div className="lp-marquee-track">
+            {[...MARQUEE, ...MARQUEE].map((item, i) => (
+              <span key={i}>{item}</span>
             ))}
           </div>
         </div>
-      </section>
 
-      <section className="max-w-5xl mx-auto px-4 py-14">
-        <div className="text-center mb-10">
-          <div className="section-label">Coverage</div>
-          <h2 className="text-2xl font-semibold mt-2">Six categories, one detector each</h2>
-          <p className="text-sm text-lo mt-2 max-w-xl mx-auto">
-            A new category is a config row plus a detector module — never new pipeline code.
-          </p>
-        </div>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {CATEGORIES.map((c) => (
-            <div
-              key={c.label}
-              className="card card-hover p-4"
-              // A colour rather than a class: these follow the palette
-              // tokens now, and Tailwind cannot build a ring utility from a
-              // runtime value.
-              style={{ boxShadow: `inset 0 0 0 1px ${c.ring}` }}
-            >
-              <div className="flex items-center gap-2.5 mb-1.5">
-                <Icon name={c.icon} size={17} className="shrink-0" />
-                <span className="font-semibold text-sm">{c.label}</span>
-                <span className={`dot ${c.dot} ml-auto`} />
-              </div>
-              <p className="text-xs text-mid leading-relaxed">{c.detail}</p>
+        {/* ============ BEFORE / AFTER ============ */}
+        <section className="lp-section">
+          <div className="max-w-5xl mx-auto px-4 sm:px-6">
+            <Head eyebrow="The Friday-evening bug" title={<>Same bug. <span className="lp-grad">Two very different weekends.</span></>}
+              sub="Drag the handle. On the left, how most regressions still get found and fixed. On the right, the same bug with WhipGuard watching the repository." />
+            <div className="lp-reveal"><BeforeAfter /></div>
+            <p className="text-center text-xs text-lo mt-3">Illustrative. Your Fridays may vary, and that is the point.</p>
+          </div>
+        </section>
+
+        {/* ============ HOW ============ */}
+        <section className="lp-section" id="how">
+          <div className="max-w-5xl mx-auto px-4 sm:px-6">
+            <Head eyebrow="How it works" title={<>From a push to <span className="lp-grad">a fix you can trust</span> in six moves.</>}
+              sub="Every step leaves a record, and every step can say no. Click any step to read it." />
+            <div className="lp-reveal"><PipelineSteps /></div>
+          </div>
+        </section>
+
+        {/* ============ SIMULATOR ============ */}
+        <section className="lp-section" id="simulator">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6">
+            <Head eyebrow="Live simulator" title={<>Pick a bug. <span className="lp-grad">You&apos;re the approver.</span></>}
+              sub="Each scenario replays a run end to end with time compressed. Flip what goes wrong, then make the call yourself. The thresholds and routing rules are the product's real ones." />
+            <div className="lp-reveal"><Simulator /></div>
+            <p className="text-center text-xs text-lo mt-3">Simulated in your browser. No repository, model or account is touched.</p>
+          </div>
+        </section>
+
+        {/* ============ JURY ============ */}
+        <section className="lp-section" id="jury">
+          <div className="max-w-5xl mx-auto px-4 sm:px-6">
+            <Head eyebrow="Judgement, measured" title={<>Raising a bug is easy. <span className="lp-grad">Knowing when not to is the product.</span></>}
+              sub="Two models argue opposite sides, and their disagreement is a number with a rule attached, not a feeling. Move the sliders and watch the same rule the council runs decide what happens." />
+            <div className="lp-reveal"><JuryLab /></div>
+          </div>
+        </section>
+
+        {/* ============ COVERAGE ============ */}
+        <section className="lp-section" id="coverage">
+          <div className="max-w-5xl mx-auto px-4 sm:px-6">
+            <Head eyebrow="Coverage" title={<>Six categories. <span className="lp-grad">One detector each.</span></>}
+              sub="A category is a registry row plus a detector module, never new pipeline code. Open a card to see how it decides, and what it is never allowed to touch." />
+            <div className="lp-cover">
+              {CATEGORIES.map((c) => {
+                const open = openCard === c.key;
+                return (
+                  <button
+                    key={c.key}
+                    type="button"
+                    className={`lp-ccard card lp-reveal ${open ? "open" : ""}`}
+                    aria-expanded={open}
+                    onClick={() => setOpenCard(open ? null : c.key)}
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <span className="lp-ccard-ic"><Icon name={c.icon} size={17} /></span>
+                      <span className="font-semibold">{c.label}</span>
+                      <span className="ml-auto num text-[11px] text-lo">{c.detector}</span>
+                    </span>
+                    <span className="block text-[13px] text-mid mt-2.5 leading-relaxed">{c.catches}</span>
+                    <span className="lp-ccard-more">
+                      <span><b>Raised at</b> assurance ≥ <span className="num">{c.assurance}</span></span>
+                      <span><b>Fix accepted at</b> resolution ≥ <span className="num">{c.resolution}</span></span>
+                      <span><b>Verified by</b> {c.verifiedBy}</span>
+                      <span><b>Write scope</b> {c.scopeRule}</span>
+                    </span>
+                    <span className="lp-ccard-toggle text-[11px] text-lo">{open ? "Less" : "How it decides"}</span>
+                  </button>
+                );
+              })}
             </div>
-          ))}
-        </div>
-      </section>
+          </div>
+        </section>
 
-      <section className="max-w-5xl mx-auto px-4 py-14">
-        <div className="text-center mb-10">
-          <div className="section-label">Under the hood</div>
-          <h2 className="text-2xl font-semibold mt-2">Grounded, not guessed</h2>
-        </div>
-        <div className="grid sm:grid-cols-2 gap-5">
-          <div className="card p-5">
-            <div className="mb-3" style={{ color: "var(--amber)" }}><Icon name="compass" size={24} /></div>
-            <div className="font-semibold text-white mb-1.5">Retrieval, not guesswork</div>
-            <p className="text-sm text-mid leading-relaxed">
-              A pgvector similarity search over code chunks and past issues, plus a real
-              dependency graph, ground every proposed fix in the actual codebase instead of an
-              LLM's best guess.
-            </p>
+        {/* ============ GUARDRAILS ============ */}
+        <section className="lp-section" id="guardrails">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6">
+            <Head eyebrow="Guardrails" title={<>Hard limits, <span className="lp-grad">enforced in code.</span></>}
+              sub="Not an AI with good intentions. Rules that hold even when a model is wrong, or is being lied to." />
+            <div className="lp-rails">
+              {RAILS.map((r) => (
+                <div key={r.title} className="card card-hover p-5 lp-reveal">
+                  <span className="lp-rail-ic"><Icon name={r.icon} size={18} /></span>
+                  <h3 className="font-semibold mt-3">{r.title}</h3>
+                  <p className="text-sm text-mid mt-1.5 leading-relaxed">{r.body}</p>
+                </div>
+              ))}
+            </div>
+            <div className="mt-10 lp-reveal">
+              <p className="section-label text-center">Try to trick it</p>
+              <div className="mt-3"><TrickIt /></div>
+            </div>
           </div>
-          <div className="card p-5">
-            <div className="mb-3" style={{ color: "var(--verified)" }}><Icon name="check" size={24} /></div>
-            <div className="font-semibold text-white mb-1.5">Verified, not assumed</div>
-            <p className="text-sm text-mid leading-relaxed">
-              Every fix is re-run against the same check it was raised with — once in a sandbox,
-              once against the live deployed preview — before a human is even asked to approve it.
-            </p>
-          </div>
-          <div className="card p-5">
-            <div className="mb-3" style={{ color: "var(--failed)" }}><Icon name="halt" size={24} /></div>
-            <div className="font-semibold text-white mb-1.5">A kill switch that means it</div>
-            <p className="text-sm text-mid leading-relaxed">
-              Pause detection or fix proposals per repo in one click. A runaway detector has to
-              be stoppable, not just theoretically configurable.
-            </p>
-          </div>
-          <div className="card p-5">
-            <div className="mb-3" style={{ color: "var(--pending)" }}><Icon name="chart" size={24} /></div>
-            <div className="font-semibold text-white mb-1.5">Every confidence score, traceable</div>
-            <p className="text-sm text-mid leading-relaxed">
-              Real token counts, latency, and cost tracked per model call — never a number on
-              the dashboard nobody can trace back to a reason.
-            </p>
-          </div>
-        </div>
-      </section>
+        </section>
 
-      <section className="max-w-3xl mx-auto px-4 py-16 text-center">
-        <div className="card p-10 bg-gradient-to-b from-accent-dim/40 to-transparent">
-          <h2 className="text-2xl font-semibold mb-3">Ready to watch your repo?</h2>
-          <p className="text-sm text-mid mb-7 max-w-md mx-auto">
-            Requests are reviewed by an admin — nothing is created until it's approved.
-          </p>
-          <div className="flex items-center justify-center gap-3 flex-wrap">
-            <a href="/signup" className="btn btn-primary px-6 py-3 text-sm shadow-glow">Request access</a>
-            <a href="/login" className="btn btn-ghost px-6 py-3 text-sm">Sign in</a>
+        {/* ============ CHANNELS ============ */}
+        <section className="lp-section">
+          <div className="max-w-5xl mx-auto px-4 sm:px-6 lp-split">
+            <div className="lp-reveal">
+              <p className="section-label">Where you decide</p>
+              <h2 className="text-2xl sm:text-3xl font-semibold mt-2 leading-tight">
+                It does the digging.<br /><span className="lp-grad">You keep the decision.</span>
+              </h2>
+              <p className="text-sm text-mid mt-3 leading-relaxed max-w-md">
+                The decision reaches you wherever you already are, with the evidence attached, and every
+                surface ends in the same approval step. One decision, one record, whichever way you made it.
+              </p>
+              <ul className="lp-ticks mt-4">
+                <li>Per-repository Slack channel, chosen through Slack&apos;s own picker</li>
+                <li>Invite your team into an organisation, with roles</li>
+                <li>Ask Counsel, the repository chat, why any decision was made</li>
+              </ul>
+            </div>
+            <div className="lp-channels">
+              {CHANNELS.map((c) => (
+                <div key={c.title} className="card p-4 lp-reveal">
+                  <span className="lp-rail-ic"><Icon name={c.icon} size={17} /></span>
+                  <p className="font-semibold text-sm mt-2.5">{c.title}</p>
+                  <p className="text-[12px] text-mid mt-1 leading-relaxed">{c.body}</p>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <footer className="max-w-5xl mx-auto px-4 py-10 text-center text-xs text-lo border-t border-border">
-        WhipGuard — a bug council for repos that means it, not a hosted product.
+        {/* ============ FAQ ============ */}
+        <section className="lp-section" id="faq">
+          <div className="max-w-3xl mx-auto px-4 sm:px-6">
+            <Head eyebrow="FAQ" title={<>The questions <span className="lp-grad">your team will ask.</span></>} />
+            <div className="lp-faq lp-reveal">
+              {FAQ.map((f) => (
+                <details key={f.q}>
+                  <summary>{f.q}</summary>
+                  <p>{f.a}</p>
+                </details>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* ============ CTA ============ */}
+        <section className="max-w-3xl mx-auto px-4 sm:px-6 py-16 text-center">
+          <div className="card p-8 sm:p-10 bg-gradient-to-b from-accent-dim/40 to-transparent lp-reveal">
+            <h2 className="text-2xl sm:text-3xl font-semibold">Make your next regression <span className="lp-grad">boring.</span></h2>
+            <p className="text-sm text-mid mt-3 mb-7 max-w-md mx-auto">
+              Findings that survived a skeptic. Fixes that passed the check twice. A decision that stays yours.
+              Access requests are reviewed by an admin.
+            </p>
+            <div className="flex items-center justify-center gap-3 flex-wrap">
+              <a href="/signup" className="btn btn-primary px-6 py-3 text-sm shadow-glow">Request access</a>
+              <a href="#simulator" className="btn btn-ghost px-6 py-3 text-sm">Run the simulator again</a>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer className="max-w-6xl mx-auto px-4 py-10 text-xs text-lo border-t border-border flex flex-col sm:flex-row gap-2 sm:justify-between">
+        <span className="flex items-center gap-1.5"><Icon name="shield" size={13} className="text-accent" /> WhipGuard</span>
+        <span>Every run on this page is simulated or replayed.</span>
+        <a href="/login" className="hover:text-hi">Sign in</a>
       </footer>
+    </div>
+  );
+}
+
+function Head({ eyebrow, title, sub }: { eyebrow: string; title: React.ReactNode; sub?: string }) {
+  return (
+    <div className="text-center mb-10 lp-reveal">
+      <div className="section-label">{eyebrow}</div>
+      <h2 className="text-2xl sm:text-4xl font-semibold mt-2 tracking-tight leading-tight">{title}</h2>
+      {sub && <p className="text-sm sm:text-base text-mid mt-3 max-w-2xl mx-auto leading-relaxed">{sub}</p>}
     </div>
   );
 }

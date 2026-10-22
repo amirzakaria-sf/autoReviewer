@@ -114,8 +114,9 @@ buries the findings that matter."""
 def _plan_research(requirements: list[str], repo_name: str) -> list[str]:
     """Never raises -- a planner failure means no research, not no PRD."""
     from app import azure_client
+    from app.research import web_research_available
 
-    if not settings.web_research_enabled:
+    if not web_research_available():
         return []
     numbered = "\n".join(f"{index + 1}. {item}" for index, item in enumerate(requirements))
     try:

@@ -31,7 +31,9 @@ app/poller.py
 app/preview.py
 app/prompt_compiler.py
 app/prompts.py
+app/push.py
 app/repo_map.py
+app/research.py
 app/retrieval.py
 app/runner.py
 app/schema_sync.py
@@ -41,6 +43,7 @@ app/sync_db.py
 app/work_queue.py
 app/worker.py
 app/workspace_map.py
+tests/test_apply_patch.py
 tests/test_approval_freshness.py
 tests/test_auth.py
 tests/test_azure_client.py
@@ -66,12 +69,16 @@ tests/test_outcome_checker.py
 tests/test_phase_hardening.py
 tests/test_poller.py
 tests/test_prompts.py
+tests/test_push.py
+tests/test_push_router.py
 tests/test_repo_map_and_pool.py
+tests/test_research.py
 tests/test_retrieval_core.py
 tests/test_runner.py
 tests/test_slack_client.py
 tests/test_slack_config.py
 tests/test_stuck_run_sweeper.py
+tests/test_tenancy_counsel_and_feed.py
 tests/test_work_queue.py
 tests/test_workspace_layout.py
 whipguard_backend.egg-info/PKG-INFO

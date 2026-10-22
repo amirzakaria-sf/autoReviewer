@@ -18,123 +18,97 @@ Two fields need care:
 
 ## Current
 
-- **As of:** 2026-09-21
+- **As of:** 2026-10-22
 - **Last agent:** claude
-- **Deployed:** **yes** — `8c39e71`, deployed 09:24 UTC and verified against the live host.
-  `create_all` created `research_findings` and `push_subscriptions` at boot; no manual
-  migration either time. Latest deploy `17460b2`, 10:26 UTC.
+- **Commit:** pending
+- **Deployed:** **yes**, on a **new host**. `https://whip-guard.zakarias.in` now points at
+  the shared AWS VM `13.60.61.135` (eu-north-1). The old Azure VM (`172.206.16.54`) was
+  unreachable and its database was **not** migrated: this host started empty, with one
+  bootstrapped admin. Deployed with `./deploy.sh --no-pull` from the working tree that
+  became this commit.
 
 - **Shipped this session (claude):**
-  - **Azure Responses + `apply_patch` + a curated web-research council** (`6093ea8`,
-    `fbcc5b6`). Generation moved to the Responses API so a tool-bound call can carry native
-    reasoning, which Chat Completions cannot do on GPT-5.x — the patch loop had never
-    thought. `apply_patch` replaced `write_file` as the default edit. Research is a Gatherer
-    plus a Curator that attributes every claim to a source the search actually returned.
-  - **The tenancy boundary closed** (`7dab810`, `355359e`). Counsel, the activity websocket,
-    the clarification endpoints and the GitHub connect surface. Seven holes, two of them
-    writes rather than reads.
-  - **`apply_patch` permissions** (`634699a`). It was stripping the mode and owner of every
-    file it wrote, so the sandbox could not read back a correct patch. Found by running a
-    real Fix Council, not by reading the code.
-  - **Workspace relocation** (`858f8f8`). A failed org lookup could move an entire
-    repository tree into `_unassigned` and the next call would move it back.
-  - **PWA + mobile + push** (`8c39e71`). See below.
-
-- **The Fix Council ran end to end under the new protocol** — issue #21, the seeded
-  backend total-calculation bug. `AWAITING_APPROVAL`, **resolution confidence 100/100**,
-  first attempt, no retry, no failure traces. Three patch ticks plus an Arbiter, every turn
-  `protocol: responses` with reasoning spent and the prompt cache hitting (3.9k cached
-  tokens by tick two). The Arbiter's rubric names the actual change. **That fix is waiting
-  for a human — it is the one thing on the dashboard asking for a decision.**
-
-- **Mobile and PWA:** every screen laid out for a phone for the first time. The app had no
-  viewport meta at all, so nothing had ever been *rendered* at that width. Bottom tab bar
-  (the header nav was `hidden sm:flex` with nothing behind it — a phone had no navigation),
-  tables that become cards, 16px inputs, 44px targets, safe-area insets. Installable:
-  standalone manifest, maskable icons, offline shell, a service worker that never caches
-  `/api/`.
-
-- **Push notifications:** `pywebpush` behind `app/push.py`, subscriptions keyed on endpoint
-  and re-bound to the current account on every authenticated session. Wired into the three
-  existing notification sites inside the same `should_notify` guard. Per-device toggle in
-  Profile → Notifications that requests permission itself, plus a test button. Uses the same
-  VAPID keypair as the sibling `opencode` deployment — a VAPID key identifies the sender,
-  not the app.
+  - **Bedrock as the model provider** (`LLM_PROVIDER=bedrock`), inside `app/azure_client.py`:
+    mantle Chat Completions, SigV4 with the instance role, forced-function structured
+    output, per-model 400 degrade, merged assistant/tool-call replay. Kimi K2.5 = fast,
+    GLM-5 = worker + planner. Azure path untouched and still the test default.
+  - **Off on Bedrock, openly:** web research (`research.web_research_available()`) and dense
+    retrieval (`embeddings.available()`). See DECISIONS 2026-10-22.
+  - **Three latent bugs the move exposed:** `main.py` never created the `vector` extension
+    (fresh DB could not boot); `_JUROR_RUBRIC` was dead code, so no model was ever told the
+    0-100 scale (now wired, plus `Field` descriptions in the schema); `deploy.sh` waited on
+    `/healthz`, which the OLD backend answers, so it printed "finished OK" before the swap.
+  - Two poller tests depended on the host `.env` having `GITHUB_TOKEN`. Pinned in-test.
+  - **Landing page rebuilt** (`app/page.tsx`, `components/landing/*`): simulator, jury lab,
+    guardrail demos. Thresholds, the 30-point rule, write scopes and secret patterns are
+    copied from the backend into `sim-data.ts`. **If you change one of those, change it
+    there too.**
+  - **Host setup:** `.env` (generated; never committed), `/srv/workspace`, nginx vhost from
+    `nginx/whip-guard.conf`, Let's Encrypt cert, Cloudflare A record. The showcase vhost for
+    this hostname moved to `/etc/nginx/disabled/`, and its line in
+    `~/demoStuff/demoApps/deploy/vhosts.tsv` was commented out (**uncommitted in that repo**).
 
 - **Verified this session:**
-  - `pytest -q` → **401 passed**. `tsc --noEmit` clean. Production build clean.
-  - **Second audit after calling it done** (the first two times that question was asked,
-    the answer was wrong). Checked by a different route than my own notes: which routes had
-    actually been rendered, and which code had actually been tested. Ten of sixteen routes
-    had never been viewed at phone width; the push router had no tests at all. Both closed —
-    all sixteen rendered at 360px, eleven tests on subscription ownership.
-  - Live: six screens at 390×844, no document overflow, no console errors. Manifest, service
-    worker, all four icons and `/api/push/status` all served; the worker registers and is
-    active at scope `/`.
-  - The VAPID keypair signs a real JWT, and **the public key derives from the private one** —
-    a genuine pair, not two values that happen to sit next to each other in `.env`.
-  - Counsel answered live with a correct `app.js:22` citation; both turns recorded
-    `protocol: responses`, with 1,207 cached input tokens on the second.
-  - The websocket contract end to end through nginx and the NOTIFY relay: no cookie refused,
-    valid cookie connects, own-repo event arrives, other-org event does not, unaddressed
-    event does not.
+  - `pytest -q` → **412 passed** (401 before plus 11 new). `tsc --noEmit` clean, `next build` clean.
+  - Live Bedrock through the app's own code, from the venv and **from inside the backend
+    container** (instance role reaches containers): Arbiter `score=95`, weights summing to
+    95; Skeptic `confidence=85`; a 2-tick `read_file` tool loop on GLM-5 that answered.
+    `council_runs` recorded `kimi-k2.5 213/253 tokens protocol=bedrock`.
+  - Detection eval on this host (work item `ba83a5b5`): **recall 1.0, precision 1.0**, all
+    six categories detected-when-broken and clean-when-fixed, 137 s. (The first run's UI
+    timeout was the cold 2.3 GB Playwright image pull.)
+  - Public: `/`, `/login`, `/api/auth/session`, manifest all 200 over valid TLS, http → 301.
+    Login wrong password 401, right 200. `/api/repos`, `/api/push/status` 200. Websocket
+    through nginx: no cookie refused (403), cookie → 101 and held open. Sibling sites still
+    200 after the nginx reload.
+  - Brevo SMTP authenticates (login only, nothing sent).
+  - Landing in headless Chromium at 1440 and 390: no console errors, no document overflow,
+    page scrolls, simulator driven end to end (push → decision → approve → "Pull request
+    open").
+  - `./deploy.sh --no-pull` twice; the second, with the fix, finished only after the
+    backend container ID changed.
 
 ### Needs verification
 
-- **The browser's own `pushManager.subscribe()`.** Headless Chromium has no push service
-  connection and fails with "permission denied" regardless of permission, so this one hop
-  cannot be exercised here. Everything either side of it is verified. It needs a real
-  device: install to a home screen, Profile → Notifications → enable → **Send a test
-  notification**. If that arrives, the whole path works.
-- `GITHUB_WEBHOOK_SECRET` is **unset on both sides** — absent from `.env`, and GitHub's hook
-  (id `678747728`) reports `"secret_set": false`. The endpoint accepts unsigned POSTs from
-  anyone who knows the URL, and a forged `pull_request closed merged` marks fixes merged,
-  deletes branches and deletes Cloudflare deployments. **Still the highest-priority item on
-  the user's side.**
-- Alembic is scaffolded but not wired into `deploy.sh`; `create_all` + `schema_sync` remain
-  the live path and have now handled two new tables without a manual step.
-
-### Closed — the tenancy gaps (claude, 2026-09-20, `7dab810`)
-
-`counsel.py`, `ws.py` and `human_input.py` are scoped. Details in **Shipped** above.
-`email_actions.py` and `webhooks.py` remain correct as they were: their signed token or
-signature *is* the credential.
-
-Two things a reader should carry forward rather than rediscover:
-
-- **`@app.middleware("http")` does not run for websockets.** Any new websocket route
-  authenticates itself or is public. There is no middleware that will catch it.
-- **An activity event with no `repo_id` reaches nobody.** A new `emit_event` added outside
-  an `activity_scope` will go missing from the feed rather than leak. The broadcaster logs
-  each one — read that log before concluding the feed is broken.
+- **No GitHub identity on this host.** `GITHUB_TOKEN`, the GitHub App and the OAuth App are
+  all unset, so no repository can be connected, the poller idles, and nothing has run the
+  Fix Council's patch loop on Bedrock against a real repo. The jury, Arbiter and a tool loop
+  ARE verified on Bedrock. To prove the rest, connect a repo, push a seeded bug, and watch
+  for `AWAITING_APPROVAL` with `protocol: bedrock` rows in `council_runs`.
+- **Cloudflare Pages:** the token in `.env` is DNS-scoped and returns `Authentication error`
+  on the Pages API, so post-approval preview deploys will fail until a token with
+  `Account / Cloudflare Pages / Edit` replaces it.
+- **GitHub webhook:** `GITHUB_WEBHOOK_SECRET` is now set on this side. Any GitHub hook
+  pointing here must be given the same secret, or its deliveries will be rejected (correctly).
+- **Slack:** unconfigured on this host (reads as absent, by design).
+- Push on a real device (unchanged from last session).
+- Memory: ≈1.2 GB free on a host running ~25 other containers. A Fix Council plus a
+  Playwright sandbox has not been run under that pressure. Disk is 80% used (21 GB free).
 
 ### Other agent should
 
-- **Nothing is queued.** The tenancy gaps are closed; ask the user what is next rather than
-  picking something up.
-- **Never construct an `AzureOpenAI` outside `app/azure_client.py` and `app/embeddings.py`.**
-  That rule was silently false for months in `fix_council.py` and `counsel/agent.py`, and the
-  cost was invisible: two of the most expensive call sites in the product recorded no usage
-  at all. If a new call site needs the model, it needs `complete_turn`.
-- Callers speak **Responses input items**. A tool result is `function_call_output`, a
-  function call's `arguments` is a JSON *string*, and reasoning items are replayed with `id`
-  and `summary` only. Each of those is a 400 in production and invisible against a mock.
-- Read `docs/info.md` §11 before touching the worker, the workspace layout, or anything
-  that writes to GitHub.
 - **Hot files:** none. Nothing is in flight.
+- Read the new §11 entry "One model client, two providers" in `docs/info.md` before
+  touching `azure_client.py`. Production is Bedrock; the tests run Azure.
+- Do not reintroduce `web_search` or embeddings calls on the Bedrock path without a real
+  source. DECISIONS 2026-10-22 explains why they are off.
 
 ### Blocked on the user (not either agent)
 
-- Slack: Interactivity Request URL → `https://whip-guard.zakarias.in/api/slack/interactions`,
-  plus app distribution before another workspace can install it.
-- GitHub App private key — until it is set, the bot pushes and comments as the human
-  account that owns the PAT.
-- PRs #5 and #11 on the fixture repo are litter from the pre-review flow. Nothing new
-  accumulates: under the current flow no PR exists until approval.
+- A GitHub credential: a PAT, or better a GitHub App (ID, private key, installation), and an
+  OAuth App whose callback is `https://whip-guard.zakarias.in/api/github/oauth/callback`.
+- A Cloudflare token with Pages edit rights.
+- Slack app tokens, if wanted. The Interactivity URL is
+  `https://whip-guard.zakarias.in/api/slack/interactions`.
+- Admin login: `~/ai/whipguard-admin-credentials.txt` (mode 600, outside the repo).
 
 ---
 
 ## Recent (newest first)
+
+- **2026-09-21 (claude, `17460b2`)** — Azure Responses, `apply_patch`, the research
+  council, the tenancy boundary closed, PWA + push + mobile. Fix Council ran end to end on
+  issue #21 at resolution 100/100 on the old host.
 
 - **2026-09-20 (claude, `0545a6a`)** — adopted the two-agent documentation protocol:
   `docs/info.md`, this file, `DECISIONS.md`, `ARCHITECTURE.md`, `CHANGELOG.md`, both agent

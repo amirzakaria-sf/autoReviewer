@@ -252,3 +252,11 @@ def test_a_persistence_failure_never_breaks_the_result(monkeypatch):
     with patch("app.azure_client.complete_turn", side_effect=[_gather(), _curate()]):
         result = research("q")
     assert len(result.kept) == 1
+
+
+def test_a_provider_without_a_search_tool_short_circuits_before_any_model_call(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "bedrock")
+    with patch.object(research_module.azure_client, "complete_turn") as turn:
+        result = research("anything", persist=False)
+    turn.assert_not_called()
+    assert "not available" in result.error

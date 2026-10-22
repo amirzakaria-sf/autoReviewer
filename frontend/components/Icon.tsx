@@ -39,7 +39,17 @@ export type IconName =
   | "repos"
   | "activity"
   | "team"
-  | "user";
+  | "user"
+  | "play"
+  | "close"
+  | "mail"
+  | "phone"
+  | "key"
+  | "eye"
+  | "branch"
+  | "terminal"
+  | "arrow"
+  | "undo";
 
 const PATHS: Record<IconName, React.ReactNode> = {
   // The mark. Same silhouette as the app icon, so the header and the home
@@ -217,6 +227,59 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <path d="M8.8 10.2h6.4M8.8 13.4h4" />
     </>
   ),
+
+  // The landing page's controls and its approval channels.
+  play: <path d="M8 5.4v13.2L18.6 12z" />,
+
+  close: <path d="m6.6 6.6 10.8 10.8M17.4 6.6 6.6 17.4" />,
+
+  mail: (
+    <>
+      <rect x="3.4" y="5.6" width="17.2" height="12.8" rx="1.8" />
+      <path d="m3.8 7 8.2 6 8.2-6" />
+    </>
+  ),
+
+  phone: (
+    <>
+      <rect x="6.8" y="2.8" width="10.4" height="18.4" rx="2.2" />
+      <path d="M10.6 18h2.8" />
+    </>
+  ),
+
+  key: (
+    <>
+      <circle cx="8" cy="15.6" r="4" />
+      <path d="m10.9 12.8 8.5-8.5M16.4 7.2l2.4 2.4M14 9.6l1.8 1.8" />
+    </>
+  ),
+
+  eye: (
+    <>
+      <path d="M2.8 12S6.2 5.8 12 5.8 21.2 12 21.2 12 17.8 18.2 12 18.2 2.8 12 2.8 12z" />
+      <circle cx="12" cy="12" r="2.8" />
+    </>
+  ),
+
+  branch: (
+    <>
+      <circle cx="6.6" cy="5.4" r="2" />
+      <circle cx="6.6" cy="18.6" r="2" />
+      <circle cx="17.4" cy="8" r="2" />
+      <path d="M6.6 7.4v9.2M17.4 10c0 3.6-4.6 3.2-9.4 7" />
+    </>
+  ),
+
+  terminal: (
+    <>
+      <rect x="3" y="4.4" width="18" height="15.2" rx="2" />
+      <path d="m7 9.4 3 2.6-3 2.6M12.4 15h4.6" />
+    </>
+  ),
+
+  arrow: <path d="M4.6 12h14.4M13.4 6.4 19 12l-5.6 5.6" />,
+
+  undo: <path d="M8.4 5.2 4 9.6l4.4 4.4M4.4 9.6h9.4a5.6 5.6 0 0 1 0 11.2h-3.4" />,
 
   hourglass: (
     <>

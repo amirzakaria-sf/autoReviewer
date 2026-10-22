@@ -111,6 +111,13 @@ docker compose up -d --no-deps --force-recreate frontend
 # triggered from the admin UI, so -- exactly like the backend below -- it
 # cannot safely recreate itself and is handed to the sibling container too.
 
+# Remember which container is serving now. The health check below must be
+# answered by its REPLACEMENT: the old backend answers /healthz instantly, so
+# waiting on health alone printed "finished OK" before the swap container had
+# even started (found on the first deploy to the AWS host, where the sibling
+# image was still being pulled).
+OLD_BACKEND="$(docker compose ps -q backend 2>/dev/null || true)"
+
 echo "[deploy] handing the backend + worker swap to a disposable sibling container..."
 # This container is NOT the one being replaced, so it is unaffected even if
 # the old backend container is what's running THIS script and gets stopped
@@ -125,7 +132,9 @@ docker run --rm -d \
 
 echo "[deploy] waiting for the backend to come back..."
 for _ in $(seq 1 40); do
-  if curl -fsS -o /dev/null "http://127.0.0.1:8300/healthz" 2>/dev/null; then
+  CURRENT_BACKEND="$(docker compose ps -q backend 2>/dev/null || true)"
+  if [[ -n "$CURRENT_BACKEND" && "$CURRENT_BACKEND" != "$OLD_BACKEND" ]] \
+     && curl -fsS -o /dev/null "http://127.0.0.1:8300/healthz" 2>/dev/null; then
     echo "=== WhipGuard deploy finished OK $(date -u +%FT%TZ) ==="
     exit 0
   fi

@@ -60,6 +60,10 @@ async def lifespan(app: FastAPI):
 
     refuse_insecure_defaults()
     async with engine.begin() as conn:
+        # The vector columns need the extension first. The original host had
+        # it created by hand once, so a fresh database failed create_all with
+        # `type "vector" does not exist` (found moving to a new host).
+        await conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
         await conn.run_sync(Base.metadata.create_all)
         # create_all adds missing TABLES but never a missing COLUMN on a
         # table that already exists -- see app/schema_sync.py.

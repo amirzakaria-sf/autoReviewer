@@ -25,6 +25,18 @@ from app.config import settings
 EMBEDDING_DIMENSIONS = 1536
 
 
+class EmbeddingsUnavailable(RuntimeError):
+    """No embeddings source is configured. Callers already degrade on any
+    exception; this one is raised before a network call, not after a timeout."""
+
+
+def available() -> bool:
+    provider = (settings.embeddings_provider or "").lower()
+    if not provider:
+        provider = "azure" if (settings.llm_provider or "azure").lower() == "azure" else "none"
+    return provider == "azure"
+
+
 def _client() -> AzureOpenAI:
     return AzureOpenAI(
         azure_endpoint=settings.azure_api_endpoint,
@@ -34,6 +46,8 @@ def _client() -> AzureOpenAI:
 
 
 def embed_text(text: str) -> list[float]:
+    if not available():
+        raise EmbeddingsUnavailable("no embeddings provider is configured")
     client = _client()
     response = client.embeddings.create(model=settings.azure_embedding_deployment, input=text[:8000])
     return response.data[0].embedding

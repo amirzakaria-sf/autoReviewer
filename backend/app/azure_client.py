@@ -20,6 +20,14 @@ style choice here:
 - Reasoning items are replayed with `id` and `summary` only, never a guessed field.
 - `function_call.arguments` is a JSON *string*; a tool result is a
   `function_call_output` item, not a `{"role": "tool"}` message.
+
+Two providers, one call site. `LLM_PROVIDER=azure` is everything above.
+`LLM_PROVIDER=bedrock` sends the same Responses-shaped input to Amazon Bedrock's
+"mantle" endpoint, which speaks OpenAI Chat Completions and is signed with SigV4
+from the host's IAM role -- there is no API key. It always takes the Chat path:
+mantle's Responses surface is unsupported on GLM-5 and, on gpt-oss, returned
+`status=failed` for a forced function call (probed live 2026-10-22). Callers do
+not change; the name of this module is historical.
 """
 
 from __future__ import annotations
@@ -31,13 +39,19 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
-from openai import AzureOpenAI, BadRequestError
-from pydantic import BaseModel
+import httpx
+from openai import AzureOpenAI, BadRequestError, OpenAI
+from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.council_runs import record_council_run
 
 logger = logging.getLogger("whipguard.azure_client")
+
+# botocore at DEBUG logs signed requests and the credentials behind them. Pinned
+# here, where the signing happens, so no app-wide log level can raise it.
+for _noisy in ("botocore", "boto3", "urllib3", "httpx", "httpcore", "openai"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 
 class ArbiterFactor(BaseModel):
@@ -47,7 +61,9 @@ class ArbiterFactor(BaseModel):
 
 
 class ArbiterVerdict(BaseModel):
-    score: int
+    # Descriptions ride inside the forced function's schema, so the scale
+    # reaches the model on every provider, not just the ones that guess it.
+    score: int = Field(description="0-100: how confident you are, as a whole number")
     factors: list[ArbiterFactor]
     verdict: str
     needs_clarification: dict | None = None
@@ -60,8 +76,8 @@ class JurorOpinion(BaseModel):
     disagreement_threshold) instead of trying to infer it from two paragraphs
     of prose."""
 
-    confidence: int
-    transcript: str
+    confidence: int = Field(description="0-100, a whole number: your confidence in YOUR OWN position")
+    transcript: str = Field(description="Your argument, several sentences")
 
 
 # --------------------------------------------------------------------------- #
@@ -119,8 +135,61 @@ def _responses_client() -> AzureOpenAI:
     )
 
 
+class _BedrockSigV4(httpx.Auth):
+    """Signs every request -- retries included -- with whatever credentials the
+    process has (instance role, task role, env). Signatures expire after a few
+    minutes and role credentials rotate, so nothing here is cached but the
+    session, which refreshes them itself."""
+
+    requires_request_body = True
+
+    def __init__(self, region: str):
+        import boto3
+
+        self.region = region
+        self._session = boto3.Session()
+
+    def auth_flow(self, request: httpx.Request):
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+
+        # The SDK's placeholder bearer key must not reach AWS.
+        request.headers.pop("Authorization", None)
+        credentials = self._session.get_credentials()
+        if credentials is None:
+            raise RuntimeError("Bedrock: no AWS credentials available to sign the request")
+        signed = AWSRequest(
+            method=request.method,
+            url=str(request.url),
+            data=request.content,
+            headers={"Content-Type": request.headers.get("Content-Type", "application/json")},
+        )
+        SigV4Auth(credentials.get_frozen_credentials(), "bedrock-mantle", self.region).add_auth(signed)
+        for key, value in signed.headers.items():
+            request.headers[key] = value
+        yield request
+
+
+def _provider() -> str:
+    return str(getattr(settings, "llm_provider", "azure") or "azure").lower()
+
+
+def supports_web_search() -> bool:
+    """Only Azure's Responses surface has a server-side `web_search` tool.
+    Mantle rejects the tool type outright."""
+    return _provider() == "azure" and _use_responses()
+
+
 @lru_cache(maxsize=1)
-def _chat_client() -> AzureOpenAI:
+def _chat_client() -> OpenAI:
+    if _provider() == "bedrock":
+        region = settings.bedrock_region
+        return OpenAI(
+            base_url=f"https://bedrock-mantle.{region}.api.aws/v1",
+            api_key="sigv4",  # required by the SDK; stripped by the auth flow
+            http_client=httpx.Client(auth=_BedrockSigV4(region), timeout=180),
+            max_retries=2,
+        )
     return AzureOpenAI(
         azure_endpoint=settings.azure_api_endpoint,
         api_key=settings.azure_api_key,
@@ -130,12 +199,14 @@ def _chat_client() -> AzureOpenAI:
     )
 
 
-def _client() -> AzureOpenAI:
+def _client() -> OpenAI:
     """Back-compat alias. Older tests patch this name."""
     return _chat_client()
 
 
 def _use_responses() -> bool:
+    if _provider() == "bedrock":
+        return False
     return str(getattr(settings, "whipguard_azure_api", "responses") or "responses").lower() != "chat"
 
 
@@ -243,7 +314,15 @@ def _to_chat_messages(items: list[dict]) -> list[dict]:
     def flush() -> None:
         nonlocal pending_calls
         if pending_calls:
-            messages.append({"role": "assistant", "content": None, "tool_calls": pending_calls})
+            # Callers replay an assistant's text and its function calls as
+            # separate items. Two assistant messages in a row is tolerated by
+            # Azure and not by every open-weight model, so the calls join the
+            # text they followed.
+            last = messages[-1] if messages else None
+            if last and last.get("role") == "assistant" and not last.get("tool_calls"):
+                last["tool_calls"] = pending_calls
+            else:
+                messages.append({"role": "assistant", "content": None, "tool_calls": pending_calls})
             pending_calls = []
 
     for item in items:
@@ -369,7 +448,9 @@ def _responses_to_turn(response: Any) -> ModelTurn:
     )
 
 
-def _chat_to_turn(response: Any) -> ModelTurn:
+def _chat_to_turn(response: Any, protocol: str = "chat") -> ModelTurn:
+    if not getattr(response, "choices", None):
+        raise RuntimeError(f"{protocol}: response carried no choices")
     message = response.choices[0].message
     tool_calls: list[ToolCall] = []
     for call in getattr(message, "tool_calls", None) or []:
@@ -389,7 +470,7 @@ def _chat_to_turn(response: Any) -> ModelTurn:
         output_tokens=output_tokens,
         cached_input_tokens=cached,
         reasoning_tokens=reasoning_tokens,
-        protocol="chat",
+        protocol=protocol,
     )
 
 
@@ -433,11 +514,16 @@ def _mentions_unsupported(body: str, parameter: str) -> bool:
     )
 
 
-def _drop_unsupported_param(kwargs: dict, body: str) -> str | None:
-    for parameter in _DEGRADABLE_RESPONSES_PARAMS:
+def _drop_unsupported_param(
+    kwargs: dict,
+    body: str,
+    degradable: tuple[str, ...] = _DEGRADABLE_RESPONSES_PARAMS,
+    unsupported: set[str] = _UNSUPPORTED_RESPONSES_PARAMS,
+) -> str | None:
+    for parameter in degradable:
         if parameter not in kwargs or not _mentions_unsupported(body, parameter):
             continue
-        _UNSUPPORTED_RESPONSES_PARAMS.add(parameter)
+        unsupported.add(parameter)
         kwargs.pop(parameter, None)
         logger.warning(
             "azure_param_unsupported parameter=%s -- dropped for the rest of this process. detail=%s",
@@ -612,6 +698,14 @@ def _chat_turn(
     structured_model: type[BaseModel] | None,
     reasoning_effort: str,
 ) -> ModelTurn:
+    if _provider() == "bedrock":
+        return _bedrock_turn(
+            deployment=deployment,
+            messages=messages,
+            tools=tools,
+            structured_model=structured_model,
+            reasoning_effort=reasoning_effort,
+        )
     items = list(messages)
     if structured_model is not None:
         items = [*items, _json_envelope_instruction(structured_model)]
@@ -640,6 +734,74 @@ def _chat_turn(
 
     response = _chat_client().chat.completions.create(**kwargs)
     return _chat_to_turn(response)
+
+
+# Same fail-closed rule as the Responses path: a 400 drops only the optional
+# knob its body names. Per model, since mantle serves several model families
+# and one rejecting `reasoning_effort` says nothing about the others.
+_UNSUPPORTED_BEDROCK_PARAMS: dict[str, set[str]] = {}
+_DEGRADABLE_BEDROCK_PARAMS = ("reasoning_effort",)
+
+
+def _bedrock_create(kwargs: dict) -> ModelTurn:
+    unsupported = _UNSUPPORTED_BEDROCK_PARAMS.setdefault(kwargs["model"], set())
+    for parameter in unsupported:
+        kwargs.pop(parameter, None)
+    while True:
+        try:
+            response = _chat_client().chat.completions.create(**kwargs)
+            break
+        except BadRequestError as error:
+            body = _error_body(error)
+            if _drop_unsupported_param(kwargs, body, _DEGRADABLE_BEDROCK_PARAMS, unsupported) is not None:
+                continue
+            logger.error("bedrock_bad_request_fail_closed model=%s body=%s", kwargs["model"], body)
+            raise
+    if response.choices and getattr(response.choices[0], "finish_reason", None) == "length":
+        logger.error("bedrock_truncated model=%s max_tokens=%s", kwargs["model"], kwargs.get("max_tokens"))
+    return _chat_to_turn(response, protocol="bedrock")
+
+
+def _bedrock_turn(
+    *,
+    deployment: str,
+    messages: list[dict],
+    tools: list[dict] | None,
+    structured_model: type[BaseModel] | None,
+    reasoning_effort: str,
+) -> ModelTurn:
+    """Chat Completions on mantle. Unlike Azure's Chat surface, mantle accepts a
+    forced function and a reasoning effort alongside tools, so neither the JSON
+    envelope nor the plan-sentence workaround is the first resort here. The
+    envelope survives as the one retry for a model that ignores a forced
+    function -- gpt-oss does, GLM-5 and Kimi K2.5 honour it."""
+    kwargs: dict[str, Any] = {
+        "model": deployment,
+        "messages": _to_chat_messages(messages),
+        # Open-weight reasoning models spend hidden tokens before answering,
+        # and mantle's default ceiling is far below what a patch tick needs.
+        "max_tokens": settings.azure_responses_max_output_tokens,
+    }
+    if reasoning_effort and reasoning_effort != "none":
+        kwargs["reasoning_effort"] = reasoning_effort
+    if structured_model is not None:
+        kwargs["tools"] = [_to_chat_tool(structured_model)]
+        kwargs["tool_choice"] = {"type": "function", "function": {"name": structured_model.__name__}}
+    elif tools:
+        chat_tools = [converted for converted in (_to_chat_tool(tool) for tool in tools) if converted]
+        if chat_tools:
+            kwargs["tools"] = chat_tools
+            kwargs["tool_choice"] = "auto"
+
+    turn = _bedrock_create(kwargs)
+    if structured_model is None or any(call.name == structured_model.__name__ for call in turn.tool_calls):
+        return turn
+    if "{" in (turn.content or ""):
+        return turn  # _parse_structured reads the object out of the prose
+    logger.warning("bedrock_forced_function_ignored model=%s function=%s", deployment, structured_model.__name__)
+    retry = {key: value for key, value in kwargs.items() if key not in ("tools", "tool_choice")}
+    retry["messages"] = _to_chat_messages([*messages, _json_envelope_instruction(structured_model)])
+    return _bedrock_create(retry)
 
 
 def _parse_structured(turn: ModelTurn, model: type[BaseModel]):
@@ -735,7 +897,7 @@ def call_skeptic(prefix: str, suffix: str) -> str:
 
 def call_skeptic_opinion(prefix: str, suffix: str, repo_full_name: str = "") -> JurorOpinion:
     return _structured(
-        settings.azure_fast_deployment, prefix, suffix,
+        settings.azure_fast_deployment, prefix + _JUROR_RUBRIC, suffix,
         role="skeptic", model=JurorOpinion, reasoning_effort="low", repo_full_name=repo_full_name,
     )
 
@@ -744,7 +906,7 @@ def call_corroborator_opinion(prefix: str, suffix: str, repo_full_name: str = ""
     """Corroborator: mid-tier model (needs to reason about code relevance and
     read mechanical evidence carefully — plan.md §12's routing table)."""
     return _structured(
-        settings.azure_worker_deployment, prefix, suffix,
+        settings.azure_worker_deployment, prefix + _JUROR_RUBRIC, suffix,
         role="corroborator", model=JurorOpinion, reasoning_effort="medium", repo_full_name=repo_full_name,
     )
 
@@ -760,7 +922,7 @@ def call_fix_skeptic_opinion(prefix: str, suffix: str, repo_full_name: str = "")
     patch could break something else, run in parallel with the mechanical
     VerifierNode rather than after it."""
     return _structured(
-        settings.azure_fast_deployment, prefix, suffix,
+        settings.azure_fast_deployment, prefix + _JUROR_RUBRIC, suffix,
         role="fix_skeptic", model=JurorOpinion, reasoning_effort="low", repo_full_name=repo_full_name,
     )
 

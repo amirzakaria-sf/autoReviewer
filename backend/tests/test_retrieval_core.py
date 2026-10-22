@@ -164,3 +164,28 @@ def test_history_query_drops_words_that_match_everything():
     from app.memory_traces import _or_tsquery
 
     assert _or_tsquery("the and for this that") == ""
+
+
+def test_without_an_embeddings_provider_dense_retrieval_is_skipped_not_attempted(monkeypatch, tmp_path):
+    from unittest.mock import patch as _patch
+
+    from app import embeddings, retrieval
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_provider", "bedrock")
+    monkeypatch.setattr(settings, "embeddings_provider", "")
+    assert not embeddings.available()
+    (tmp_path / "a.js").write_text("function a() { return 1; }\n")
+    with _patch.object(retrieval, "embed_text") as embed, _patch.object(retrieval, "_connect") as connect:
+        assert retrieval.index_repo_files("repo", str(tmp_path)) == 0
+        assert retrieval.similar_code_chunks("repo", "q") == []
+        assert retrieval.find_similar_past_issue("repo", "q") is None
+        retrieval.store_issue_embedding("issue", "t")
+    embed.assert_not_called()
+    connect.assert_not_called()
+    try:
+        embeddings.embed_text("x")
+    except embeddings.EmbeddingsUnavailable:
+        pass
+    else:
+        raise AssertionError("embed_text must refuse before any network call")

@@ -9,13 +9,15 @@ playwright>=1.48
 python-dotenv>=1.0
 pydantic-settings>=2.5
 pydantic>=2.9
-openai>=1.50
+openai>=1.58.1
 psycopg[binary,pool]>=3.2
 itsdangerous>=2.2
 pgvector>=0.3
 bcrypt>=4.2
 pyjwt[crypto]>=2.9
 tiktoken>=0.8
+pywebpush>=2.0
+boto3>=1.35
 
 [dev]
 pytest>=8.3

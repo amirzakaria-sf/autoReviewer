@@ -57,11 +57,17 @@ pipeline code. Every detector takes `(worktree_path, path_scope, base_url)`.
 ## Model calls
 
 `app/azure_client.py::complete_turn` is the only generation client — jury, Arbiter, patch
-loop, Counsel, PRD council. It speaks the **Responses API** (`{endpoint}/openai/v1/`,
+loop, Counsel, PRD council. `LLM_PROVIDER` picks what is behind it. **Production is
+`bedrock`**: Amazon Bedrock's OpenAI-compatible mantle endpoint, Chat Completions, SigV4 with
+the host's IAM role (`_BedrockSigV4`, `_bedrock_turn`). On `azure` it speaks the **Responses API** (`{endpoint}/openai/v1/`,
 `api_version="preview"`) so a tool-bound call can carry native reasoning, which Chat
 Completions cannot do on GPT-5.x. Callers pass Responses input items; the Chat shape exists
 only behind the `WHIPGUARD_AZURE_API=chat` hatch. `app/embeddings.py` is a separate client
 on a separate API and stays that way.
+
+`app/embeddings.py` is gated by `embeddings.available()`; on Bedrock it is false and the dense
+channel is off. `app/research.py` is gated by `research.web_research_available()`, false on
+Bedrock (no `web_search` tool on mantle).
 
 `app/research.py` is the web-research council: a Gatherer running the built-in `web_search`
 tool, then a Curator that attributes each claim to a source actually returned and drops
@@ -79,7 +85,7 @@ Tenancy: **`repos.org_id` is the only column that carries it.** Everything else 
 org through its repo.
 
 Retrieval is hybrid — `hybrid_retrieval.py` fuses structural, lexical (`lexical_index.py`,
-BM25), dense (`retrieval.py`, pgvector) and graph (`graph_index.py`) channels with
+BM25), dense (`retrieval.py`, pgvector; off without an embeddings provider) and graph (`graph_index.py`) channels with
 reciprocal rank fusion, and `context_broker.py` compiles the result under one token budget
 (`prompt_compiler.py`).
 

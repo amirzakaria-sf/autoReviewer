@@ -8,6 +8,63 @@ file is the only channel.
 
 ---
 
+## 2026-10-22 18:00 (UTC) — Move to the AWS host, Bedrock models, interactive landing
+
+- **Agent:** claude
+- **Commit:** pending
+- **User ask:** set WhipGuard up end to end on this VM, make it work with the AWS model
+  setup in `~/ai/aws-model-integrations.md`, and replace the landing page with something
+  like jevSec's: highly interactive and informative.
+- **Shipped:**
+  - `backend/app/azure_client.py`: `LLM_PROVIDER=bedrock` → `_BedrockSigV4`, `_bedrock_turn`,
+    `_bedrock_create` (per-model degrade of `reasoning_effort`), forced-function structured
+    output with one JSON-envelope retry, `supports_web_search()`, merged assistant+tool-call
+    replay in `_to_chat_messages`, botocore loggers pinned to WARNING. `_JUROR_RUBRIC` wired
+    into the three juror calls (it was dead code); `Field` descriptions on
+    `JurorOpinion`/`ArbiterVerdict`.
+  - `config.py`: `llm_provider`, `bedrock_region`, `embeddings_provider`, `LLM_*_MODEL`
+    aliases. `embeddings.py`: `available()`, `EmbeddingsUnavailable`; `retrieval.py` checks it
+    before any call. `research.py`: `web_research_available()`, also used by `counsel/prd.py`.
+  - `main.py`: `CREATE EXTENSION IF NOT EXISTS vector` before `create_all`.
+  - `deploy.sh`: the health wait now requires a new backend container ID.
+  - `pyproject.toml`: `boto3`. `tests/conftest.py`: forces `LLM_PROVIDER=azure`.
+    `tests/test_poller.py`: pins `github_token` and creates its own repo row.
+    11 new tests (`test_azure_client.py`, `test_research.py`, `test_retrieval_core.py`).
+  - Frontend: `app/page.tsx` rebuilt; new `components/landing/{Simulator,BeforeAfter,
+    PipelineSteps,JuryLab,TrickIt}.tsx` and `sim-data.ts`; ten glyphs added to `Icon.tsx`
+    (no emoji, per §11); `lp-` styles in `globals.css`.
+  - `nginx/whip-guard.conf` is now the installed TLS config for this host;
+    `nginx/upstream-whip-guard.conf` folded into it and deleted. `.env.example` updated.
+  - Outside the repo: `.env` (generated secrets, Brevo + VAPID from `~/ai/whip/oldenv`,
+    Cloudflare from `~/ai/cloudflare`), `/srv/workspace`, `/etc/nginx/conf.d/whip-guard.zakarias.in.conf`,
+    cert, the Cloudflare A record (172.206.16.54 → 13.60.61.135), showcase vhost disabled,
+    `demoApps/deploy/vhosts.tsv` line commented (uncommitted there),
+    `~/ai/whipguard-admin-credentials.txt` (600).
+- **Docs updated:** README.md, docs/ARCHITECTURE.md, docs/info.md §11, docs/DECISIONS.md
+  (three rows), docs/CHANGELOG.md, docs/STATUS.md, AGENTS.md, .env.example.
+- **Verified:**
+  - Probes of mantle before designing (scratch script): Responses API unsupported on GLM-5,
+    `status=failed` on gpt-oss forced function; Chat forced `tool_choice` honoured by GLM-5 and
+    Kimi, ignored by gpt-oss; `web_search` tool type rejected; no embeddings models; Titan via
+    bedrock-runtime throttled (0 quota); `ListModels` not granted to the role.
+  - `pytest -q` → 412 passed. `npx tsc --noEmit` clean. `next build` clean (`/` 22.4 kB).
+  - App code live on Bedrock: `call_arbiter` → score 95, factors summing to 95;
+    `call_skeptic_opinion` → 85 (it returned `0.78` before the schema fix);
+    GLM-5 `read_file` loop answered on tick 2. From inside the backend container too, with
+    a `council_runs` row `protocol=bedrock`.
+  - `run_eval` work item `ba83a5b5`: recall 1.0, precision 1.0, six of six categories.
+  - Public HTTPS checks, login, websocket auth through nginx, Brevo SMTP login, sibling
+    sites 200 after reload. Headless Chromium at 1440/390: no console errors, no overflow,
+    simulator driven push → approve → "Pull request open".
+  - `./deploy.sh --no-pull` ran twice. The first exposed the race; the second finished after
+    the container swap.
+- **NOT verified:** the Fix Council's patch loop against a real repository on Bedrock (no
+  GitHub credential on this host; connect a repo and watch for `AWAITING_APPROVAL`). Cloudflare
+  preview deploys (token lacks Pages rights). Slack (unconfigured). Real-device push.
+- **Not done / watch-outs:** `sim-data.ts` duplicates backend thresholds and regexes by
+  design; change both together. The host is memory-tight (≈1.2 GB free).
+- **Hot files:** none
+
 ## 2026-09-20 06:55 (UTC) — Adopt the two-agent documentation flow
 
 - **Agent:** claude
