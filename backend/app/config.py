@@ -168,6 +168,17 @@ class Settings(BaseSettings):
     # Who gets fix-proposed / escalation email. A single operator's inbox for
     # this deployment, same role ADMIN_EMAILS plays in jobFlowAuto.
     notify_email: str = ""
+    # Verify the invitee's email with a 6-digit code on the accept-invite page before a password can be set. Skipped
+    # automatically when SMTP is not configured and for the very first account on a deployment. Set false to restore
+    # the old "the link is the proof" behaviour.
+    invite_require_otp: bool = True
+    # Request-received and welcome mails (approved / declined / OTP mails are not affected by this).
+    access_lifecycle_emails: bool = True
+    # Shared secret for the operator console's /api/console/v1/*. Under 32 characters = unconfigured, every
+    # route answers 404.
+    console_api_token: str = ""
+    # Where the "Review request" button in the new-request mail points. Empty = the in-app admin page.
+    console_review_url: str = ""
 
     # App-level login (replaces the earlier nginx HTTP Basic Auth stopgap --
     # that showed the browser's native credential popup ahead of the app,

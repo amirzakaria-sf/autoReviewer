@@ -568,7 +568,14 @@ export const api = {
       email,
       reason,
     }),
-  checkInvite: (token: string) => getJSON<{ name: string; email: string }>(`/api/auth/invite?token=${encodeURIComponent(token)}`),
+  checkInvite: (token: string) =>
+    getJSON<{ name: string; email: string; otp_required?: boolean; otp_verified?: boolean }>(
+      `/api/auth/invite?token=${encodeURIComponent(token)}`,
+    ),
+  sendInviteCode: (token: string) =>
+    postJSON<{ ok: boolean; otp_required: boolean; sent_to?: string }>("/api/auth/invite/send-code", { token }),
+  verifyInviteCode: (token: string, code: string) =>
+    postJSON<{ ok: boolean }>("/api/auth/invite/verify-code", { token, code }),
   completeInvite: (token: string, password: string) =>
     postJSON<{ ok: boolean; role: string }>("/api/auth/complete-invite", { token, password }),
   login: (email: string, password: string) => postJSON<{ ok: boolean; role: string }>("/api/auth/login", { email, password }),

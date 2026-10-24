@@ -22,7 +22,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
 
 from app.config import settings
-from app import orgs
+from app import access_otp, orgs
 from app.db import async_session
 from app.enums import AccessRequestStatus, OrgRole, Seniority, UserRole, UserStatus
 from app.integrations import email_client
@@ -102,6 +102,59 @@ async def _issue_session(db, response: Response, user: User, user_agent: str | N
     _set_auth_cookies(response, access, raw_refresh)
 
 
+_REQUEST_WINDOW_SECONDS = 3600
+_REQUEST_LIMIT_PER_IP = 5
+_request_hits: dict[str, list[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    headers = getattr(request, "headers", None) or {}
+    forwarded = headers.get("x-real-ip") or (headers.get("x-forwarded-for", "").split(",")[0].strip())
+    if forwarded:
+        return forwarded
+    client = getattr(request, "client", None)
+    return getattr(client, "host", "") or ""
+
+
+def _throttled(key: str, limit: int, now: float | None = None) -> bool:
+    """In-process sliding window. One API process, so a plain dict is exact; an unknown client IP is never throttled
+    (tests and local calls), because refusing everyone behind a missing header is worse than no limit."""
+    import time
+
+    if not key:
+        return False
+    now = now if now is not None else time.monotonic()
+    hits = [t for t in _request_hits.get(key, []) if now - t < _REQUEST_WINDOW_SECONDS]
+    if len(hits) >= limit:
+        _request_hits[key] = hits
+        return True
+    hits.append(now)
+    _request_hits[key] = hits
+    return False
+
+
+async def _send(to: str, mail: tuple[str, str, str]) -> bool:
+    if not email_client.smtp_configured():
+        return False
+    subject, html, text = mail
+    try:
+        return bool(await asyncio.to_thread(email_client.send_email, to, subject, html, text))
+    except Exception:
+        logger.exception("failed sending mail to %s", email_client._mask(to))
+        return False
+
+
+async def _notify_new_request(*, name: str, email: str, reason: str) -> None:
+    if settings.access_lifecycle_emails:
+        await _send(email, email_client.build_request_received_email(name, reason))
+    if settings.notify_email:
+        subject, html, text = email_client.build_admin_new_request_email(name, email, reason)
+        if settings.console_review_url:
+            html = html.replace(f"{email_client.email_templates.public_url()}/admin/users", settings.console_review_url)
+            text = text.replace(f"{email_client.email_templates.public_url()}/admin/users", settings.console_review_url)
+        await _send(settings.notify_email, (subject, html, text))
+
+
 @router.post("/request-access")
 async def request_access(request: Request, response: Response):
     """Collects name/email/reason -- creates NO account. The very first
@@ -115,6 +168,9 @@ async def request_access(request: Request, response: Response):
     reason = str(body.get("reason", "")).strip()
     if not name or not email or "@" not in email or not reason:
         raise HTTPException(400, "name, a valid email, and a reason for access are required")
+
+    if _throttled(f"request-access:{_client_ip(request)}" if _client_ip(request) else "", _REQUEST_LIMIT_PER_IP):
+        raise HTTPException(429, "too many requests -- try again later")
 
     async with async_session() as db:
         existing_user = (await db.execute(select(User).where(User.email == email))).scalars().first()
@@ -153,18 +209,9 @@ async def request_access(request: Request, response: Response):
 
         await db.commit()
 
-        if email_client.smtp_configured() and settings.notify_email:
-            try:
-                subject = "WhipGuard: new access request"
-                html = (
-                    f"<p><b>{name}</b> ({email}) requested access to WhipGuard.</p>"
-                    f"<p><b>Reason:</b> {reason}</p>"
-                    f'<p><a href="https://whip-guard.zakarias.in/admin/users">Review in the admin dashboard</a></p>'
-                )
-                text = f"{name} ({email}) requested access.\nReason: {reason}\nReview: https://whip-guard.zakarias.in/admin/users"
-                await email_client.send_email(settings.notify_email, subject, html, text)
-            except Exception:
-                logger.exception("failed to notify admin of new access request %s", email)
+        # Receipt to the requester and a heads-up to the operator. Both best effort and off the event loop:
+        # `send_email` is synchronous (it was being awaited here, which raised after the mail had already gone).
+        await _notify_new_request(name=name, email=email, reason=reason)
 
         return {"ok": True, "status": "pending"}
 
@@ -184,7 +231,64 @@ async def check_invite(token: str):
             raise HTTPException(400, "this invite link is no longer valid")
         if access_request.invite_consumed_at:
             raise HTTPException(409, "this invite has already been used -- sign in instead")
-        return {"name": access_request.name, "email": access_request.email}
+        first = (await db.execute(select(User.id).limit(1))).scalars().first() is None
+        required = access_otp.otp_required(is_first_user=first)
+        return {
+            "name": access_request.name,
+            "email": access_request.email,
+            "otp_required": required,
+            "otp_verified": (not required) or access_otp.is_verified(access_request),
+        }
+
+
+async def _load_open_invite(db, token: str) -> AccessRequest:
+    access_request_id = decode_invite_token(token)
+    if not access_request_id:
+        raise HTTPException(400, "this invite link is invalid or has expired")
+    row = await db.get(AccessRequest, access_request_id)
+    if not row or row.status != AccessRequestStatus.APPROVED:
+        raise HTTPException(400, "this invite link is no longer valid")
+    if row.invite_consumed_at:
+        raise HTTPException(409, "this invite has already been used -- sign in instead")
+    return row
+
+
+@router.post("/invite/send-code")
+async def invite_send_code(request: Request):
+    """Mail a fresh 6-digit code to the invitee's own address (never to one supplied by the caller)."""
+    body = await request.json()
+    async with async_session() as db:
+        row = await _load_open_invite(db, str(body.get("token", "")))
+        first = (await db.execute(select(User.id).limit(1))).scalars().first() is None
+        if not access_otp.otp_required(is_first_user=first):
+            return {"ok": True, "otp_required": False}
+        wait = access_otp.seconds_until_resend(row)
+        if wait:
+            raise HTTPException(429, f"a code was just sent -- wait {wait}s before asking for another")
+        code = access_otp.issue(row)
+        await db.commit()
+        sent = await _send(row.email, email_client.build_otp_email(row.name, code))
+        if not sent:
+            raise HTTPException(502, "could not send the code -- try again in a moment")
+        return {"ok": True, "otp_required": True, "sent_to": access_otp.mask_email(row.email)}
+
+
+@router.post("/invite/verify-code")
+async def invite_verify_code(request: Request):
+    body = await request.json()
+    async with async_session() as db:
+        row = await _load_open_invite(db, str(body.get("token", "")))
+        outcome = access_otp.check(row, str(body.get("code", "")))
+        await db.commit()
+        if outcome == "ok":
+            return {"ok": True}
+        messages = {
+            "none": "no code is active -- ask for a new one",
+            "expired": "that code has expired -- ask for a new one",
+            "locked": "too many wrong attempts -- ask for a new code",
+            "wrong": "that code is not right",
+        }
+        raise HTTPException(400, messages[outcome])
 
 
 @router.post("/complete-invite")
@@ -220,6 +324,9 @@ async def complete_invite(request: Request, response: Response):
         # account is actually created instead of when it's requested.
         is_first_user = (await db.execute(select(User.id).limit(1))).scalars().first() is None
 
+        if access_otp.otp_required(is_first_user=is_first_user) and not access_otp.is_verified(access_request):
+            raise HTTPException(403, "verify your email with the code we sent before setting a password")
+
         name_parts = access_request.name.strip().split(maxsplit=1)
         first_name = name_parts[0] if name_parts else None
         last_name = name_parts[1] if len(name_parts) > 1 else None
@@ -252,6 +359,8 @@ async def complete_invite(request: Request, response: Response):
             )
 
         await _issue_session(db, response, user, request.headers.get("user-agent"))
+        if settings.access_lifecycle_emails:
+            await _send(user.email, email_client.build_welcome_email(access_request.name))
         return {"ok": True, "role": user.role.value}
 
 

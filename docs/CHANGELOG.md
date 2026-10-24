@@ -3,6 +3,28 @@
 Short product history. Append a dated heading when a slice lands. Detail belongs in
 `docs/<agent>/changes.md`; this is the shape of the product over time.
 
+## 2026-10-24 — Operator-console contract, onboarding at parity with Whip and Lumen, escaped HTML mail
+
+- **`/api/console/v1/*`** (`routers/console_api.py`): the contract the shared operator console uses. `X-Console-Token` must equal
+  `CONSOLE_API_TOKEN` (>= 32 chars, constant time); unset, short or wrong is a 404 for everyone. Summary, usage (per role and model:
+  `council_runs` has no user), users, suspend / restore (administrators protected, refresh tokens revoked), access requests with
+  approve / reject / revoke. Quota answers 409 — WhipGuard has no per-user allowance and says so. Approving puts the person in the
+  deployment's only organization (none or several: no guess). Approve and reject now live in `access_decisions.py`, shared by the
+  in-app admin endpoints and the console, so the same state change and the same mail happen from either.
+- **Email code on the accept-invite page** (`access_otp.py`, `/api/auth/invite/send-code` and `/verify-code`, a step in
+  `frontend/app/accept-invite`): request → approval → emailed invite link → 6-digit code → password, the same sequence as Whip and
+  Lumen. 10-minute code, 5 attempts, 60-second resend gap, HMAC stored (never the code), verified state good for 30 minutes.
+  Skipped when `INVITE_REQUIRE_OTP=false`, when SMTP is off, and for the very first account. Five nullable columns on
+  `access_requests`, added by `schema_sync` at boot. Old invite links keep working — they just ask for the code first.
+- **Mails**: one HTML shell (`integrations/email_templates.py`) with a plain-text part for every mail: request received, new request
+  (operator), invite, declined, welcome, verification code, plus the existing fix-proposed / status / org-invite mails moved onto
+  it. **Everything user-supplied is now escaped** — a name, reason or issue title used to be pasted into the HTML. `email_client`
+  keeps its `build_*` names. The new-request mail was being `await`ed on a synchronous function (mail went out, then a TypeError was
+  logged); it now runs in a thread. Request-access is limited to 5 per hour per client IP.
+- Tests: `tests/test_access_otp.py` (10) and `tests/test_console_api.py` (8). `conftest.py` now blanks SMTP for every test (tests used
+  the real relay on a configured host) and offers `mail_outbox`. Full suite: 430 passed.
+- Not changed: login, refresh, org invites, first-account bootstrap, the in-app admin pages, `/accept-invite` URL.
+
 ## 2026-10-22 — moved to AWS, models on Bedrock, a landing page you can use
 
 WhipGuard now runs on the shared AWS VM, and its models are on Amazon Bedrock: Kimi K2.5

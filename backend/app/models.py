@@ -82,6 +82,15 @@ class AccessRequest(Base):
     # implicitly (an approved request being reused after the account already
     # exists must fail loudly, not silently create a second account attempt).
     invite_consumed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    # Email-ownership check done on the invite page before a password can be set (routers/auth.py,
+    # /invite/send-code and /invite/verify-code). The code itself is never stored -- only an HMAC of it
+    # keyed with the session secret and bound to this row -- and it burns after OTP_MAX_ATTEMPTS misses.
+    # All nullable and additive; schema_sync.py adds them to an existing table.
+    otp_hash: Mapped[str | None] = mapped_column(sa.String, nullable=True)
+    otp_expires_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    otp_sent_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    otp_attempts: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
+    otp_verified_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
 
 

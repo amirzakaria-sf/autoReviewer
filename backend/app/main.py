@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import Base, async_session, engine
 from app.enums import UserRole, UserStatus
 from app.models import User
-from app.routers import admin, api, auth, counsel, org, email_actions, fix_review, github, human_input, me, push, slack_connect, webhooks, ws
+from app.routers import admin, api, auth, console_api, counsel, org, email_actions, fix_review, github, human_input, me, push, slack_connect, webhooks, ws
 from app.schema_sync import sync_additive_columns, sync_enum_labels
 from app.security import decode_access_token, hash_password
 
@@ -26,6 +26,8 @@ logger = logging.getLogger("whipguard.main")
 _PUBLIC_PATHS = (
     "/api/auth/", "/api/webhooks/", "/api/slack/interactions", "/api/slack/events", "/api/email/action",
     "/healthz", "/api/healthz",
+    # The operator console contract: its own X-Console-Token guard is the credential (routers/console_api.py).
+    "/api/console/",
 )
 
 
@@ -112,6 +114,7 @@ app.add_middleware(
 
 
 app.include_router(admin.router)
+app.include_router(console_api.router)
 app.include_router(auth.router)
 app.include_router(api.router)
 app.include_router(counsel.router)

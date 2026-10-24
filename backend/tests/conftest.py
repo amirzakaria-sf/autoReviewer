@@ -145,3 +145,34 @@ def _disable_llm_response_cache():
     settings.llm_cache_enabled = False
     yield
     settings.llm_cache_enabled = original
+
+
+@pytest.fixture(autouse=True)
+def _no_real_mail(monkeypatch):
+    """No test sends a real email, and no test depends on the host's SMTP settings.
+
+    config.py loads the real .env, so on a configured host `smtp_configured()` was True and a test that approved an
+    access request mailed an invite to an `@example.com` address through the production relay. SMTP is blanked here;
+    tests that exercise mail use the `mail_outbox` fixture below, which turns it on against an in-memory outbox.
+    """
+    monkeypatch.setattr(settings, "smtp_host", "")
+    monkeypatch.setattr(settings, "smtp_user", "")
+    monkeypatch.setattr(settings, "smtp_key", "")
+
+
+@pytest.fixture
+def mail_outbox(monkeypatch):
+    """SMTP 'configured' and every send captured: a list of dicts with to / subject / html / text."""
+    from app.integrations import email_client
+
+    outbox: list[dict] = []
+    monkeypatch.setattr(settings, "smtp_host", "smtp.test.invalid")
+    monkeypatch.setattr(settings, "smtp_user", "u")
+    monkeypatch.setattr(settings, "smtp_key", "k")
+
+    def fake_send(to, subject, html, text):
+        outbox.append({"to": to, "subject": subject, "html": html, "text": text})
+        return True
+
+    monkeypatch.setattr(email_client, "send_email", fake_send)
+    return outbox

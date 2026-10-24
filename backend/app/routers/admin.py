@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db import async_session, get_db
 from app.deps import require_admin
-from app import org_invites, orgs, kill_switch
+from app import access_decisions, org_invites, orgs, kill_switch
 from app.enums import AccessRequestStatus, OrgRole, Seniority, UserRole, UserStatus
 from app.integrations import email_client
 from app.models import AccessRequest, AuditLog, Fix, Issue, MemoryTrace, Repo, User
@@ -127,33 +127,7 @@ async def approve_access_request(
     access_request = await db.get(AccessRequest, request_id)
     if not access_request:
         raise HTTPException(404, "access request not found")
-    if access_request.status != AccessRequestStatus.PENDING:
-        raise HTTPException(409, f"already {access_request.status.value}")
-
-    org_id = (body.org_id if body else "").strip()
-    if org_id:
-        from app.models import Organization
-
-        try:
-            organization = await db.get(Organization, uuid.UUID(org_id))
-        except ValueError as error:
-            raise HTTPException(400, "that is not a valid organization id") from error
-        if organization is None:
-            raise HTTPException(404, "that organization does not exist")
-        access_request.org_id = organization.id
-
-    access_request.status = AccessRequestStatus.APPROVED
-    access_request.decided_by = admin.id
-    access_request.decided_at = datetime.now(timezone.utc)
-    await db.commit()
-
-    invite_token = sign_invite_token(access_request.id)
-    if email_client.smtp_configured():
-        try:
-            subject, html, text_body = email_client.build_invite_email(access_request.name, invite_token)
-            await asyncio.to_thread(email_client.send_email, access_request.email, subject, html, text_body)
-        except Exception:
-            logger.exception("failed to send invite email for access request %s", access_request.id)
+    await access_decisions.approve(db, access_request, decided_by=admin.id, org_id=(body.org_id if body else ""))
 
     return {"ok": True, "request": _access_request_dict(access_request)}
 
@@ -163,22 +137,7 @@ async def reject_access_request(request_id: uuid.UUID, body: dict, admin: User =
     access_request = await db.get(AccessRequest, request_id)
     if not access_request:
         raise HTTPException(404, "access request not found")
-    if access_request.status != AccessRequestStatus.PENDING:
-        raise HTTPException(409, f"already {access_request.status.value}")
-
-    reason = str(body.get("reason", "")).strip()
-    access_request.status = AccessRequestStatus.REJECTED
-    access_request.decided_by = admin.id
-    access_request.decided_at = datetime.now(timezone.utc)
-    access_request.decision_reason = reason or None
-    await db.commit()
-
-    if email_client.smtp_configured():
-        try:
-            subject, html, text_body = email_client.build_access_declined_email(access_request.name, reason)
-            await asyncio.to_thread(email_client.send_email, access_request.email, subject, html, text_body)
-        except Exception:
-            logger.exception("failed to send decline email for access request %s", access_request.id)
+    await access_decisions.reject(db, access_request, decided_by=admin.id, reason=str(body.get("reason", "")))
 
     return {"ok": True, "request": _access_request_dict(access_request)}
 

@@ -29,6 +29,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from app.config import settings
+from app.integrations import email_templates
 
 logger = logging.getLogger("whipguard.email_client")
 
@@ -122,99 +123,46 @@ def verify_action_token(token: str) -> dict | None:
 
 def _action_url(fix_id: str, action: str) -> str:
     token = sign_action_token(fix_id, action)
-    return f"https://whip-guard.zakarias.in/api/email/action?token={token}"
+    return f"{email_templates.public_url()}/api/email/action?token={token}"
 
+
+# The builders live in email_templates.py (one shell, everything escaped). These names are kept so no caller changes.
 
 def build_fix_proposed_email(issue_title: str, category: str, score: int, pr_url: str, fix_id: str) -> tuple[str, str, str]:
-    approve_url = _action_url(fix_id, "approve")
-    reject_url = _action_url(fix_id, "reject")
-    subject = f"WhipGuard: fix proposed for \"{issue_title}\""
-    html = f"""
-    <div style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto">
-      <h2 style="margin-bottom:4px">Fix proposed</h2>
-      <p style="color:#555">{issue_title}</p>
-      <p style="color:#555">Category: <b>{category}</b> &middot; Resolution confidence: <b>{score}/100</b></p>
-      <p><a href="{pr_url}">View the pull request &rarr;</a></p>
-      <div style="margin:24px 0">
-        <a href="{approve_url}" style="background:#16a34a;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;margin-right:12px">Approve</a>
-        <a href="{reject_url}" style="background:#dc2626;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none">Reject</a>
-      </div>
-      <p style="color:#999;font-size:12px">This link is single-use and expires in 7 days. Whoever acts first — here, in Slack, or on the dashboard — wins; the others just reflect it.</p>
-    </div>
-    """
-    text = (
-        f"WhipGuard: fix proposed for \"{issue_title}\"\n"
-        f"Category: {category}. Resolution confidence: {score}/100.\n"
-        f"PR: {pr_url}\n\nApprove: {approve_url}\nReject: {reject_url}\n"
+    return email_templates.fix_proposed_email(
+        issue_title, category, score, pr_url, _action_url(fix_id, "approve"), _action_url(fix_id, "reject")
     )
-    return subject, html, text
 
 
 def build_status_email(issue_title: str, status_label: str, detail: str = "") -> tuple[str, str, str]:
-    subject = f"WhipGuard: {status_label} — \"{issue_title}\""
-    html = f"""
-    <div style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto">
-      <h2 style="margin-bottom:4px">{status_label}</h2>
-      <p style="color:#555">{issue_title}</p>
-      {f'<p style="color:#555">{detail}</p>' if detail else ''}
-      <p><a href="https://whip-guard.zakarias.in/dashboard">Open the dashboard &rarr;</a></p>
-    </div>
-    """
-    text = f"WhipGuard: {status_label} — \"{issue_title}\"\n{detail}\n\nhttps://whip-guard.zakarias.in/dashboard"
-    return subject, html, text
+    return email_templates.status_email(issue_title, status_label, detail)
 
 
 def build_invite_email(name: str, invite_token: str) -> tuple[str, str, str]:
-    accept_url = f"https://whip-guard.zakarias.in/accept-invite?token={invite_token}"
-    subject = "You're in — set up your WhipGuard account"
-    html = f"""
-    <div style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto">
-      <h2 style="margin-bottom:4px">Welcome, {name}</h2>
-      <p style="color:#555">Your access request was approved. Set a password to finish creating your account.</p>
-      <div style="margin:24px 0">
-        <a href="{accept_url}" style="background:#5b7cfa;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none">Set up your account</a>
-      </div>
-      <p style="color:#999;font-size:12px">This link is single-use and expires in 7 days.</p>
-    </div>
-    """
-    text = f"Welcome, {name}\n\nYour access request was approved. Set a password here:\n{accept_url}\n\nSingle-use, expires in 7 days."
-    return subject, html, text
+    return email_templates.invite_email(name, invite_token)
 
 
 def build_org_invite_email(name: str, org_name: str, inviter: str, accept_url: str) -> tuple[str, str, str]:
-    """An invitation to join a team, not an approved access request.
-
-    Says who invited them and to which organization -- an unattributed "set a
-    password" mail from a product nobody signed up for reads as phishing, and
-    is treated accordingly.
-    """
-    subject = f"{inviter} invited you to {org_name} on WhipGuard"
-    html = f"""
-    <div style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto">
-      <h2 style="margin-bottom:4px">Join {org_name}</h2>
-      <p style="color:#555">Hi {name}, <b>{inviter}</b> invited you to the <b>{org_name}</b> organization on
-      WhipGuard, where bugs found in your repositories are reviewed and fixes approved.</p>
-      <div style="margin:24px 0">
-        <a href="{accept_url}" style="background:#ffb224;color:#1a1a1a;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600">Accept the invitation</a>
-      </div>
-      <p style="color:#999;font-size:12px">This link expires in 7 days. If you were not expecting it, ignore this email.</p>
-    </div>
-    """
-    text = (
-        f"Hi {name},\n\n{inviter} invited you to the {org_name} organization on WhipGuard.\n\n"
-        f"Accept here:\n{accept_url}\n\nExpires in 7 days. If you were not expecting this, ignore it."
-    )
-    return subject, html, text
+    """An invitation to join a team, not an approved access request. Says who invited them and to which organization --
+    an unattributed "set a password" mail from a product nobody signed up for reads as phishing."""
+    return email_templates.org_invite_email(name, org_name, inviter, accept_url)
 
 
 def build_access_declined_email(name: str, reason: str) -> tuple[str, str, str]:
-    subject = "WhipGuard access request update"
-    html = f"""
-    <div style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto">
-      <h2 style="margin-bottom:4px">Access request declined</h2>
-      <p style="color:#555">Hi {name}, your request for access to WhipGuard was not approved.</p>
-      {f'<p style="color:#555"><b>Reason:</b> {reason}</p>' if reason else ''}
-    </div>
-    """
-    text = f"Hi {name}, your request for access to WhipGuard was not approved." + (f"\nReason: {reason}" if reason else "")
-    return subject, html, text
+    return email_templates.access_declined_email(name, reason)
+
+
+def build_otp_email(name: str, code: str) -> tuple[str, str, str]:
+    return email_templates.otp_email(name, code)
+
+
+def build_request_received_email(name: str, reason: str) -> tuple[str, str, str]:
+    return email_templates.request_received_email(name, reason)
+
+
+def build_admin_new_request_email(name: str, email: str, reason: str) -> tuple[str, str, str]:
+    return email_templates.admin_new_request_email(name, email, reason, f"{email_templates.public_url()}/admin/users")
+
+
+def build_welcome_email(name: str) -> tuple[str, str, str]:
+    return email_templates.welcome_email(name)
