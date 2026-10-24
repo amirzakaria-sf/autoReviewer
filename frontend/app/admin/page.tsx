@@ -59,6 +59,7 @@ export default function AdminOverviewPage() {
     setTimeout(() => clearInterval(poll), 5 * 60 * 1000);
   }
 
+  const managed = overview?.console_managed === true;
   const maxDayTokens = Math.max(1, ...(usage?.by_day.map((d) => d.total_tokens) ?? [1]));
 
   return (
@@ -76,9 +77,18 @@ export default function AdminOverviewPage() {
 
       {error && <div className="badge badge-red">{error}</div>}
 
+      {managed && (
+        <div className="card p-3 text-sm text-lo">
+          Access requests, quotas and redeploys are managed in the{" "}
+          <a href={overview?.console_url || "https://console.zakarias.in"} className="underline">operator console</a>.
+        </div>
+      )}
+
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <StatCard label="Active users" value={overview?.users.active} color="green" />
-        <StatCard label="Pending requests" value={overview?.access_requests.pending} color="yellow" href="/admin/users" />
+        {!managed && (
+          <StatCard label="Pending requests" value={overview?.access_requests.pending} color="yellow" href="/admin/users" />
+        )}
         <StatCard label="Repos connected" value={overview?.repos} color="blue" />
         <StatCard label="Issues tracked" value={overview?.issues} color="gray" />
       </section>
@@ -215,6 +225,7 @@ export default function AdminOverviewPage() {
         )}
       </section>
 
+      {!managed && (
       <section className="card p-5">
         <div className="flex items-center justify-between">
           <div>
@@ -238,6 +249,7 @@ export default function AdminOverviewPage() {
           </pre>
         )}
       </section>
+      )}
     </div>
   );
 }

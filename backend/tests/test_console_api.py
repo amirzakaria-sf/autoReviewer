@@ -214,3 +214,23 @@ async def test_revoke_closes_an_unused_invite_and_suspends_a_used_one(mail_outbo
             assert items[used] == "revoked"
     finally:
         await _cleanup(unused, used)
+
+
+# -- CONSOLE_MANAGED --------------------------------------------------------------------------------------------------
+
+async def test_admin_overview_tells_the_dashboard_whether_the_console_owns_requests(monkeypatch):
+    from app.routers import admin
+
+    monkeypatch.setattr(settings, "console_managed", False)
+    async with async_session() as db:
+        off = await admin.admin_overview(db)
+    assert off["console_managed"] is False  # default: the in-app admin looks exactly as before
+
+    monkeypatch.setattr(settings, "console_managed", True)
+    monkeypatch.setattr(settings, "console_public_url", "https://console.example.test/")
+    async with async_session() as db:
+        on = await admin.admin_overview(db)
+    assert on["console_managed"] is True
+    assert on["console_url"] == "https://console.example.test"
+    # Nothing else about the overview changes with the flag, so the stat cards and kill switch keep working.
+    assert {"users", "access_requests", "kill_switch"} <= set(on)

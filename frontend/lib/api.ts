@@ -383,6 +383,9 @@ export type AdminOverview = {
   /** How much the memory layer has actually accumulated. */
   memory_traces?: number;
   kill_switch?: { detection_paused: boolean; proposals_paused: boolean };
+  /** CONSOLE_MANAGED: the operator console owns request review and redeploys, so the admin hides them. */
+  console_managed?: boolean;
+  console_url?: string;
 };
 
 export type UsageStats = {

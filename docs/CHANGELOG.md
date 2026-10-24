@@ -3,6 +3,14 @@
 Short product history. Append a dated heading when a slice lands. Detail belongs in
 `docs/<agent>/changes.md`; this is the shape of the product over time.
 
+## 2026-10-24 — `CONSOLE_MANAGED`: request review and Redeploy hidden when the operator console owns them
+
+`CONSOLE_MANAGED=true` (default off) adds `console_managed` / `console_url` to `GET /api/admin/overview`; the admin dashboard then
+hides the "Pending requests" card and the in-app **Redeploy** card, and the Users page hides the request review sections, each with a
+pointer to the console. Organizations and user role / status management stay (the console cannot change roles). UI only: the
+endpoints (including `/api/admin/redeploy`) are unchanged and unsetting the variable restores everything. Test:
+`test_admin_overview_tells_the_dashboard_whether_the_console_owns_requests`.
+
 ## 2026-10-24 — Operator-console contract, onboarding at parity with Whip and Lumen, escaped HTML mail
 
 - **`/api/console/v1/*`** (`routers/console_api.py`): the contract the shared operator console uses. `X-Console-Token` must equal

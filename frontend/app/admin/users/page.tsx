@@ -14,6 +14,9 @@ export default function AdminUsersPage() {
   const [orgs, setOrgs] = useState<OrgSummary[]>([]);
   const [orgChoice, setOrgChoice] = useState<Record<string, string>>({});
   const session = useSession();
+  // CONSOLE_MANAGED: the operator console reviews access requests; role and status management below stays here.
+  const [managed, setManaged] = useState(false);
+  const [consoleUrl, setConsoleUrl] = useState("https://console.zakarias.in");
 
   async function refresh() {
     try {
@@ -25,6 +28,10 @@ export default function AdminUsersPage() {
         api.adminOrgs().catch(() => [] as OrgSummary[]),
       ]);
       setOrgs(orgList);
+      api.adminOverview().then((o) => {
+        setManaged(o.console_managed === true);
+        if (o.console_url) setConsoleUrl(o.console_url);
+      }).catch(() => undefined);
       setRequests(reqs);
       setUsers(us);
       setError(null);
@@ -90,11 +97,20 @@ export default function AdminUsersPage() {
     <div className="space-y-8 animate-fade-in">
       <div>
         <h1 className="text-xl font-semibold">Users</h1>
-        <p className="text-sm text-lo mt-1">Review access requests and manage existing accounts.</p>
+        <p className="text-sm text-lo mt-1">
+          {managed ? "Manage existing accounts." : "Review access requests and manage existing accounts."}
+        </p>
       </div>
 
       {error && <div className="badge badge-red">{error}</div>}
 
+      {managed && (
+        <div className="card p-3 text-sm text-lo">
+          Access requests are reviewed in the <a href={consoleUrl} className="underline">operator console</a>.
+        </div>
+      )}
+
+      {!managed && (
       <section className="card p-5" style={{ borderColor: "var(--amber-dim)" }}>
         <h2 className="font-semibold mb-3 flex items-center gap-2">
           <span className="badge badge-yellow">Pending requests</span>
@@ -174,7 +190,9 @@ export default function AdminUsersPage() {
         </div>
       </section>
 
-      {decided.length > 0 && (
+      )}
+
+      {!managed && decided.length > 0 && (
         <section>
           <h2 className="section-label mb-3">Past requests</h2>
           <div className="border border-border rounded-lg overflow-hidden">

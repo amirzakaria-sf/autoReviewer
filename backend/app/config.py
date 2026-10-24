@@ -179,6 +179,10 @@ class Settings(BaseSettings):
     console_api_token: str = ""
     # Where the "Review request" button in the new-request mail points. Empty = the in-app admin page.
     console_review_url: str = ""
+    # true = the in-app admin hides what the operator console now owns (access-request review and Redeploy) and points at it.
+    # UI only: the endpoints keep working and unsetting this restores everything.
+    console_managed: bool = False
+    console_public_url: str = "https://console.zakarias.in"
 
     # App-level login (replaces the earlier nginx HTTP Basic Auth stopgap --
     # that showed the browser's native credential popup ahead of the app,

@@ -180,6 +180,8 @@ async def admin_overview(db: AsyncSession = Depends(get_db)):
             await db.execute(select(func.count()).select_from(MemoryTrace))
         ).scalar_one(),
         "kill_switch": kill_switch.status(),
+        "console_managed": bool(settings.console_managed),
+        "console_url": settings.console_public_url.rstrip("/"),
     }
 
 
