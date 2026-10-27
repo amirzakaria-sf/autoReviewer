@@ -21,13 +21,23 @@ style choice here:
 - `function_call.arguments` is a JSON *string*; a tool result is a
   `function_call_output` item, not a `{"role": "tool"}` message.
 
-Two providers, one call site. `LLM_PROVIDER=azure` is everything above.
-`LLM_PROVIDER=bedrock` sends the same Responses-shaped input to Amazon Bedrock's
-"mantle" endpoint, which speaks OpenAI Chat Completions and is signed with SigV4
-from the host's IAM role -- there is no API key. It always takes the Chat path:
-mantle's Responses surface is unsupported on GLM-5 and, on gpt-oss, returned
-`status=failed` for a forced function call (probed live 2026-10-22). Callers do
-not change; the name of this module is historical.
+Four providers, one call site. `LLM_PROVIDER=azure` is everything above. The
+other three are "gateways": OpenAI Chat Completions with no Responses surface and
+no server-side `web_search`, fed the same Responses-shaped input converted at the
+boundary:
+
+- `bedrock`: Amazon Bedrock's "mantle" endpoint, signed with SigV4 from the
+  host's IAM role -- there is no API key. Mantle's Responses surface is
+  unsupported on GLM-5 and, on gpt-oss, returned `status=failed` for a forced
+  function call (probed live 2026-10-22). Reasoning is `reasoning_effort`.
+- `nvidia`: NVIDIA's API Catalog (`integrate.api.nvidia.com/v1`), Bearer key.
+  Nemotron 3's only reasoning control is the chat template's
+  `enable_thinking` switch; its thinking text (`reasoning_content`) is ignored.
+- `openrouter`: OpenRouter, Bearer key. Reasoning is `reasoning.effort`, mapped
+  to the efforts the model lists; `provider.require_parameters` keeps tool
+  calls off upstreams that cannot do them.
+
+Callers do not change; the name of this module is historical.
 """
 
 from __future__ import annotations
@@ -170,25 +180,52 @@ class _BedrockSigV4(httpx.Auth):
         yield request
 
 
+GATEWAYS = ("bedrock", "nvidia", "openrouter")
+
+
 def _provider() -> str:
     return str(getattr(settings, "llm_provider", "azure") or "azure").lower()
 
 
 def supports_web_search() -> bool:
     """Only Azure's Responses surface has a server-side `web_search` tool.
-    Mantle rejects the tool type outright."""
+    Mantle rejects the tool type outright; NVIDIA and OpenRouter have none."""
     return _provider() == "azure" and _use_responses()
 
 
-@lru_cache(maxsize=1)
 def _chat_client() -> OpenAI:
-    if _provider() == "bedrock":
+    return _client_for(_provider())
+
+
+@lru_cache(maxsize=4)
+def _client_for(provider: str) -> OpenAI:
+    if provider == "bedrock":
         region = settings.bedrock_region
         return OpenAI(
             base_url=f"https://bedrock-mantle.{region}.api.aws/v1",
             api_key="sigv4",  # required by the SDK; stripped by the auth flow
             http_client=httpx.Client(auth=_BedrockSigV4(region), timeout=180),
             max_retries=2,
+        )
+    if provider == "nvidia":
+        if not settings.nvidia_api_key:
+            raise ProviderError("misconfigured", "nvidia", "NVIDIA_API_KEY is not set")
+        return OpenAI(
+            base_url=settings.nvidia_base_url.rstrip("/"),
+            api_key=settings.nvidia_api_key,
+            timeout=settings.nvidia_timeout_seconds,
+            max_retries=2,
+        )
+    if provider == "openrouter":
+        if not settings.openrouter_api_key:
+            raise ProviderError("misconfigured", "openrouter", "OPENROUTER_API_KEY is not set")
+        return OpenAI(
+            base_url=settings.openrouter_base_url.rstrip("/"),
+            api_key=settings.openrouter_api_key,
+            timeout=settings.openrouter_timeout_seconds,
+            max_retries=2,
+            # OpenRouter's attribution headers; free models are rate-limited per app.
+            default_headers={"HTTP-Referer": settings.public_base_url, "X-Title": "WhipGuard"},
         )
     return AzureOpenAI(
         azure_endpoint=settings.azure_api_endpoint,
@@ -205,9 +242,61 @@ def _client() -> OpenAI:
 
 
 def _use_responses() -> bool:
-    if _provider() == "bedrock":
+    if _provider() in GATEWAYS:
         return False
     return str(getattr(settings, "whipguard_azure_api", "responses") or "responses").lower() != "chat"
+
+
+# --------------------------------------------------------------------------- #
+# Provider failures. A gateway call that fails for a reason no retry of THIS
+# request fixes (bad key, unknown or unentitled model, an account-wide refusal,
+# out of credits) or that is the provider's own state (throttled, down) leaves
+# as one `ProviderError` with a kind, so a run fails with a message that names
+# the cause instead of an SDK traceback. A 400 about the request itself (a
+# content filter, a bad value) is not one of these and stays raw.
+# --------------------------------------------------------------------------- #
+
+MISCONFIGURED, THROTTLED, UNAVAILABLE = "misconfigured", "throttled", "unavailable"
+
+# Account-level refusals sent as a plain 400. Mantle answers every model with
+# "Error 002: Access to Bedrock models is not allowed for this account" when the
+# AWS account is blocked (measured 2026-10-27); NVIDIA answers a listed model the
+# key is not entitled to with "Not found for account" (a 404).
+_ACCOUNT_REFUSAL_MARKERS = (
+    "access to bedrock models is not allowed",
+    "not allowed for this account",
+    "not available for this account",
+    "not found for account",
+)
+
+
+class ProviderError(RuntimeError):
+    def __init__(self, kind: str, provider: str, detail: str):
+        self.kind = kind
+        self.provider = provider
+        super().__init__(f"{provider} {kind}: {detail}"[:500])
+
+
+def classify_provider_error(error: BaseException) -> str:
+    """`misconfigured` | `throttled` | `unavailable` | "" (the request's own fault)."""
+    import openai
+
+    if isinstance(error, (openai.APITimeoutError, openai.APIConnectionError)):
+        return UNAVAILABLE
+    status = getattr(error, "status_code", None)
+    if status is None:
+        return ""
+    if status == 429:
+        return THROTTLED
+    if status >= 500:
+        return UNAVAILABLE
+    if status in (401, 402, 403, 404):
+        return MISCONFIGURED  # 402: OpenRouter is out of credits
+    if status == 400:
+        text = f"{error} {getattr(error, 'body', '') or ''}".lower()
+        if any(marker in text for marker in _ACCOUNT_REFUSAL_MARKERS):
+            return MISCONFIGURED
+    return ""
 
 
 # --------------------------------------------------------------------------- #
@@ -698,8 +787,9 @@ def _chat_turn(
     structured_model: type[BaseModel] | None,
     reasoning_effort: str,
 ) -> ModelTurn:
-    if _provider() == "bedrock":
-        return _bedrock_turn(
+    if _provider() in GATEWAYS:
+        return _gateway_turn(
+            provider=_provider(),
             deployment=deployment,
             messages=messages,
             tools=tools,
@@ -738,13 +828,52 @@ def _chat_turn(
 
 # Same fail-closed rule as the Responses path: a 400 drops only the optional
 # knob its body names. Per model, since mantle serves several model families
-# and one rejecting `reasoning_effort` says nothing about the others.
-_UNSUPPORTED_BEDROCK_PARAMS: dict[str, set[str]] = {}
-_DEGRADABLE_BEDROCK_PARAMS = ("reasoning_effort",)
+# and one rejecting `reasoning_effort` says nothing about the others. (Only
+# mantle sends a top-level optional knob; NVIDIA's and OpenRouter's ride in
+# `extra_body`, mapped to what the model accepts before the call.)
+_UNSUPPORTED_GATEWAY_PARAMS: dict[str, set[str]] = {}
+_DEGRADABLE_GATEWAY_PARAMS = ("reasoning_effort",)
+
+# Efforts a model family lists on OpenRouter (GET /api/v1/models ->
+# reasoning.supported_efforts, 2026-10-27). Nemotron 3 lists none/medium/high
+# and reasons at `high` when none is sent, so `none` is always sent explicitly
+# and an unlisted `low` goes up to `medium`.
+_OPENROUTER_EFFORTS = {"nvidia/nemotron-3-": ("none", "medium", "high")}
 
 
-def _bedrock_create(kwargs: dict) -> ModelTurn:
-    unsupported = _UNSUPPORTED_BEDROCK_PARAMS.setdefault(kwargs["model"], set())
+def openrouter_effort(model: str, effort: str) -> str:
+    effort = effort or "none"
+    for prefix, efforts in _OPENROUTER_EFFORTS.items():
+        if model.startswith(prefix) and effort not in efforts:
+            return "high" if effort in ("xhigh", "max") else "medium"
+    return effort
+
+
+def nvidia_thinking(effort: str) -> bool:
+    """Nemotron 3's one reasoning control. `auto`: off for effort none, on otherwise."""
+    if settings.nvidia_thinking != "auto":
+        return settings.nvidia_thinking == "on"
+    return bool(effort) and effort != "none"
+
+
+def _gateway_extras(provider: str, kwargs: dict, reasoning_effort: str) -> None:
+    if provider == "bedrock":
+        if reasoning_effort and reasoning_effort != "none":
+            kwargs["reasoning_effort"] = reasoning_effort
+    elif provider == "nvidia":
+        kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": nvidia_thinking(reasoning_effort)}}
+    elif provider == "openrouter":
+        extra: dict[str, Any] = {"reasoning": {"effort": openrouter_effort(kwargs["model"], reasoning_effort)}}
+        if "tools" in kwargs:
+            # Only upstreams that support every parameter sent (tools, tool_choice).
+            extra["provider"] = {"require_parameters": True}
+        kwargs["extra_body"] = extra
+
+
+def _gateway_create(provider: str, kwargs: dict) -> ModelTurn:
+    import openai
+
+    unsupported = _UNSUPPORTED_GATEWAY_PARAMS.setdefault(kwargs["model"], set())
     for parameter in unsupported:
         kwargs.pop(parameter, None)
     while True:
@@ -753,25 +882,34 @@ def _bedrock_create(kwargs: dict) -> ModelTurn:
             break
         except BadRequestError as error:
             body = _error_body(error)
-            if _drop_unsupported_param(kwargs, body, _DEGRADABLE_BEDROCK_PARAMS, unsupported) is not None:
+            if _drop_unsupported_param(kwargs, body, _DEGRADABLE_GATEWAY_PARAMS, unsupported) is not None:
                 continue
-            logger.error("bedrock_bad_request_fail_closed model=%s body=%s", kwargs["model"], body)
+            if classify_provider_error(error):
+                raise ProviderError(MISCONFIGURED, provider, body[:300]) from error
+            logger.error("%s_bad_request_fail_closed model=%s body=%s", provider, kwargs["model"], body)
+            raise
+        except openai.OpenAIError as error:
+            kind = classify_provider_error(error)
+            if kind:
+                logger.error("%s_provider_%s model=%s error=%s", provider, kind, kwargs["model"], str(error)[:300])
+                raise ProviderError(kind, provider, str(error)[:300]) from error
             raise
     if response.choices and getattr(response.choices[0], "finish_reason", None) == "length":
-        logger.error("bedrock_truncated model=%s max_tokens=%s", kwargs["model"], kwargs.get("max_tokens"))
-    return _chat_to_turn(response, protocol="bedrock")
+        logger.error("%s_truncated model=%s max_tokens=%s", provider, kwargs["model"], kwargs.get("max_tokens"))
+    return _chat_to_turn(response, protocol=provider)
 
 
-def _bedrock_turn(
+def _gateway_turn(
     *,
+    provider: str,
     deployment: str,
     messages: list[dict],
     tools: list[dict] | None,
     structured_model: type[BaseModel] | None,
     reasoning_effort: str,
 ) -> ModelTurn:
-    """Chat Completions on mantle. Unlike Azure's Chat surface, mantle accepts a
-    forced function and a reasoning effort alongside tools, so neither the JSON
+    """Chat Completions on a gateway. Unlike Azure's Chat surface, these accept a
+    forced function and a reasoning control alongside tools, so neither the JSON
     envelope nor the plan-sentence workaround is the first resort here. The
     envelope survives as the one retry for a model that ignores a forced
     function -- gpt-oss does, GLM-5 and Kimi K2.5 honour it."""
@@ -782,8 +920,6 @@ def _bedrock_turn(
         # and mantle's default ceiling is far below what a patch tick needs.
         "max_tokens": settings.azure_responses_max_output_tokens,
     }
-    if reasoning_effort and reasoning_effort != "none":
-        kwargs["reasoning_effort"] = reasoning_effort
     if structured_model is not None:
         kwargs["tools"] = [_to_chat_tool(structured_model)]
         kwargs["tool_choice"] = {"type": "function", "function": {"name": structured_model.__name__}}
@@ -792,16 +928,19 @@ def _bedrock_turn(
         if chat_tools:
             kwargs["tools"] = chat_tools
             kwargs["tool_choice"] = "auto"
+    _gateway_extras(provider, kwargs, reasoning_effort)
 
-    turn = _bedrock_create(kwargs)
+    turn = _gateway_create(provider, kwargs)
     if structured_model is None or any(call.name == structured_model.__name__ for call in turn.tool_calls):
         return turn
     if "{" in (turn.content or ""):
         return turn  # _parse_structured reads the object out of the prose
-    logger.warning("bedrock_forced_function_ignored model=%s function=%s", deployment, structured_model.__name__)
+    logger.warning("%s_forced_function_ignored model=%s function=%s", provider, deployment, structured_model.__name__)
     retry = {key: value for key, value in kwargs.items() if key not in ("tools", "tool_choice")}
+    if isinstance(retry.get("extra_body"), dict):
+        retry["extra_body"] = {k: v for k, v in retry["extra_body"].items() if k != "provider"}
     retry["messages"] = _to_chat_messages([*messages, _json_envelope_instruction(structured_model)])
-    return _bedrock_create(retry)
+    return _gateway_create(provider, retry)
 
 
 def _parse_structured(turn: ModelTurn, model: type[BaseModel]):

@@ -1,7 +1,8 @@
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -21,13 +22,47 @@ class Settings(BaseSettings):
     azure_openai_api_version: str = "2025-04-01-preview"
     # Which provider app/azure_client.py calls. "azure" is the original
     # deployment; "bedrock" is Amazon Bedrock's OpenAI-compatible "mantle"
-    # endpoint, SigV4-signed with the host's IAM role (no key in .env).
-    llm_provider: str = "azure"
+    # endpoint, SigV4-signed with the host's IAM role (no key in .env);
+    # "nvidia" is NVIDIA's API Catalog and "openrouter" is OpenRouter, both
+    # OpenAI Chat Completions behind a Bearer key. An unknown value refuses
+    # to start: it used to fall through to the Azure client silently.
+    llm_provider: Literal["azure", "bedrock", "nvidia", "openrouter"] = "azure"
     bedrock_region: str = "eu-north-1"
+
+    # NVIDIA API Catalog (build.nvidia.com). Model ids are NVIDIA's own
+    # (`nvidia/nemotron-3-ultra-550b-a55b`), so each role has its own field;
+    # an empty one takes NVIDIA_MODEL. `_gateway_role_models` below writes
+    # them into the four role fields when this provider is selected.
+    nvidia_api_key: str = ""
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_model: str = "nvidia/nemotron-3-ultra-550b-a55b"
+    nvidia_fast_model: str = ""
+    nvidia_worker_model: str = ""
+    nvidia_planner_model: str = ""
+    nvidia_mechanical_model: str = ""
+    # The free catalog tier is one shared queue: 4 s to 130 s per call measured.
+    nvidia_timeout_seconds: float = 180.0
+    # Nemotron 3 thinking (chat_template_kwargs.enable_thinking): "auto" is off
+    # for reasoning effort none and on otherwise; "on"/"off" pin it.
+    nvidia_thinking: Literal["auto", "on", "off"] = "auto"
+
+    # OpenRouter. Same shape as NVIDIA: own ids, one field per role, empty
+    # takes OPENROUTER_MODEL. The ":free" route is $0 and rate-limited; the id
+    # without it is the paid route.
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
+    openrouter_fast_model: str = ""
+    openrouter_worker_model: str = ""
+    openrouter_planner_model: str = ""
+    openrouter_mechanical_model: str = ""
+    openrouter_timeout_seconds: float = 120.0
 
     # Per-role model routing (plan.md §12). An Azure deployment name or a
     # Bedrock model id, depending on llm_provider. The LLM_*_MODEL names are
     # provider-neutral; the AZURE_*_DEPLOYMENT names they replace still work.
+    # Under nvidia/openrouter these four are overwritten at load with that
+    # provider's role models, so every call site keeps reading them.
     azure_fast_deployment: str = Field("", validation_alias=AliasChoices("LLM_FAST_MODEL", "AZURE_FAST_DEPLOYMENT"))
     azure_worker_deployment: str = Field(
         "", validation_alias=AliasChoices("LLM_WORKER_MODEL", "AZURE_WORKER_DEPLOYMENT")
@@ -235,6 +270,29 @@ class Settings(BaseSettings):
     # Exact-match LLM response cache (plan.md §13.2, app/llm_cache.py).
     llm_cache_enabled: bool = True
     llm_cache_ttl_seconds: int = 24 * 3600
+
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def _provider_is_case_insensitive(cls, value):
+        return str(value or "azure").strip().lower()
+
+    @model_validator(mode="after")
+    def _gateway_role_models(self):
+        """Under nvidia/openrouter, the role fields hold that provider's ids.
+
+        The role values in .env are Azure deployment names or mantle ids
+        (`moonshotai.kimi-k2.5`); sent to NVIDIA or OpenRouter they are a
+        404 on every call. Resolving here keeps the one rule every call site
+        already follows -- read `settings.azure_<role>_deployment` -- and
+        gives each provider its own cache keys, since the deployment is part
+        of the llm_cache key.
+        """
+        if self.llm_provider in ("nvidia", "openrouter"):
+            prefix = self.llm_provider
+            default = getattr(self, f"{prefix}_model")
+            for role in ("fast", "worker", "planner", "mechanical"):
+                setattr(self, f"azure_{role}_deployment", getattr(self, f"{prefix}_{role}_model") or default)
+        return self
 
 
 settings = Settings()

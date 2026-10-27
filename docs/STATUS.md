@@ -18,93 +18,42 @@ Two fields need care:
 
 ## Current
 
-- **As of:** 2026-10-22
+- **As of:** 2026-10-27
 - **Last agent:** claude
-- **Commit:** `3b58fdce679c39dc186b4994bf2b8864e80e2c3a` (`3b58fdc`)
-- **Deployed:** **yes**, on a **new host**. `https://whip-guard.zakarias.in` now points at
-  the shared AWS VM `13.60.61.135` (eu-north-1). The old Azure VM (`172.206.16.54`) was
-  unreachable and its database was **not** migrated: this host started empty, with one
-  bootstrapped admin. Deployed with `./deploy.sh --no-pull` from the working tree that
-  became this commit.
-
-- **Shipped this session (claude):**
-  - **Bedrock as the model provider** (`LLM_PROVIDER=bedrock`), inside `app/azure_client.py`:
-    mantle Chat Completions, SigV4 with the instance role, forced-function structured
-    output, per-model 400 degrade, merged assistant/tool-call replay. Kimi K2.5 = fast,
-    GLM-5 = worker + planner. Azure path untouched and still the test default.
-  - **Off on Bedrock, openly:** web research (`research.web_research_available()`) and dense
-    retrieval (`embeddings.available()`). See DECISIONS 2026-10-22.
-  - **Three latent bugs the move exposed:** `main.py` never created the `vector` extension
-    (fresh DB could not boot); `_JUROR_RUBRIC` was dead code, so no model was ever told the
-    0-100 scale (now wired, plus `Field` descriptions in the schema); `deploy.sh` waited on
-    `/healthz`, which the OLD backend answers, so it printed "finished OK" before the swap.
-  - Two poller tests depended on the host `.env` having `GITHUB_TOKEN`. Pinned in-test.
-  - **Landing page rebuilt** (`app/page.tsx`, `components/landing/*`): simulator, jury lab,
-    guardrail demos. Thresholds, the 30-point rule, write scopes and secret patterns are
-    copied from the backend into `sim-data.ts`. **If you change one of those, change it
-    there too.**
-  - **Host setup:** `.env` (generated; never committed), `/srv/workspace`, nginx vhost from
-    `nginx/whip-guard.conf`, Let's Encrypt cert, Cloudflare A record. The showcase vhost for
-    this hostname moved to `/etc/nginx/disabled/`, and its line in
-    `~/demoStuff/demoApps/deploy/vhosts.tsv` was commented out (**uncommitted in that repo**).
-
-- **Verified this session:**
-  - `pytest -q` → **412 passed** (401 before plus 11 new). `tsc --noEmit` clean, `next build` clean.
-  - Live Bedrock through the app's own code, from the venv and **from inside the backend
-    container** (instance role reaches containers): Arbiter `score=95`, weights summing to
-    95; Skeptic `confidence=85`; a 2-tick `read_file` tool loop on GLM-5 that answered.
-    `council_runs` recorded `kimi-k2.5 213/253 tokens protocol=bedrock`.
-  - Detection eval on this host (work item `ba83a5b5`): **recall 1.0, precision 1.0**, all
-    six categories detected-when-broken and clean-when-fixed, 137 s. (The first run's UI
-    timeout was the cold 2.3 GB Playwright image pull.)
-  - Public: `/`, `/login`, `/api/auth/session`, manifest all 200 over valid TLS, http → 301.
-    Login wrong password 401, right 200. `/api/repos`, `/api/push/status` 200. Websocket
-    through nginx: no cookie refused (403), cookie → 101 and held open. Sibling sites still
-    200 after the nginx reload.
-  - Brevo SMTP authenticates (login only, nothing sent).
-  - Landing in headless Chromium at 1440 and 390: no console errors, no document overflow,
-    page scrolls, simulator driven end to end (push → decision → approve → "Pull request
-    open").
-  - `./deploy.sh --no-pull` twice; the second, with the fix, finished only after the
-    backend container ID changed.
+- **Commit:** pending
+- **Deployed:** unchanged from the 2026-10-22 block (Bedrock, `3b58fdc` plus `1c2ecf7`/`f36ab2b`/`34e5245` as deployed by
+  whoever deployed them). This session did not deploy (owner: code + commit + push only).
+- **User ask:** sync LLM providers across the five apps (`~/ai/llmIntegrations.md`); WhipGuard had neither NVIDIA nor
+  OpenRouter.
+- **Shipped:** `LLM_PROVIDER=nvidia|openrouter` as Chat Completions gateways (`app/azure_client.py::_gateway_turn`), per-role
+  models resolved in `app/config.py::_gateway_role_models`, `LLM_PROVIDER` validated (`Literal`, case-insensitive),
+  `ProviderError(kind, provider)` for classified gateway failures (incl. mantle's account-wide `Error 002`). Bedrock path
+  unchanged apart from the rename `_bedrock_turn` → `_gateway_turn`.
+- **Live state found:** Bedrock mantle refuses this AWS account for every model (`400 validation_error` "Error 002: Access to
+  Bedrock models is not allowed for this account", 2026-10-27, host instance role). So every council run fails in
+  production today; Azure is unconfigured. Switching: `LLM_PROVIDER=nvidia` + `NVIDIA_API_KEY` in `.env`, then recreate
+  `backend` and `worker`.
 
 ### Needs verification
 
-- **No GitHub identity on this host.** `GITHUB_TOKEN`, the GitHub App and the OAuth App are
-  all unset, so no repository can be connected, the poller idles, and nothing has run the
-  Fix Council's patch loop on Bedrock against a real repo. The jury, Arbiter and a tool loop
-  ARE verified on Bedrock. To prove the rest, connect a repo, push a seeded bug, and watch
-  for `AWAITING_APPROVAL` with `protocol: bedrock` rows in `council_runs`.
-- **Cloudflare Pages:** the token in `.env` is DNS-scoped and returns `Authentication error`
-  on the Pages API, so post-approval preview deploys will fail until a token with
-  `Account / Cloudflare Pages / Edit` replaces it.
-- **GitHub webhook:** `GITHUB_WEBHOOK_SECRET` is now set on this side. Any GitHub hook
-  pointing here must be given the same secret, or its deliveries will be rejected (correctly).
-- **Slack:** unconfigured on this host (reads as absent, by design).
-- Push on a real device (unchanged from last session).
-- Memory: ≈1.2 GB free on a host running ~25 other containers. A Fix Council plus a
-  Playwright sandbox has not been run under that pressure. Disk is 80% used (21 GB free).
+- A live NVIDIA (or OpenRouter) council: switch as above, run a scan, expect `council_runs` rows with `protocol: nvidia` and a
+  forced-function `JurorOpinion` / `ArbiterVerdict`. Whether Nemotron honours a forced `tool_choice` is untested live (the
+  JSON-envelope retry covers it if not).
+- Everything in the 2026-10-22 "Needs verification" list (GitHub identity, Cloudflare Pages token, Slack, push on a device).
 
 ### Other agent should
 
-- **Hot files:** none. Nothing is in flight.
-- Read the new §11 entry "One model client, two providers" in `docs/info.md` before
-  touching `azure_client.py`. Production is Bedrock; the tests run Azure.
-- Do not reintroduce `web_search` or embeddings calls on the Bedrock path without a real
-  source. DECISIONS 2026-10-22 explains why they are off.
-
-### Blocked on the user (not either agent)
-
-- A GitHub credential: a PAT, or better a GitHub App (ID, private key, installation), and an
-  OAuth App whose callback is `https://whip-guard.zakarias.in/api/github/oauth/callback`.
-- A Cloudflare token with Pages edit rights.
-- Slack app tokens, if wanted. The Interactivity URL is
-  `https://whip-guard.zakarias.in/api/slack/interactions`.
-- Admin login: `~/ai/whipguard-admin-credentials.txt` (mode 600, outside the repo).
+- **Hot files:** none.
+- Read §11 "One model client, four providers" in `docs/info.md` before touching `azure_client.py` or the role settings.
 
 ---
 
 ## Recent (newest first)
+
+- **2026-10-22 (claude, `3b58fdc`)** — moved to the AWS host `13.60.61.135`, models on Bedrock mantle (Kimi K2.5 fast,
+  GLM-5 worker/planner), web research and dense retrieval off on Bedrock, three latent bugs fixed (`vector` extension,
+  `_JUROR_RUBRIC` never wired, `deploy.sh` health wait). Blocked on the user then and still: a GitHub credential, a
+  Cloudflare Pages token, Slack tokens.
 
 - **2026-09-21 (claude, `17460b2`)** — Azure Responses, `apply_patch`, the research
   council, the tenancy boundary closed, PWA + push + mobile. Fix Council ran end to end on

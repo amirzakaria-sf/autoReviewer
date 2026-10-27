@@ -313,12 +313,18 @@ real.
 Every one of these cost a real debugging session. They are here so the second agent does
 not pay for them again.
 
-### One model client, two providers
+### One model client, four providers
 
 `app/azure_client.py::complete_turn` is the only place a generation call is made. Despite
 the name, production runs `LLM_PROVIDER=bedrock` (Amazon Bedrock mantle, Chat Completions,
-SigV4 with the instance role, no key). Callers still speak Responses input items; the
-Bedrock path converts them at the boundary. Three Bedrock-specific traps, each found live:
+SigV4 with the instance role, no key). `nvidia` and `openrouter` (2026-10-27) take the same
+gateway path (`_gateway_turn`) with a Bearer key. Their role models are their own
+(`NVIDIA_<ROLE>_MODEL` / `OPENROUTER_<ROLE>_MODEL`), written into the `azure_*_deployment`
+fields at load by `config._gateway_role_models`: never put a mantle id in front of them.
+Reasoning is a different field on each (`reasoning_effort` / Nemotron's
+`chat_template_kwargs.enable_thinking` / OpenRouter `reasoning.effort`), set in
+`_gateway_extras`. Callers still speak Responses input items; the gateway path converts them
+at the boundary. Three Bedrock-specific traps, each found live:
 
 - **No Responses API, no `web_search`, no embeddings on mantle.** Research and dense
   retrieval are gated off (`web_research_available()`, `embeddings.available()`), not

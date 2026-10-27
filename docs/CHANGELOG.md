@@ -3,6 +3,15 @@
 Short product history. Append a dated heading when a slice lands. Detail belongs in
 `docs/<agent>/changes.md`; this is the shape of the product over time.
 
+## 2026-10-27 — NVIDIA API Catalog and OpenRouter as model providers; provider failures classified
+
+`LLM_PROVIDER` now accepts `nvidia` and `openrouter` next to `azure` and `bedrock`, and refuses to start on anything else (an
+unknown value used to fall through to the Azure client silently). Both are Chat Completions gateways with a Bearer key and
+their own per-role models (`NVIDIA_<ROLE>_MODEL` / `OPENROUTER_<ROLE>_MODEL`, defaulting to Nemotron 3 Ultra). Gateway failures
+that no retry of the request fixes — a bad key, an unknown or unentitled model, Bedrock's account-wide `Error 002` refusal,
+OpenRouter's 402 — and throttling or outages now leave as `ProviderError(kind, provider)`. Code only: production stays on
+`bedrock` (which the AWS account currently refuses). Part of `~/ai/llmIntegrations.md`.
+
 ## 2026-10-24 — `CONSOLE_MANAGED`: request review and Redeploy hidden when the operator console owns them
 
 `CONSOLE_MANAGED=true` (default off) adds `console_managed` / `console_url` to `GET /api/admin/overview`; the admin dashboard then

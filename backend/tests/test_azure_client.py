@@ -99,7 +99,7 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(settings, "whipguard_azure_api", "responses")
     monkeypatch.setattr(settings, "llm_provider", "azure")
     azure_client._UNSUPPORTED_RESPONSES_PARAMS.clear()
-    azure_client._UNSUPPORTED_BEDROCK_PARAMS.clear()
+    azure_client._UNSUPPORTED_GATEWAY_PARAMS.clear()
     yield
     azure_client._UNSUPPORTED_RESPONSES_PARAMS.clear()
 
@@ -584,3 +584,121 @@ def test_the_sigv4_flow_replaces_the_placeholder_key_with_a_signature(monkeypatc
     assert signed.headers["Authorization"].startswith("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
     assert "/eu-north-1/bedrock-mantle/aws4_request" in signed.headers["Authorization"]
     assert "x-amz-date" in signed.headers
+
+
+# --------------------------------------------------------------------------- #
+# NVIDIA and OpenRouter gateways (2026-10-27, ai/llmIntegrations.md)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def gateway(monkeypatch):
+    def _use(provider: str):
+        monkeypatch.setattr(settings, "llm_provider", provider)
+        return chat
+
+    chat = MagicMock()
+    responses = MagicMock()
+    with patch.object(azure_client, "_chat_client", return_value=chat), \
+         patch.object(azure_client, "_responses_client", return_value=responses):
+        yield _use
+    responses.responses.create.assert_not_called()
+
+
+def test_nvidia_sends_the_thinking_switch_and_no_reasoning_effort(gateway):
+    chat = gateway("nvidia")
+    chat.chat.completions.create.return_value = _chat_response("from nemotron")
+    turn = complete_turn(deployment="nvidia/nemotron-3-ultra-550b-a55b", messages=[{"role": "user", "content": "q"}],
+                         reasoning_effort="medium")
+    assert turn.content == "from nemotron" and turn.protocol == "nvidia"
+    kwargs = chat.chat.completions.create.call_args.kwargs
+    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
+    assert "reasoning_effort" not in kwargs
+    assert kwargs["max_tokens"] == settings.azure_responses_max_output_tokens
+    complete_turn(deployment="m", messages=[{"role": "user", "content": "q"}], reasoning_effort="none")
+    assert chat.chat.completions.create.call_args.kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_nvidia_thinking_can_be_pinned(gateway, monkeypatch):
+    chat = gateway("nvidia")
+    chat.chat.completions.create.return_value = _chat_response("x")
+    monkeypatch.setattr(settings, "nvidia_thinking", "off")
+    complete_turn(deployment="m", messages=[{"role": "user", "content": "q"}], reasoning_effort="high")
+    assert chat.chat.completions.create.call_args.kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_nvidia_structured_output_is_a_forced_function(gateway):
+    chat = gateway("nvidia")
+    chat.chat.completions.create.return_value = _chat_response(
+        tool_calls=[_chat_call("JurorOpinion", json.dumps({"confidence": 70, "transcript": "t"}))]
+    )
+    assert call_skeptic_opinion("p", "s") == JurorOpinion(confidence=70, transcript="t")
+    kwargs = chat.chat.completions.create.call_args.kwargs
+    assert kwargs["tool_choice"] == {"type": "function", "function": {"name": "JurorOpinion"}}
+
+
+def test_openrouter_maps_effort_and_requires_tool_capable_upstreams(gateway):
+    chat = gateway("openrouter")
+    chat.chat.completions.create.return_value = _chat_response("x")
+    tools = [{"type": "function", "function": {"name": "read_file", "parameters": {}}}]
+    complete_turn(deployment="nvidia/nemotron-3-ultra-550b-a55b:free", messages=[{"role": "user", "content": "q"}],
+                  tools=tools, reasoning_effort="low")
+    kwargs = chat.chat.completions.create.call_args.kwargs
+    # Nemotron 3 lists none/medium/high only.
+    assert kwargs["extra_body"] == {"reasoning": {"effort": "medium"}, "provider": {"require_parameters": True}}
+    assert "reasoning_effort" not in kwargs and kwargs["tool_choice"] == "auto"
+    complete_turn(deployment="nvidia/nemotron-3-ultra-550b-a55b:free", messages=[{"role": "user", "content": "q"}],
+                  reasoning_effort="none")
+    # none is sent explicitly (Nemotron reasons at "high" by default), and no tools means no routing constraint.
+    assert chat.chat.completions.create.call_args.kwargs["extra_body"] == {"reasoning": {"effort": "none"}}
+
+
+def test_openrouter_effort_mapping_leaves_other_models_alone():
+    assert azure_client.openrouter_effort("z-ai/glm-5", "low") == "low"
+    assert azure_client.openrouter_effort("nvidia/nemotron-3-super-120b-a12b", "xhigh") == "high"
+
+
+def _status_error(status: int, message: str):
+    import httpx
+    from openai import APIStatusError
+
+    response = httpx.Response(status, request=httpx.Request("POST", "https://x/v1/chat/completions"))
+    return APIStatusError(message, response=response, body={"error": {"message": message}})
+
+
+def test_gateway_provider_failures_leave_as_a_classified_provider_error(gateway):
+    chat = gateway("nvidia")
+    chat.chat.completions.create.side_effect = _status_error(404, "Function '...': Not found for account")
+    with pytest.raises(azure_client.ProviderError) as not_entitled:
+        complete_turn(deployment="m", messages=[{"role": "user", "content": "q"}])
+    assert not_entitled.value.kind == "misconfigured" and not_entitled.value.provider == "nvidia"
+    chat.chat.completions.create.side_effect = _status_error(429, "Too Many Requests")
+    with pytest.raises(azure_client.ProviderError) as throttled:
+        complete_turn(deployment="m", messages=[{"role": "user", "content": "q"}])
+    assert throttled.value.kind == "throttled"
+
+
+def test_bedrock_account_refusal_is_misconfigured_not_the_requests_fault(gateway):
+    chat = gateway("bedrock")
+    chat.chat.completions.create.side_effect = _bad_request(
+        "Error 002: Access to Bedrock models is not allowed for this account"
+    )
+    with pytest.raises(azure_client.ProviderError) as refused:
+        complete_turn(deployment="zai.glm-5", messages=[{"role": "user", "content": "q"}])
+    assert refused.value.kind == "misconfigured" and refused.value.provider == "bedrock"
+
+
+def test_gateways_have_no_web_search(monkeypatch):
+    for provider in ("nvidia", "openrouter"):
+        monkeypatch.setattr(settings, "llm_provider", provider)
+        assert not azure_client.supports_web_search()
+
+
+def test_a_missing_gateway_key_is_misconfigured_before_any_request(monkeypatch):
+    azure_client._client_for.cache_clear()
+    monkeypatch.setattr(settings, "nvidia_api_key", "")
+    with pytest.raises(azure_client.ProviderError, match="NVIDIA_API_KEY"):
+        azure_client._client_for("nvidia")
+    monkeypatch.setattr(settings, "openrouter_api_key", "")
+    with pytest.raises(azure_client.ProviderError, match="OPENROUTER_API_KEY"):
+        azure_client._client_for("openrouter")

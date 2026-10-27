@@ -336,6 +336,14 @@ Format: `YYYY-MM-DD` · **title** · decision · why · who.
   as real issues, and a run that failed part-way left them there. Second incident of
   production state leaking into tests — the first was the LLM response cache. · claude
 
+- **2026-10-27** · **NVIDIA and OpenRouter are gateways with their own role models, resolved in config** ·
+  `config._gateway_role_models` writes `NVIDIA_<ROLE>_MODEL` / `OPENROUTER_<ROLE>_MODEL` (else the provider's
+  `*_MODEL`) into the four `azure_*_deployment` fields when that provider is selected, instead of mapping ids at each
+  of the 13 call sites. `LLM_PROVIDER` is a `Literal`. · Every call site already reads those fields, so this is the one
+  place that keeps a mantle id (`moonshotai.kimi-k2.5`) from being sent to NVIDIA or OpenRouter, and it gives each
+  provider its own `llm_cache` keys. Owner ask (`~/ai/llmIntegrations.md`): NVIDIA, Bedrock and OpenRouter in every app;
+  production was left on Bedrock (code only, no deploy). · user + claude
+
 - **2026-09-20** · **Two-agent documentation flow adopted** · `docs/info.md` is the
   protocol; `docs/STATUS.md` is the handoff; each agent keeps `docs/<agent>/changes.md`.
   `CLAUDE.md` and `AGENTS.md` are pointers, not copies. · Cursor and Claude both work this

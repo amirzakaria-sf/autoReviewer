@@ -59,7 +59,9 @@ pipeline code. Every detector takes `(worktree_path, path_scope, base_url)`.
 `app/azure_client.py::complete_turn` is the only generation client — jury, Arbiter, patch
 loop, Counsel, PRD council. `LLM_PROVIDER` picks what is behind it. **Production is
 `bedrock`**: Amazon Bedrock's OpenAI-compatible mantle endpoint, Chat Completions, SigV4 with
-the host's IAM role (`_BedrockSigV4`, `_bedrock_turn`). On `azure` it speaks the **Responses API** (`{endpoint}/openai/v1/`,
+the host's IAM role (`_BedrockSigV4`, `_gateway_turn`). `nvidia` (NVIDIA API Catalog) and
+`openrouter` take the same gateway path with a Bearer key and their own role models
+(`config._gateway_role_models`); classified provider failures leave as `ProviderError`. On `azure` it speaks the **Responses API** (`{endpoint}/openai/v1/`,
 `api_version="preview"`) so a tool-bound call can carry native reasoning, which Chat
 Completions cannot do on GPT-5.x. Callers pass Responses input items; the Chat shape exists
 only behind the `WHIPGUARD_AZURE_API=chat` hatch. `app/embeddings.py` is a separate client

@@ -8,6 +8,40 @@ file is the only channel.
 
 ---
 
+## 2026-10-27 (UTC) — NVIDIA and OpenRouter providers, provider-failure classification
+
+- **Agent:** claude
+- **Commit:** pending
+- **User ask:** implement `~/ai/llmIntegrations.md` §4 for WhipGuard (NVIDIA first, then OpenRouter); commit and push; no
+  `.env` change and no deploy.
+- **Shipped:**
+  - `app/config.py`: `llm_provider: Literal["azure","bedrock","nvidia","openrouter"]` (case-insensitive, unknown refuses to
+    start); `NVIDIA_*` and `OPENROUTER_*` blocks with per-role models; `_gateway_role_models` writes the active gateway's
+    role models into `azure_{fast,worker,planner,mechanical}_deployment`.
+  - `app/azure_client.py`: `GATEWAYS`; `_client_for(provider)` (NVIDIA / OpenRouter `OpenAI` clients, missing key →
+    `ProviderError`); `_gateway_turn` / `_gateway_create` / `_gateway_extras` replace `_bedrock_turn` / `_bedrock_create`
+    (Bedrock: `reasoning_effort`; NVIDIA: `extra_body.chat_template_kwargs.enable_thinking` via `nvidia_thinking`;
+    OpenRouter: `extra_body.reasoning.effort` via `openrouter_effort` + `provider.require_parameters` with tools);
+    `classify_provider_error` + `ProviderError(kind, provider)`.
+  - `.env.example`, README, `docs/ARCHITECTURE.md`, `docs/info.md` §11, `docs/CHANGELOG.md`, `docs/DECISIONS.md`.
+- **Docs updated:** README.md, docs/ARCHITECTURE.md, docs/info.md, docs/CHANGELOG.md, docs/DECISIONS.md, docs/STATUS.md, this
+  log.
+- **Verified:**
+  - Full suite against a **throwaway** pgvector container (not the production Postgres server):
+    `docker run --rm -d --name wg-test-pg … -p 127.0.0.1:55499:5432 --tmpfs … pgvector/pgvector:pg16`, then
+    `DATABASE_URL=postgresql+asyncpg://whipguard:whipguard@127.0.0.1:55499/whipguard .venv/bin/python -m pytest -q`
+    → **444 passed**. New: 9 gateway tests in `tests/test_azure_client.py`, 4 in `tests/test_llm_provider_config.py`.
+  - Mantle from the host's instance role, 2026-10-27: `zai.glm-5`, `moonshotai.kimi-k2.5` → `400 Error 002`.
+- **NOT verified:** no live NVIDIA or OpenRouter council run (not deployed, by owner decision). Proof: see STATUS
+  "Needs verification".
+- **Not done / watch-outs:** no breaker yet: a `ProviderError` fails the run with a clear message but does not pause the
+  queue (Whip's `provider_health.py` is the model to port). NVIDIA embeddings (dense retrieval) not added; they need an
+  embedding-space guard first. NVIDIA's free key is ~40 RPM and shared with Whip and Antenna; the jury runs jurors in
+  parallel.
+- **Hot files:** none
+
+---
+
 ## 2026-10-22 18:00 (UTC) — Move to the AWS host, Bedrock models, interactive landing
 
 - **Agent:** claude

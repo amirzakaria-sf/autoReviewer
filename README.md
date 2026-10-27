@@ -138,6 +138,20 @@ force gets one retry with a generated JSON-Schema envelope. A 400 that names
 and rejected: GLM-5 does not support it, and gpt-oss returned `status=failed` on a forced
 function.
 
+**`LLM_PROVIDER=nvidia` / `LLM_PROVIDER=openrouter` (added 2026-10-27, not live).** The same
+Chat Completions gateway path as Bedrock, with a Bearer key: NVIDIA's API Catalog
+(`NVIDIA_BASE_URL`, default `https://integrate.api.nvidia.com/v1`) or OpenRouter. Each has its
+own role models (`NVIDIA_<ROLE>_MODEL`, else `NVIDIA_MODEL` = `nvidia/nemotron-3-ultra-550b-a55b`;
+`OPENROUTER_<ROLE>_MODEL`, else `OPENROUTER_MODEL` = `…:free`), written into the role fields at
+load so a mantle id is never sent there. NVIDIA's reasoning control is Nemotron's
+`chat_template_kwargs.enable_thinking` (`NVIDIA_THINKING=auto`: off for effort `none`);
+OpenRouter's is `reasoning.effort`, mapped to the efforts the model lists (Nemotron 3:
+none/medium/high), with `provider.require_parameters` whenever tools are sent. No web search
+and no embeddings on either. Provider failures (bad key, unknown or unentitled model, an
+account-wide refusal such as mantle's `Error 002`, 402, 429, 5xx) leave as one
+`ProviderError(kind, provider)` instead of an SDK traceback. An unknown `LLM_PROVIDER` refuses
+to start.
+
 **`LLM_PROVIDER=azure`** is the original path: the
 **Responses API** (`{endpoint}/openai/v1/`, `api_version="preview"`). That is what lets a
 tool-bound call carry native reasoning: on GPT-5.x, Chat Completions cannot combine the
