@@ -234,3 +234,51 @@ async def test_admin_overview_tells_the_dashboard_whether_the_console_owns_reque
     assert on["console_url"] == "https://console.example.test"
     # Nothing else about the overview changes with the flag, so the stat cards and kill switch keep working.
     assert {"users", "access_requests", "kill_switch"} <= set(on)
+
+
+# --- console §6.12: llm, llm/probe, capabilities ------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_llm_reports_each_roles_model_and_env(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "nvidia")
+    monkeypatch.setattr(settings, "azure_fast_deployment", "nvidia/nemotron-3-ultra-550b-a55b")
+    body = await c.llm_config()
+    fast = next(r for r in body["roles"] if r["key"] == "fast")
+    assert body["provider"] == "nvidia" and fast == {"key": "fast", "env": "NVIDIA_FAST_MODEL", "model": "nvidia/nemotron-3-ultra-550b-a55b"}
+    assert "llm.probe" in body["capabilities"]
+    monkeypatch.setattr(settings, "llm_provider", "bedrock")
+    assert (await c.llm_config())["roles"][0]["env"] == "LLM_FAST_MODEL"
+
+
+@pytest.mark.asyncio
+async def test_probe_goes_through_complete_turn_and_classifies(monkeypatch):
+    from app import azure_client
+
+    calls = []
+    monkeypatch.setattr(settings, "llm_provider", "nvidia")
+    monkeypatch.setattr(settings, "azure_worker_deployment", "nvidia/x")
+    monkeypatch.setattr(azure_client, "complete_turn", lambda **kw: calls.append(kw) or azure_client.ModelTurn(content="ok"))
+    body = await c.llm_probe(_Req({"role": "worker"}))
+    assert body["ok"] and calls[0]["deployment"] == "nvidia/x" and calls[0]["role"] == "console_probe"
+
+    def refuse(**kw):
+        raise azure_client.ProviderError("misconfigured", "nvidia", "401 bad key")
+    monkeypatch.setattr(azure_client, "complete_turn", refuse)
+    body = await c.llm_probe(_Req({}))
+    assert not body["ok"] and body["error_class"] == "misconfigured" and body["role"] == "fast"
+
+
+@pytest.mark.asyncio
+async def test_probe_tests_only_the_live_configuration(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "nvidia")
+    for body in ({"provider": "azure"}, {"role": "worker", "model": "other/model"}, {"role": "nope"}):
+        with pytest.raises(HTTPException) as e:
+            await c.llm_probe(_Req(body))
+        assert e.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_summary_advertises_capabilities():
+    async with async_session() as db:
+        body = await c.summary(db)
+    assert "llm.probe" in body["capabilities"]

@@ -88,7 +88,64 @@ async def summary(db: AsyncSession = Depends(get_db)):
         "issues_total": (await db.execute(count(Issue))).scalar_one(),
         "fixes_total": (await db.execute(count(Fix))).scalar_one(),
         "organizations": (await db.execute(count(Organization))).scalar_one(),
+        "capabilities": CAPABILITIES,
     }
+
+
+CAPABILITIES = ["summary", "usage", "users", "access-requests", "llm", "llm.probe"]
+LLM_ROLES = ("fast", "worker", "planner", "mechanical")
+
+
+def _role_env(provider: str, role: str) -> str:
+    """The env key that sets a role's model under a provider (azure and bedrock share LLM_<ROLE>_MODEL)."""
+    if provider in ("nvidia", "openrouter"):
+        return f"{provider.upper()}_{role.upper()}_MODEL"
+    return f"LLM_{role.upper()}_MODEL"
+
+
+@router.get("/llm")
+async def llm_config():
+    """The provider and the model each role calls, after `_gateway_role_models` (no keys)."""
+    provider = settings.llm_provider
+    roles = [{"key": r, "env": _role_env(provider, r), "model": getattr(settings, f"azure_{r}_deployment", "")}
+             for r in LLM_ROLES]
+    return {"provider": provider, "providers_supported": ["azure", "bedrock", "nvidia", "openrouter"], "roles": roles,
+            "capabilities": CAPABILITIES}
+
+
+@router.post("/llm/probe")
+async def llm_probe(request: Request):
+    """One call through `azure_client.complete_turn` (the client, protocol and extras a review uses), recorded in
+    council_runs as role `console_probe` like any spend. The configured provider and model only."""
+    import asyncio
+    import time
+
+    from app import azure_client
+
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    provider = settings.llm_provider
+    if body.get("provider") and body["provider"] != provider:
+        raise HTTPException(400, "llm/probe tests the configured provider only")
+    role = str(body.get("role") or "fast")
+    if role not in LLM_ROLES:
+        raise HTTPException(400, f"role is one of {', '.join(LLM_ROLES)}")
+    model = getattr(settings, f"azure_{role}_deployment", "")
+    if body.get("model") and body["model"] != model:
+        raise HTTPException(400, "llm/probe tests the configured model only")
+    t0 = time.monotonic()
+    try:
+        await asyncio.to_thread(azure_client.complete_turn, deployment=model, role="console_probe", reasoning_effort="low",
+                                messages=[{"role": "user", "content": "Reply with the single word: ok"}])
+    except Exception as error:  # noqa: BLE001 - a failure is the result
+        kind = getattr(error, "kind", "") or azure_client.classify_provider_error(error) or "request_error"
+        return {"ok": False, "provider": provider, "role": role, "model": model,
+                "latency_ms": int((time.monotonic() - t0) * 1000), "error_class": kind, "message": str(error)[:300]}
+    return {"ok": True, "provider": provider, "role": role, "model": model,
+            "latency_ms": int((time.monotonic() - t0) * 1000), "error_class": "", "message": ""}
 
 
 @router.get("/usage")

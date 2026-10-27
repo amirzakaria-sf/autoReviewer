@@ -3,6 +3,16 @@
 Short product history. Append a dated heading when a slice lands. Detail belongs in
 `docs/<agent>/changes.md`; this is the shape of the product over time.
 
+## 2026-10-27 — Console contract: `llm`, `llm/probe`, `capabilities`
+
+- `GET /api/console/v1/llm`: the provider, the providers supported, and per role (fast, worker, planner, mechanical) the
+  model it calls after `_gateway_role_models` and the env key that sets it under that provider. No keys.
+- `POST /api/console/v1/llm/probe`: one call through `azure_client.complete_turn` (the same client, protocol and extras a
+  review uses), recorded in `council_runs` as role `console_probe`. Failures carry the `ProviderError` kind. The
+  configured provider and model only (anything else is a 400). The operator console uses it to verify an LLM change.
+- `summary` gains `capabilities`.
+Tests: 4 more in `tests/test_console_api.py`; the full suite passes (448) on a throwaway Postgres.
+
 ## 2026-10-27 — NVIDIA API Catalog and OpenRouter as model providers; provider failures classified
 
 `LLM_PROVIDER` now accepts `nvidia` and `openrouter` next to `azure` and `bedrock`, and refuses to start on anything else (an
