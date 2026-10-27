@@ -1,7 +1,7 @@
 # Azure Responses + apply_patch + curated web research
 
 **Status:** shipped 2026-09-20 · **Author of the plan:** user · **Implementer:** claude
-**Commits:** `6093ea8` (Responses + apply_patch), see `CHANGELOG.md` for the research slice.
+**Commits:** `d6cfcaa` (Responses + apply_patch), see `CHANGELOG.md` for the research slice.
 
 The plan as accepted is below, with the places live probing contradicted it marked
 **[deviation]**. A plan file that quietly matches the code it produced teaches nothing; the

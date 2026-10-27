@@ -20,8 +20,8 @@ Two fields need care:
 
 - **As of:** 2026-10-27
 - **Last agent:** claude
-- **Commit:** `791350138bc96020828a7c00576729ef673ec873` (`7913501`)
-- **Deployed:** unchanged from the 2026-10-22 block (Bedrock, `644cad8` plus `a023cad`/`a7fd881`/`b826006` as deployed by
+- **Commit:** `54ec283ddeadc81f311421191d29c6d5266a67d7` (`7913501`)
+- **Deployed:** unchanged from the 2026-10-22 block (Bedrock, `d51fd75` plus `b2aeb75`/`b47a6ce`/`d918d57` as deployed by
   whoever deployed them). This session did not deploy (owner: code + commit + push only).
 - **User ask:** sync LLM providers across the five apps (`~/ai/llmIntegrations.md`); WhipGuard had neither NVIDIA nor
   OpenRouter.
@@ -50,12 +50,12 @@ Two fields need care:
 
 ## Recent (newest first)
 
-- **2026-10-22 (claude, `644cad8`)** — moved to the AWS host `13.60.61.135`, models on Bedrock mantle (Kimi K2.5 fast,
+- **2026-10-22 (claude, `d51fd75`)** — moved to the AWS host `13.60.61.135`, models on Bedrock mantle (Kimi K2.5 fast,
   GLM-5 worker/planner), web research and dense retrieval off on Bedrock, three latent bugs fixed (`vector` extension,
   `_JUROR_RUBRIC` never wired, `deploy.sh` health wait). Blocked on the user then and still: a GitHub credential, a
   Cloudflare Pages token, Slack tokens.
 
-- **2026-09-21 (claude, `17460b2`)** — Azure Responses, `apply_patch`, the research
+- **2026-09-21 (claude, `9896fd7`)** — Azure Responses, `apply_patch`, the research
   council, the tenancy boundary closed, PWA + push + mobile. Fix Council ran end to end on
   issue #21 at resolution 100/100 on the old host.
 

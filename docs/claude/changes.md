@@ -11,7 +11,7 @@ file is the only channel.
 ## 2026-10-27 (UTC) — NVIDIA and OpenRouter providers, provider-failure classification
 
 - **Agent:** claude
-- **Commit:** `791350138bc96020828a7c00576729ef673ec873` (`7913501`)
+- **Commit:** `54ec283ddeadc81f311421191d29c6d5266a67d7` (`7913501`)
 - **User ask:** implement `~/ai/llmIntegrations.md` §4 for WhipGuard (NVIDIA first, then OpenRouter); commit and push; no
   `.env` change and no deploy.
 - **Shipped:**
@@ -45,7 +45,7 @@ file is the only channel.
 ## 2026-10-22 18:00 (UTC) — Move to the AWS host, Bedrock models, interactive landing
 
 - **Agent:** claude
-- **Commit:** `644cad80aec639f2ae826b2966f55db5be1e17f8` (`644cad8`)
+- **Commit:** `d51fd756a9bdc88e5bdfd4e0a369fae8c6da4459` (`d51fd75`)
 - **User ask:** set WhipGuard up end to end on this VM, make it work with the AWS model
   setup in `~/ai/aws-model-integrations.md`, and replace the landing page with something
   like jevSec's: highly interactive and informative.
@@ -203,8 +203,8 @@ file is the only channel.
 ## 2026-09-20 11:05 (UTC) — Azure Responses, apply_patch, and curated web research
 
 - **Agent:** claude
-- **Commits:** `6093ea89a0c488db480d77a78357c0760267678f` (`6093ea8`) — protocol + edit
-  primitive. `fbcc5b6539342cb3a7aebec5f7e0e3b0b596e059` (`fbcc5b6`) — the research council.
+- **Commits:** `d6cfcaa02478bdda7258a41ec3c6273360724ebb` (`d6cfcaa`) — protocol + edit
+  primitive. `5a713c1d718b5c804cacccefc141e51b4304a509` (`5a713c1`) — the research council.
 - **Plan:** the user wrote one and handed it over;
   [`../plans/2026-09-20-azure-responses-and-apply-patch.md`](../plans/2026-09-20-azure-responses-and-apply-patch.md)
   records it along with the three places live probing contradicted it.
@@ -343,7 +343,7 @@ fixtures appeared on the dashboard as real issues.
 ## 2026-09-20 16:40 (UTC) — The three tenancy gaps, closed
 
 - **Agent:** claude
-- **Commit:** `7dab810c57b083b7d6508ee3ef97c4f0df537dac` (`7dab810`)
+- **Commit:** `12ade0984227c974b76fbdfad5c5193b35b18835` (`12ade09`)
 - **User ask:** take the three tenancy gaps next.
 
 ### Each gap was bigger than its one-line entry
@@ -450,7 +450,7 @@ concurrent refreshes would invalidate each other.
 ## 2026-09-20 16:55 (UTC) — Three more, found by auditing differently
 
 - **Agent:** claude
-- **Commit:** `355359e849946f48f667c92a744a3366fc81ba53` (`355359e`)
+- **Commit:** `d801538fde89590f2c88b76dc7685223714bb32f` (`d801538`)
 - **User ask:** "Is it all done?"
 
 The last time that question was asked, my answer was built by re-reading my own to-do list,
@@ -498,7 +498,7 @@ design), `email_actions.py` (the signed token *is* the credential), `slack_conne
 ## 2026-09-21 05:05 (UTC) — Deployed, and verified against the live host
 
 - **Agent:** claude
-- **Deployed:** `eb4bf2f` (working tree = `main`, clean). `./deploy.sh` → OK at 05:05:12Z.
+- **Deployed:** `751e7ba` (working tree = `main`, clean). `./deploy.sh` → OK at 05:05:12Z.
 - **User ask:** deploy it.
 
 Everything this session shipped had been verified against Azure or against tests. None of it
@@ -575,7 +575,7 @@ user to ask.
 ## 2026-09-21 10:26 (UTC) — PWA, mobile, push, and the audit after
 
 - **Agent:** claude
-- **Commits:** `634699a` `858f8f8` `315bf11` `8c39e71` `754fea1` `17460b2`
+- **Commits:** `32008b0` `858f8f8` `4845c36` `37a1a82` `a6431f8` `9896fd7`
 - **Deployed:** yes, four times through the session.
 
 ### The pending Fix Council run found two bugs, which was the point
