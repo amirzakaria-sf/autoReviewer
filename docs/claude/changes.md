@@ -11,7 +11,7 @@ file is the only channel.
 ## 2026-10-27 (UTC) — NVIDIA and OpenRouter providers, provider-failure classification
 
 - **Agent:** claude
-- **Commit:** `0a4b13aac7a15148cbc3efd8f4e60a83ac2e3b44` (`0a4b13a`)
+- **Commit:** `791350138bc96020828a7c00576729ef673ec873` (`7913501`)
 - **User ask:** implement `~/ai/llmIntegrations.md` §4 for WhipGuard (NVIDIA first, then OpenRouter); commit and push; no
   `.env` change and no deploy.
 - **Shipped:**
@@ -45,7 +45,7 @@ file is the only channel.
 ## 2026-10-22 18:00 (UTC) — Move to the AWS host, Bedrock models, interactive landing
 
 - **Agent:** claude
-- **Commit:** `3b58fdce679c39dc186b4994bf2b8864e80e2c3a` (`3b58fdc`)
+- **Commit:** `644cad80aec639f2ae826b2966f55db5be1e17f8` (`644cad8`)
 - **User ask:** set WhipGuard up end to end on this VM, make it work with the AWS model
   setup in `~/ai/aws-model-integrations.md`, and replace the landing page with something
   like jevSec's: highly interactive and informative.
