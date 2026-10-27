@@ -11,7 +11,7 @@ file is the only channel.
 ## 2026-10-27 (UTC) — NVIDIA and OpenRouter providers, provider-failure classification
 
 - **Agent:** claude
-- **Commit:** pending
+- **Commit:** `0a4b13aac7a15148cbc3efd8f4e60a83ac2e3b44` (`0a4b13a`)
 - **User ask:** implement `~/ai/llmIntegrations.md` §4 for WhipGuard (NVIDIA first, then OpenRouter); commit and push; no
   `.env` change and no deploy.
 - **Shipped:**

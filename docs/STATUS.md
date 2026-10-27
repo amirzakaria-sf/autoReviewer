@@ -20,7 +20,7 @@ Two fields need care:
 
 - **As of:** 2026-10-27
 - **Last agent:** claude
-- **Commit:** pending
+- **Commit:** `0a4b13aac7a15148cbc3efd8f4e60a83ac2e3b44` (`0a4b13a`)
 - **Deployed:** unchanged from the 2026-10-22 block (Bedrock, `3b58fdc` plus `1c2ecf7`/`f36ab2b`/`34e5245` as deployed by
   whoever deployed them). This session did not deploy (owner: code + commit + push only).
 - **User ask:** sync LLM providers across the five apps (`~/ai/llmIntegrations.md`); WhipGuard had neither NVIDIA nor
