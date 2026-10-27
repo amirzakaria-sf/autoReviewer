@@ -17,6 +17,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   backend:
     build: ./backend
@@ -43,6 +44,7 @@ services:
       REPO_ROOT: ${PWD}
     ports:
       - "127.0.0.1:8300:8300"
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -124,6 +126,7 @@ services:
     # running docker-compose locally.
     ports:
       - "127.0.0.1:3300:3300"
+    restart: unless-stopped
     depends_on:
       - backend
 
